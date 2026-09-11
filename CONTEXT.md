@@ -45,6 +45,16 @@ _Avoid_: result, computed value
 The top-left cell of the first area a defined name refers to; the one cell a name resolves to.
 _Avoid_: first cell, origin
 
+**Scope**:
+Where a defined name can be seen from: the whole workbook, or one sheet.
+Nothing to do with a command's _target_.
+_Avoid_: level, visibility
+
+**Sheet state**:
+Whether a sheet's tab is shown: `visible`, `hidden` or `veryHidden`, spelled
+as the package spells them. What is meant by a sheet's visibility.
+_Avoid_: hidden flag, tab state
+
 ### The contract
 
 **JSON envelope**:

@@ -1,6 +1,8 @@
 //! The command line: clap's definitions, and the one question that must be
 //! answered before clap runs.
 
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 
 #[cfg(debug_assertions)]
@@ -37,6 +39,21 @@ pub struct GlobalArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// List the package's sheets with their state, in workbook order.
+    Sheets {
+        /// The package to read.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
+
+    /// List the package's defined names with their scope, what each refers
+    /// to, and the cell each resolves to.
+    Names {
+        /// The package to read.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
+
     /// Print the version of xlsplice.
     Version,
 
@@ -76,6 +93,8 @@ impl Command {
     /// The verb's name, for diagnostics.
     pub fn name(&self) -> &'static str {
         match self {
+            Command::Sheets { .. } => "sheets",
+            Command::Names { .. } => "names",
             Command::Version => "version",
             #[cfg(debug_assertions)]
             Command::Selftest { .. } => "selftest",

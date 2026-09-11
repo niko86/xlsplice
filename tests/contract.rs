@@ -1,30 +1,9 @@
 //! Contract tests: everything here observes the built binary from outside,
 //! through its argv, its two streams and its exit code, and nothing else.
 
-use std::process::{Command, Output};
+mod support;
 
-/// Run the binary with `args` and both streams captured, so stdout is a pipe
-/// rather than a terminal.
-fn run(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_xlsplice"))
-        .args(args)
-        .output()
-        .expect("the binary under test must be runnable")
-}
-
-fn stdout(out: &Output) -> String {
-    String::from_utf8(out.stdout.clone()).expect("stdout must be UTF-8")
-}
-
-fn stderr(out: &Output) -> String {
-    String::from_utf8(out.stderr.clone()).expect("stderr must be UTF-8")
-}
-
-fn exit_code(out: &Output) -> i32 {
-    out.status
-        .code()
-        .expect("the binary must exit, not die on a signal")
-}
+use support::{exit_code, json, run, stderr, stdout};
 
 /// The version declared in `Cargo.toml`, read from the manifest rather than
 /// from the binary's own constant, so a hardcoded version would be caught.
@@ -37,10 +16,6 @@ fn manifest_version() -> String {
         .expect("Cargo.toml must declare a package version")
         .trim_matches('"')
         .to_owned()
-}
-
-fn json(out: &Output) -> serde_json::Value {
-    serde_json::from_str(&stdout(out)).expect("stdout under --json must be one JSON document")
 }
 
 #[test]

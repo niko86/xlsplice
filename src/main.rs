@@ -6,12 +6,16 @@
 
 mod cli;
 mod out;
+mod render;
 
+use std::path::Path;
 use std::process::ExitCode;
 
 use clap::Parser;
 
 use xlsplice::error::Error;
+use xlsplice::package::Package;
+use xlsplice::workbook::Workbook;
 
 use crate::cli::{Cli, Command};
 use crate::out::{Out, OutputMode, Verbosity};
@@ -43,6 +47,24 @@ fn run(command: Command, out: &Out) -> ExitCode {
     ));
 
     match command {
+        Command::Sheets { file } => match workbook_of(&file, out) {
+            Ok(workbook) => out.rows(
+                render::sheets(&workbook),
+                &render::SHEET_HEADERS,
+                &render::sheet_rows(&workbook),
+            ),
+            Err(err) => out.failure(&err),
+        },
+
+        Command::Names { file } => match workbook_of(&file, out) {
+            Ok(workbook) => out.rows(
+                render::names(&workbook),
+                &render::NAME_HEADERS,
+                &render::name_rows(&workbook),
+            ),
+            Err(err) => out.failure(&err),
+        },
+
         Command::Version => {
             let version = env!("CARGO_PKG_VERSION");
             out.success(Version { version }, &format!("xlsplice {version}"))
@@ -62,6 +84,17 @@ fn run(command: Command, out: &Out) -> ExitCode {
             }
         }
     }
+}
+
+/// Open a package and read its workbook: what both read verbs start with.
+fn workbook_of(path: &Path, out: &Out) -> xlsplice::Result<Workbook> {
+    out.trace(&format!("opening {}", path.display()));
+    let mut package = Package::open(path)?;
+    out.trace(&format!(
+        "{} parts in the package",
+        package.part_paths().len()
+    ));
+    Workbook::read(&mut package)
 }
 
 /// The payload of a `selftest` that was asked for nothing.

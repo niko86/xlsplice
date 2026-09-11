@@ -10,6 +10,9 @@
 
 pub mod envelope;
 pub mod error;
+pub mod package;
+pub mod reference;
+pub mod workbook;
 
 pub use envelope::{Envelope, JsonStyle, SCHEMA_VERSION};
 pub use error::{EXIT_SUCCESS, Error, ErrorCode, Result};

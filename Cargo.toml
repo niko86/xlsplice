@@ -17,3 +17,11 @@ clap = { version = "4.6.6", default-features = false, features = [
 ] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# The container. Deflate is the only method Excel writes, and `zlib-rs` keeps
+# it pure Rust so the Linux CI job and the Windows lab machine build the same.
+zip = { version = "8.6.0", default-features = false, features = [
+    "deflate-flate2-zlib-rs",
+] }
+# The locator: reads walk the tree, and writes will take node byte ranges from
+# the same tree. See ADR-0002.
+roxmltree = "0.21.1"

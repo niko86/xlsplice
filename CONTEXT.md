@@ -23,7 +23,8 @@ The parts and nodes a command names for change. Everything outside the target is
 _Avoid_: scope, selection
 
 **Envelope**:
-Everything in a worksheet part outside `<sheetData>`.
+Everything in a worksheet part outside `<sheetData>`. Say _worksheet envelope_
+wherever the JSON envelope is also in play.
 _Avoid_: header, wrapper
 
 ### Cells
@@ -43,6 +44,19 @@ _Avoid_: result, computed value
 **Anchor**:
 The top-left cell of the first area a defined name refers to; the one cell a name resolves to.
 _Avoid_: first cell, origin
+
+### The contract
+
+**JSON envelope**:
+The single JSON document a `--json` command writes to stdout: `ok`,
+`schema_version`, the verb's payload, and, on failure, `error` with a stable
+code. Distinct from the worksheet envelope.
+_Avoid_: response, output, wrapper
+
+**Exit code**:
+The small integer a command exits with, one per error code, published and
+frozen.
+_Avoid_: status, return code, errorlevel
 
 ### Testing
 

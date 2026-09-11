@@ -1,0 +1,650 @@
+//! Contract tests for `get`: everything here observes the built binary from
+//! outside, through its argv, its two streams and its exit code. stdout is a
+//! pipe in every one of them, so the text these assert is the tab-separated
+//! form.
+
+mod support;
+
+use serde_json::json;
+use support::{Workspace, exit_code, json, run, stderr, stdout, workbook_xml};
+
+/// The feature package, and the workspace holding it alive for as long as the
+/// test needs it.
+fn feature(label: &str) -> (Workspace, String) {
+    let workspace = Workspace::new(label);
+    let path = workspace.feature_package("feature.xlsx");
+    let path = path
+        .to_str()
+        .expect("a temporary path must be UTF-8")
+        .to_owned();
+    (workspace, path)
+}
+
+/// The message of a failed envelope.
+fn error_message(out: &std::process::Output) -> String {
+    json(out)["error"]["message"]
+        .as_str()
+        .expect("a failed envelope carries a message")
+        .to_owned()
+}
+
+/// The one cell `target` names, out of the envelope.
+fn cell(package: &str, target: &str) -> serde_json::Value {
+    let out = run(&["get", package, target, "--json"]);
+    assert_eq!(exit_code(&out), 0, "get {target}: {}", stderr(&out));
+    json(&out)["cells"][0].clone()
+}
+
+#[test]
+fn every_stored_type_comes_back_with_its_type_its_value_and_its_raw_text() {
+    let (_workspace, package) = feature("types");
+
+    let seen: Vec<_> = [
+        "Inputs!A1",
+        "Inputs!A2",
+        "Inputs!B1",
+        "Inputs!C1",
+        "Inputs!D1",
+        "Inputs!E1",
+        "Inputs!F1",
+        "Inputs!G1",
+        "Inputs!I1",
+        "Inputs!A6",
+    ]
+    .into_iter()
+    .map(|target| {
+        let cell = cell(&package, target);
+        (
+            cell["type"].clone(),
+            cell["value"].clone(),
+            cell["raw"].clone(),
+        )
+    })
+    .collect();
+
+    assert_eq!(
+        seen,
+        [
+            (json!("n"), json!(1), json!("1")),
+            (json!("n"), json!(2.5), json!("2.5")),
+            (json!("s"), json!("hello"), json!("0")),
+            (
+                json!("d"),
+                json!("2026-09-11T00:00:00"),
+                json!("2026-09-11T00:00:00")
+            ),
+            (json!("b"), json!(true), json!("1")),
+            (json!("e"), json!("#DIV/0!"), json!("#DIV/0!")),
+            (json!("str"), json!("ab"), json!("ab")),
+            (json!("inlineStr"), json!("inline "), json!("inline ")),
+            (json!("s"), json!("rich text"), json!("1")),
+            (json!("empty"), json!(null), json!(null)),
+        ]
+    );
+}
+
+#[test]
+fn a_boolean_cell_reports_a_boolean_either_way_round() {
+    let (_workspace, package) = feature("booleans");
+
+    assert_eq!(cell(&package, "Inputs!D1")["value"], json!(true));
+    let no = cell(&package, "Inputs!K1");
+    assert_eq!(no["type"], json!("b"));
+    assert_eq!(no["value"], json!(false));
+    assert_eq!(no["raw"], json!("0"));
+}
+
+#[test]
+fn a_shared_string_cell_reports_the_text_and_keeps_the_index_as_its_raw() {
+    let (_workspace, package) = feature("shared");
+
+    let hello = cell(&package, "Inputs!B1");
+
+    assert_eq!(hello["type"], json!("s"));
+    assert_eq!(hello["value"], json!("hello"));
+    assert_eq!(
+        hello["raw"],
+        json!("0"),
+        "the raw text of a shared-string cell is its index"
+    );
+}
+
+#[test]
+fn rich_text_runs_are_concatenated_and_phonetic_text_is_left_out() {
+    let (_workspace, package) = feature("runs");
+
+    assert_eq!(cell(&package, "Inputs!I1")["value"], json!("rich text"));
+    assert_eq!(
+        cell(&package, "Inputs!H1")["value"],
+        json!("inline"),
+        "an inline string's runs are concatenated too"
+    );
+    assert_eq!(
+        cell(&package, "Inputs!J1")["value"],
+        json!("東京"),
+        "phonetic text is a reading guide, not part of the string"
+    );
+}
+
+/// A shared-string cell keeps its index as its raw text, because the index is
+/// what the cell stores. An inline string stores the text itself, so its raw
+/// text is that text: there is no separate stored form to report, and the two
+/// fields agreeing is the honest answer rather than an oversight.
+#[test]
+fn an_inline_strings_raw_text_is_the_text_the_cell_itself_holds() {
+    let (_workspace, package) = feature("inline-raw");
+
+    let runs = cell(&package, "Inputs!H1");
+
+    assert_eq!(runs["value"], json!("inline"));
+    assert_eq!(runs["raw"], json!("inline"));
+}
+
+#[test]
+fn an_absent_cell_is_empty_and_carries_neither_value_nor_style() {
+    let (_workspace, package) = feature("absent");
+
+    let absent = cell(&package, "Inputs!Z1");
+
+    assert_eq!(absent["type"], json!("empty"));
+    assert_eq!(absent["value"], json!(null));
+    assert_eq!(absent["raw"], json!(null));
+    assert_eq!(absent["style"], json!(null));
+    assert_eq!(absent["formula"], json!(null));
+    assert_eq!(absent["address"], json!("Inputs!Z1"));
+}
+
+#[test]
+fn a_cell_holding_a_style_and_no_value_is_empty_and_still_reports_the_style() {
+    let (_workspace, package) = feature("styled-empty");
+
+    let styled = cell(&package, "Inputs!A6");
+
+    assert_eq!(styled["type"], json!("empty"));
+    assert_eq!(styled["value"], json!(null));
+    assert_eq!(styled["style"], json!(5));
+}
+
+#[test]
+fn every_cell_reports_the_style_index_it_carries() {
+    let (_workspace, package) = feature("styles");
+
+    assert_eq!(cell(&package, "Inputs!B1")["style"], json!(1));
+    assert_eq!(cell(&package, "Inputs!C1")["style"], json!(2));
+    assert_eq!(
+        cell(&package, "Inputs!A1")["style"],
+        json!(0),
+        "a cell with no style attribute carries the default format"
+    );
+}
+
+#[test]
+fn a_plain_formula_reports_its_text_and_nothing_else() {
+    let (_workspace, package) = feature("formula-plain");
+
+    let formula = cell(&package, "Inputs!D2")["formula"].clone();
+
+    assert_eq!(
+        formula,
+        json!({"text": "SUM(A1:A5)", "role": "plain", "range": null, "group": null})
+    );
+}
+
+#[test]
+fn a_shared_master_reports_its_range_and_a_child_reports_its_group() {
+    let (_workspace, package) = feature("formula-shared");
+
+    assert_eq!(
+        cell(&package, "Inputs!E2")["formula"],
+        json!({"text": "A2*2", "role": "shared_master", "range": "E2:E3", "group": 0})
+    );
+    assert_eq!(
+        cell(&package, "Inputs!E3")["formula"],
+        json!({"text": "", "role": "shared_child", "range": null, "group": 0})
+    );
+}
+
+#[test]
+fn a_formula_cell_still_reports_its_cached_value() {
+    let (_workspace, package) = feature("cached");
+
+    let cached = cell(&package, "Inputs!D2");
+
+    assert_eq!(cached["type"], json!("n"));
+    assert_eq!(cached["value"], json!(15));
+    assert_eq!(cached["raw"], json!("15"));
+}
+
+#[test]
+fn reading_through_the_merged_ranges_name_gives_the_anchors_content() {
+    let (_workspace, package) = feature("merged");
+
+    let anchor = cell(&package, "MergedInput");
+
+    assert_eq!(anchor["target"], json!("MergedInput"));
+    assert_eq!(anchor["name"], json!("MergedInput"));
+    assert_eq!(anchor["sheet"], json!("Inputs"));
+    assert_eq!(anchor["cell"], json!("B2"));
+    assert_eq!(anchor["address"], json!("Inputs!B2"));
+    assert_eq!(anchor["value"], json!("merged"));
+    assert_eq!(anchor["style"], json!(4));
+}
+
+#[test]
+fn an_address_goes_through_no_name_at_all() {
+    let (_workspace, package) = feature("no-name");
+
+    assert_eq!(cell(&package, "Inputs!B2")["name"], json!(null));
+}
+
+#[test]
+fn a_sheet_scoped_name_is_read_through_the_sheet_it_is_scoped_to() {
+    let (_workspace, package) = feature("sheet-scoped");
+
+    let note = cell(&package, "Notes!LocalNote");
+
+    assert_eq!(note["name"], json!("LocalNote"));
+    assert_eq!(note["address"], json!("Notes!A5"));
+    assert_eq!(note["value"], json!("note"));
+}
+
+#[test]
+fn a_target_is_matched_without_regard_to_case_and_answers_in_the_packages_spelling() {
+    let (_workspace, package) = feature("case");
+
+    for target in ["INPUTS!b1", "inputs!B1"] {
+        assert_eq!(
+            cell(&package, target)["address"],
+            json!("Inputs!B1"),
+            "{target}"
+        );
+    }
+    let loud = cell(&package, "loudcase");
+    assert_eq!(loud["name"], json!("LoudCase"));
+    assert_eq!(loud["address"], json!("Inputs!E1"));
+    assert_eq!(
+        cell(&package, "notes!localnote")["name"],
+        json!("LocalNote")
+    );
+}
+
+#[test]
+fn dollars_in_an_address_are_no_more_significant_than_in_a_reference() {
+    let (_workspace, package) = feature("dollars");
+
+    assert_eq!(cell(&package, "Inputs!$B$1")["address"], json!("Inputs!B1"));
+}
+
+#[test]
+fn several_targets_come_back_one_per_target_in_the_order_they_were_given() {
+    let (_workspace, package) = feature("several");
+
+    let out = run(&[
+        "get",
+        &package,
+        "Inputs!A3",
+        "MergedInput",
+        "Notes!LocalNote",
+        "Inputs!A1",
+        "--json",
+    ]);
+
+    assert_eq!(exit_code(&out), 0);
+    let cells = json(&out)["cells"].clone();
+    let targets: Vec<_> = cells
+        .as_array()
+        .expect("cells is a list")
+        .iter()
+        .map(|cell| cell["target"].clone())
+        .collect();
+
+    assert_eq!(
+        targets,
+        [
+            json!("Inputs!A3"),
+            json!("MergedInput"),
+            json!("Notes!LocalNote"),
+            json!("Inputs!A1"),
+        ]
+    );
+    assert_eq!(cells[0]["value"], json!(-3));
+    assert_eq!(cells[3]["value"], json!(1));
+}
+
+#[test]
+fn one_target_is_one_tab_separated_line_with_every_field_in_its_place() {
+    let (_workspace, package) = feature("rows");
+
+    let out = run(&["get", &package, "MergedInput", "Inputs!E2", "Inputs!Z1"]);
+
+    assert_eq!(exit_code(&out), 0);
+    assert_eq!(stderr(&out), "");
+    assert_eq!(
+        stdout(&out),
+        concat!(
+            "MergedInput\tMergedInput\tInputs!B2\ts\tmerged\t2\t4\t\t\t\t\n",
+            "Inputs!E2\t\tInputs!E2\tn\t5\t5\t0\tA2*2\tshared_master\tE2:E3\t0\n",
+            "Inputs!Z1\t\tInputs!Z1\tempty\t\t\t\t\t\t\t\n",
+        )
+    );
+}
+
+#[test]
+fn the_envelope_leads_with_ok_and_the_schema_version() {
+    let (_workspace, package) = feature("envelope");
+
+    let body = json(&run(&["get", &package, "Inputs!A1", "--json"]));
+
+    assert_eq!(body["ok"], json!(true));
+    assert_eq!(body["schema_version"], json!(1));
+    assert_eq!(body.get("error"), None);
+}
+
+#[test]
+fn an_unknown_sheet_is_not_found_and_the_message_lists_the_sheets() {
+    let (_workspace, package) = feature("no-sheet");
+
+    let out = run(&["get", &package, "Missing!A1", "--json"]);
+
+    assert_eq!(exit_code(&out), 3);
+    let message = error_message(&out);
+    assert_eq!(json(&out)["error"]["code"], json!("not_found"));
+    assert!(message.contains("Missing"), "{message}");
+    for sheet in ["Inputs", "Notes", "Parameters"] {
+        assert!(message.contains(sheet), "{message} must name {sheet}");
+    }
+}
+
+#[test]
+fn an_unknown_name_is_not_found_and_the_message_lists_the_names_of_its_scope() {
+    let (_workspace, package) = feature("no-name-found");
+
+    let out = run(&["get", &package, "Absent", "--json"]);
+
+    assert_eq!(exit_code(&out), 3);
+    let message = error_message(&out);
+    assert_eq!(json(&out)["error"]["code"], json!("not_found"));
+    assert!(message.contains("Absent"), "{message}");
+    assert!(message.contains("MergedInput"), "{message}");
+    assert!(
+        !message.contains("LocalNote"),
+        "a sheet-scoped name is in another scope: {message}"
+    );
+}
+
+#[test]
+fn an_unknown_sheet_scoped_name_names_the_sheet_it_was_looked_for_on() {
+    let (_workspace, package) = feature("no-local-name");
+
+    let out = run(&["get", &package, "Notes!Absent", "--json"]);
+
+    assert_eq!(exit_code(&out), 3);
+    let message = error_message(&out);
+    assert!(message.contains("Notes"), "{message}");
+    assert!(message.contains("LocalNote"), "{message}");
+}
+
+#[test]
+fn a_name_that_is_not_a_reference_is_refused_with_what_it_refers_to() {
+    let (_workspace, package) = feature("refused");
+    let cases = [
+        ("Rate", "0.175"),
+        ("Total", "SUM(Inputs!$D$1:$D$9)"),
+        ("Gone", "#REF!"),
+    ];
+
+    for (target, refers_to) in cases {
+        let out = run(&["get", &package, target, "--json"]);
+
+        assert_eq!(exit_code(&out), 4, "{target}");
+        let body = json(&out);
+        assert_eq!(body["ok"], json!(false), "{target}");
+        assert_eq!(body["error"]["code"], json!("refused"), "{target}");
+        let message = error_message(&out);
+        assert!(
+            message.contains(refers_to),
+            "{target}: {message} must carry its refersTo"
+        );
+    }
+}
+
+#[test]
+fn a_cell_outside_every_row_the_sheet_holds_is_not_found() {
+    let (_workspace, package) = feature("no-row");
+
+    for target in ["Inputs!A99", "Parameters!A1"] {
+        let out = run(&["get", &package, target, "--json"]);
+
+        assert_eq!(exit_code(&out), 3, "{target}");
+        let message = error_message(&out);
+        assert_eq!(json(&out)["error"]["code"], json!("not_found"), "{target}");
+        assert!(
+            message.contains("row"),
+            "{target}: {message} must say what was searched"
+        );
+    }
+}
+
+#[test]
+fn a_name_whose_sheet_is_not_in_the_package_is_not_found() {
+    let workspace = Workspace::new("name-elsewhere");
+    let package = workspace.package(
+        "elsewhere.xlsx",
+        &workbook_xml(
+            r#"<sheets><sheet name="Only" sheetId="1" r:id="rId1"/></sheets>
+               <definedNames><definedName name="Away">Gone!$A$1</definedName></definedNames>"#,
+        ),
+    );
+
+    let out = run(&[
+        "get",
+        package.to_str().expect("a UTF-8 path"),
+        "Away",
+        "--json",
+    ]);
+
+    assert_eq!(exit_code(&out), 3);
+    let message = error_message(&out);
+    assert!(message.contains("Gone!$A$1"), "{message}");
+}
+
+#[test]
+fn one_failing_target_fails_the_whole_read_and_leaves_stdout_empty() {
+    let (_workspace, package) = feature("all-or-nothing");
+
+    let out = run(&["get", &package, "Inputs!A1", "Missing!A1"]);
+
+    assert_eq!(exit_code(&out), 3);
+    assert_eq!(
+        stdout(&out),
+        "",
+        "a failure leaves the data channel empty, part-read or not"
+    );
+    assert!(stderr(&out).starts_with("error: "), "{}", stderr(&out));
+}
+
+#[test]
+fn a_sheet_whose_name_needs_quoting_is_addressed_and_reported_quoted() {
+    let workspace = Workspace::new("quoted-sheet");
+    let package = workspace.zip(
+        "quoted.xlsx",
+        &[
+            (support::CONTENT_TYPES_PART, support::CONTENT_TYPES),
+            (support::ROOT_RELS_PART, support::ROOT_RELS),
+            (
+                support::WORKBOOK_PART,
+                &workbook_xml(
+                    r#"<sheets><sheet name="My Sheet" sheetId="1" r:id="rId1"/></sheets>"#,
+                ),
+            ),
+            (support::WORKBOOK_RELS_PART, support::WORKBOOK_RELS),
+            (support::SHEET1_PART, support::NOTES_SHEET),
+        ],
+    );
+
+    let out = run(&[
+        "get",
+        package.to_str().expect("a UTF-8 path"),
+        "'My Sheet'!A5",
+        "--json",
+    ]);
+
+    assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
+    let cell = json(&out)["cells"][0].clone();
+    assert_eq!(cell["sheet"], json!("My Sheet"));
+    assert_eq!(cell["address"], json!("'My Sheet'!A5"));
+    assert_eq!(cell["value"], json!("note"));
+}
+
+#[test]
+fn get_needs_a_package_and_at_least_one_target() {
+    let (_workspace, package) = feature("usage");
+
+    assert_eq!(exit_code(&run(&["get"])), 2);
+    assert_eq!(exit_code(&run(&["get", &package])), 2);
+}
+
+#[test]
+fn the_double_dash_still_hands_the_operands_over() {
+    let (_workspace, package) = feature("double-dash");
+
+    let out = run(&["get", "--json", "--", &package, "Inputs!A1"]);
+
+    assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
+    assert_eq!(json(&out)["cells"][0]["value"], json!(1));
+}
+
+#[test]
+fn a_path_that_is_not_a_package_is_unreadable() {
+    let workspace = Workspace::new("get-unreadable");
+    let path = workspace.file("notes.txt", b"this is not a package");
+
+    let out = run(&[
+        "get",
+        path.to_str().expect("a UTF-8 path"),
+        "Inputs!A1",
+        "--json",
+    ]);
+
+    assert_eq!(exit_code(&out), 5);
+    assert_eq!(json(&out)["error"]["code"], json!("unreadable"));
+}
+
+#[test]
+fn quiet_and_verbose_move_stderr_only() {
+    let (_workspace, package) = feature("get-streams");
+
+    let plain = run(&["get", &package, "Inputs!A1"]);
+    let loud = run(&["get", &package, "Inputs!A1", "--verbose"]);
+    let hushed = run(&["get", &package, "Inputs!A1", "--quiet"]);
+
+    assert_eq!(stdout(&loud), stdout(&plain));
+    assert_eq!(stdout(&hushed), stdout(&plain));
+    assert!(!stderr(&loud).is_empty(), "--verbose must trace on stderr");
+    assert_eq!(stderr(&hushed), "");
+}
+
+/// Excel names a worksheet part for the order its sheet was created in, not
+/// for where its tab sits, so the two disagree the moment a sheet is moved.
+/// This package is built so that they do: the first tab's cells are in
+/// `sheet2.xml`. With the relationship gone, anything that guessed
+/// `sheet1.xml` for the first tab would hand back the other sheet's cells,
+/// so the only safe answer is no answer.
+#[test]
+fn a_sheet_whose_relationship_is_gone_is_not_found_rather_than_guessed_at() {
+    let workspace = Workspace::new("reordered");
+    let workbook = workbook_xml(
+        r#"<sheets>
+             <sheet name="Second" sheetId="2" r:id="rId2"/>
+             <sheet name="First" sheetId="1" r:id="rId1"/>
+           </sheets>"#,
+    );
+    let package = workspace.zip(
+        "reordered.xlsx",
+        &[
+            (support::CONTENT_TYPES_PART, support::FEATURE_CONTENT_TYPES),
+            (support::ROOT_RELS_PART, support::ROOT_RELS),
+            (support::WORKBOOK_PART, &workbook),
+            // The relationships that say which part is which sheet are gone.
+            (support::SHEET1_PART, support::INPUTS_SHEET),
+            (support::SHEET2_PART, support::NOTES_SHEET),
+        ],
+    );
+
+    let out = run(&[
+        "get",
+        package.to_str().expect("a UTF-8 path"),
+        "Second!A1",
+        "--json",
+    ]);
+
+    assert_eq!(
+        exit_code(&out),
+        3,
+        "a wrong answer is worse than no answer: {}",
+        stdout(&out)
+    );
+    assert_eq!(json(&out)["error"]["code"], json!("not_found"));
+    assert!(
+        error_message(&out).contains("Second"),
+        "{}",
+        error_message(&out)
+    );
+}
+
+/// A package holds at most one shared string table, so where a relationship
+/// does not name one, the conventional path cannot be confused with anything
+/// and is worth trying. This is the opposite call from a worksheet part, and
+/// for the opposite reason.
+#[test]
+fn a_shared_string_table_the_relationships_do_not_name_is_still_found() {
+    let workspace = Workspace::new("unnamed-table");
+    let workbook = support::feature_workbook();
+    let sheets_only = support::WORKBOOK_RELS
+        .lines()
+        .filter(|line| !line.contains("sharedStrings"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let package = workspace.zip(
+        "unnamed.xlsx",
+        &[
+            (support::CONTENT_TYPES_PART, support::FEATURE_CONTENT_TYPES),
+            (support::ROOT_RELS_PART, support::ROOT_RELS),
+            (support::WORKBOOK_PART, &workbook),
+            (support::WORKBOOK_RELS_PART, &sheets_only),
+            (support::SHEET1_PART, support::INPUTS_SHEET),
+            (support::SHARED_STRINGS_PART, support::SHARED_STRINGS),
+        ],
+    );
+
+    let out = run(&[
+        "get",
+        package.to_str().expect("a UTF-8 path"),
+        "Inputs!B1",
+        "--json",
+    ]);
+
+    assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
+    assert_eq!(json(&out)["cells"][0]["value"], json!("hello"));
+}
+
+#[test]
+fn a_sheet_the_package_holds_no_worksheet_part_for_is_not_found() {
+    let workspace = Workspace::new("no-sheet-part");
+    let package = workspace.package(
+        "partless.xlsx",
+        &workbook_xml(r#"<sheets><sheet name="Only" sheetId="1" r:id="rId1"/></sheets>"#),
+    );
+
+    let out = run(&[
+        "get",
+        package.to_str().expect("a UTF-8 path"),
+        "Only!A1",
+        "--json",
+    ]);
+
+    assert_eq!(exit_code(&out), 3);
+    let message = error_message(&out);
+    assert_eq!(json(&out)["error"]["code"], json!("not_found"));
+    assert!(message.contains("Only"), "{message}");
+}

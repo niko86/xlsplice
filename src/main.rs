@@ -13,6 +13,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
+use xlsplice::cells::{self, CellReport};
 use xlsplice::error::Error;
 use xlsplice::package::Package;
 use xlsplice::workbook::Workbook;
@@ -47,8 +48,8 @@ fn run(command: Command, out: &Out) -> ExitCode {
     ));
 
     match command {
-        Command::Sheets { file } => match workbook_of(&file, out) {
-            Ok(workbook) => out.rows(
+        Command::Sheets { file } => match open(&file, out) {
+            Ok((_, workbook)) => out.rows(
                 render::sheets(&workbook),
                 &render::SHEET_HEADERS,
                 &render::sheet_rows(&workbook),
@@ -56,11 +57,20 @@ fn run(command: Command, out: &Out) -> ExitCode {
             Err(err) => out.failure(&err),
         },
 
-        Command::Names { file } => match workbook_of(&file, out) {
-            Ok(workbook) => out.rows(
+        Command::Names { file } => match open(&file, out) {
+            Ok((_, workbook)) => out.rows(
                 render::names(&workbook),
                 &render::NAME_HEADERS,
                 &render::name_rows(&workbook),
+            ),
+            Err(err) => out.failure(&err),
+        },
+
+        Command::Get { file, targets } => match get(&file, &targets, out) {
+            Ok(reports) => out.rows(
+                render::cells(&reports),
+                &render::CELL_HEADERS,
+                &render::cell_rows(&reports),
             ),
             Err(err) => out.failure(&err),
         },
@@ -86,15 +96,26 @@ fn run(command: Command, out: &Out) -> ExitCode {
     }
 }
 
-/// Open a package and read its workbook: what both read verbs start with.
-fn workbook_of(path: &Path, out: &Out) -> xlsplice::Result<Workbook> {
+/// Open a package and read its workbook: what every read verb starts with.
+/// The package comes back too, because a verb that reads cells goes on to
+/// read more of its parts.
+fn open(path: &Path, out: &Out) -> xlsplice::Result<(Package, Workbook)> {
     out.trace(&format!("opening {}", path.display()));
     let mut package = Package::open(path)?;
     out.trace(&format!(
         "{} parts in the package",
         package.part_paths().len()
     ));
-    Workbook::read(&mut package)
+    let workbook = Workbook::read(&mut package)?;
+    out.trace(&format!("workbook part: {}", workbook.part()));
+    Ok((package, workbook))
+}
+
+/// Read the cells `targets` name.
+fn get(path: &Path, targets: &[String], out: &Out) -> xlsplice::Result<Vec<CellReport>> {
+    let (mut package, workbook) = open(path, out)?;
+    out.trace(&format!("reading {} target(s)", targets.len()));
+    cells::read(&mut package, &workbook, targets)
 }
 
 /// The payload of a `selftest` that was asked for nothing.

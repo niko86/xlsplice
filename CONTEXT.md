@@ -19,8 +19,17 @@ An edit that replaces the bytes of named nodes inside one part and leaves every 
 _Avoid_: patch, update, rewrite
 
 **Target**:
-The parts and nodes a command names for change. Everything outside the target is untouched.
+What a command is pointed at. On the command line, one operand naming a cell,
+by address or by defined name. Inside the tool, the parts and nodes a command
+names for change; everything outside the target is untouched.
 _Avoid_: scope, selection
+
+**Relationship**:
+What one part says another is to it, declared by id in the `_rels` part beside
+the part that names it. A sheet's worksheet part is reached this way, and so
+is the shared string table. Nothing but a relationship says which worksheet
+part belongs to which sheet.
+_Avoid_: link, pointer
 
 **Envelope**:
 Everything in a worksheet part outside `<sheetData>`. Say _worksheet envelope_
@@ -54,6 +63,30 @@ _Avoid_: level, visibility
 Whether a sheet's tab is shown: `visible`, `hidden` or `veryHidden`, spelled
 as the package spells them. What is meant by a sheet's visibility.
 _Avoid_: hidden flag, tab state
+
+**Stored type**:
+How a cell's value is stored, spelled as the cell's `t` attribute spells it:
+`n`, `s`, `str`, `inlineStr`, `b`, `e` or `d`. A cell that is absent, or
+present and holding no value, is `empty`.
+_Avoid_: data type, cell type
+
+**Shared string**:
+Text a cell holds as an index into the package's one string table rather than
+in the cell. An _inline string_ is the same text held in the cell itself. The
+rich-text runs of either are one string, and phonetic text is no part of it.
+_Avoid_: sst entry, interned string
+
+**Shared formula**:
+One formula filled across a range. Its _master_ carries the formula text and
+the range; each _child_ carries only the _group_ the two have in common, and
+takes its formula from the master. A master is never overwritten, because that
+orphans its children.
+_Avoid_: filled formula, formula group
+
+**Style index**:
+The number on a cell pointing into the package's formats. A cell declaring
+none carries index 0, the default format.
+_Avoid_: format id, xf
 
 ### The contract
 

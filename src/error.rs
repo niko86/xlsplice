@@ -132,6 +132,13 @@ impl Error {
     pub fn exit_code(&self) -> u8 {
         self.code.exit_code()
     }
+
+    /// The same failure, said again with where it happened in front of it.
+    /// The code is kept, because where a failure happened does not change
+    /// what it was.
+    pub fn within(self, place: impl fmt::Display) -> Self {
+        Error::new(self.code, format!("{place}: {self}"))
+    }
 }
 
 impl fmt::Display for Error {
@@ -179,6 +186,14 @@ mod tests {
         for (code, _, _) in TABLE {
             assert_eq!(ErrorCode::ALL.iter().filter(|c| **c == code).count(), 1);
         }
+    }
+
+    #[test]
+    fn saying_where_a_failure_happened_keeps_the_code_it_had() {
+        let err = Error::unreadable("not valid XML").within("xl/worksheets/sheet1.xml");
+
+        assert_eq!(err.code(), ErrorCode::Unreadable);
+        assert_eq!(err.message(), "xl/worksheets/sheet1.xml: not valid XML");
     }
 
     #[test]

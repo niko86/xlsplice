@@ -11,6 +11,7 @@
 
 use serde::Serialize;
 
+use xlsplice::cells::{CellReport, Value};
 use xlsplice::workbook::{DefinedName, Resolved, Scope, Sheet, Workbook};
 
 /// The columns of `sheets`.
@@ -18,6 +19,12 @@ pub const SHEET_HEADERS: [&str; 2] = ["NAME", "STATE"];
 
 /// The columns of `names`.
 pub const NAME_HEADERS: [&str; 5] = ["NAME", "SCOPE", "REFERS TO", "ANCHOR", "REASON"];
+
+/// The columns of `get`.
+pub const CELL_HEADERS: [&str; 11] = [
+    "TARGET", "NAME", "ADDRESS", "TYPE", "VALUE", "RAW", "STYLE", "FORMULA", "ROLE", "RANGE",
+    "GROUP",
+];
 
 /// The payload of `sheets --json`.
 #[derive(Serialize)]
@@ -151,5 +158,200 @@ fn scope_kind(scope: &Scope) -> &'static str {
     match scope {
         Scope::Workbook => "workbook",
         Scope::Sheet(_) => "sheet",
+    }
+}
+
+/// The payload of `get --json`.
+#[derive(Serialize)]
+pub struct Cells {
+    cells: Vec<CellEntry>,
+}
+
+#[derive(Serialize)]
+struct CellEntry {
+    /// The operand exactly as it was given.
+    target: String,
+    /// The defined name the operand went through, in the package's own
+    /// spelling, or `null` when the operand was an address.
+    name: Option<String>,
+    /// The sheet, in the package's own spelling.
+    sheet: String,
+    /// The cell in A1 form.
+    cell: String,
+    /// Both together, quoted as a reference: what `get` would accept back.
+    address: String,
+    /// The type the value is stored as: `n`, `s`, `str`, `inlineStr`, `b`,
+    /// `e`, `d`, or `empty` for a cell that stores no value.
+    #[serde(rename = "type")]
+    kind: &'static str,
+    /// The value, typed: a number, a string, a boolean, or `null` for a cell
+    /// that stores no value.
+    value: serde_json::Value,
+    /// The exact stored text; for a shared-string cell, the string index.
+    /// `null` for a cell that stores no value.
+    raw: Option<String>,
+    /// The cell's formula, or `null`.
+    formula: Option<FormulaEntry>,
+    /// The style index, or `null` for a cell the part does not hold.
+    style: Option<u32>,
+}
+
+#[derive(Serialize)]
+struct FormulaEntry {
+    /// The formula text as stored, without a leading `=`. A shared child
+    /// stores none of its own, and carries the empty string.
+    text: String,
+    /// `plain`, `shared_master`, `shared_child`, `array` or `data_table`.
+    role: &'static str,
+    /// The range a shared master or an array formula covers, else `null`.
+    range: Option<String>,
+    /// The shared group a master or a child belongs to, else `null`.
+    group: Option<u32>,
+}
+
+/// The payload of `get`.
+pub fn cells(reports: &[CellReport]) -> Cells {
+    Cells {
+        cells: reports.iter().map(cell_entry).collect(),
+    }
+}
+
+fn cell_entry(report: &CellReport) -> CellEntry {
+    CellEntry {
+        target: report.target.clone(),
+        name: report.name.clone(),
+        sheet: report.address.sheet.clone(),
+        cell: report.address.cell.a1(),
+        address: report.address.to_string(),
+        kind: report.kind.as_str(),
+        value: match &report.value {
+            Value::Number(number) => number_json(*number),
+            Value::Text(text) => serde_json::Value::String(text.clone()),
+            Value::Bool(yes) => serde_json::Value::Bool(*yes),
+            Value::Empty => serde_json::Value::Null,
+        },
+        raw: report.raw.clone(),
+        formula: report.formula.as_ref().map(|formula| FormulaEntry {
+            text: formula.text.clone(),
+            role: formula.role.as_str(),
+            range: formula.range.clone(),
+            group: formula.group,
+        }),
+        style: report.style,
+    }
+}
+
+/// The rows of `get`, one per target, in the order the targets were given.
+pub fn cell_rows(reports: &[CellReport]) -> Vec<Vec<String>> {
+    reports.iter().map(cell_row).collect()
+}
+
+/// A cell's row. Every row has all eleven fields, whatever the cell holds, so
+/// a field is always the same field to `cut`; the formula's three trail at the
+/// end because most cells have none.
+fn cell_row(report: &CellReport) -> Vec<String> {
+    let (text, role, range, group) = match &report.formula {
+        None => (String::new(), String::new(), String::new(), String::new()),
+        Some(formula) => (
+            formula.text.clone(),
+            formula.role.as_str().to_owned(),
+            formula.range.clone().unwrap_or_default(),
+            formula.group.map(|si| si.to_string()).unwrap_or_default(),
+        ),
+    };
+    vec![
+        report.target.clone(),
+        report.name.clone().unwrap_or_default(),
+        report.address.to_string(),
+        report.kind.as_str().to_owned(),
+        value_text(&report.value),
+        report.raw.clone().unwrap_or_default(),
+        report.style.map(|s| s.to_string()).unwrap_or_default(),
+        text,
+        role,
+        range,
+        group,
+    ]
+}
+
+/// A number as JSON.
+///
+/// An integral value is written without a decimal point, which is the form
+/// the package holds it in and the form a write puts back, so a value read
+/// out of one cell is the value written into another. Beyond the range where
+/// a double counts in whole numbers there is nothing to be gained by it, so
+/// the plain form takes over. A cell reports only finite numbers, so the last
+/// arm is a guard the type cannot carry rather than a case that arises: a
+/// renderer answers with null sooner than it panics.
+fn number_json(number: f64) -> serde_json::Value {
+    const EXACT: f64 = 9_007_199_254_740_992.0;
+    if number.fract() == 0.0 && number.abs() <= EXACT {
+        return serde_json::Value::Number((number as i64).into());
+    }
+    serde_json::Number::from_f64(number).map_or(serde_json::Value::Null, serde_json::Value::Number)
+}
+
+/// A value as one field of a row. A number is written in the shortest form
+/// that reads back as itself, and a boolean as the word Excel uses.
+fn value_text(value: &Value) -> String {
+    match value {
+        Value::Number(number) => number.to_string(),
+        Value::Text(text) => text.clone(),
+        Value::Bool(yes) => yes.to_string(),
+        Value::Empty => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use xlsplice::reference::{Address, Cell};
+    use xlsplice::worksheet::StoredType;
+
+    fn report(value: Value) -> CellReport {
+        CellReport {
+            target: "Inputs!A1".to_owned(),
+            name: None,
+            address: Address {
+                sheet: "Inputs".to_owned(),
+                cell: Cell::parse("A1").expect("the test asks for a cell"),
+            },
+            kind: StoredType::Number,
+            value,
+            raw: Some("1".to_owned()),
+            formula: None,
+            style: Some(0),
+        }
+    }
+
+    #[test]
+    fn an_integral_number_carries_no_decimal_point_and_a_fractional_one_does() {
+        assert_eq!(number_json(1.0).to_string(), "1");
+        assert_eq!(number_json(-3.0).to_string(), "-3");
+        assert_eq!(number_json(2.5).to_string(), "2.5");
+    }
+
+    #[test]
+    fn a_number_too_large_to_count_in_whole_numbers_stays_a_double() {
+        let huge = number_json(1e300);
+
+        assert!(huge.is_f64(), "{huge} must stay a double");
+        assert_eq!(huge.as_f64(), Some(1e300));
+    }
+
+    #[test]
+    fn a_value_in_a_row_is_written_the_way_a_person_would_read_it() {
+        assert_eq!(value_text(&Value::Number(1.0)), "1");
+        assert_eq!(value_text(&Value::Number(2.5)), "2.5");
+        assert_eq!(value_text(&Value::Bool(true)), "true");
+        assert_eq!(value_text(&Value::Text("hello".to_owned())), "hello");
+        assert_eq!(value_text(&Value::Empty), "");
+    }
+
+    #[test]
+    fn every_row_has_one_field_per_column_whatever_the_cell_holds() {
+        for value in [Value::Number(1.0), Value::Empty] {
+            assert_eq!(cell_row(&report(value)).len(), CELL_HEADERS.len());
+        }
     }
 }

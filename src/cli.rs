@@ -54,6 +54,19 @@ pub enum Command {
         file: PathBuf,
     },
 
+    /// Read one or more cells, each named by an address or a defined name.
+    Get {
+        /// The package to read.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+
+        /// The cells to read: `Sheet!A1`, a workbook-scoped defined name, or
+        /// `Sheet!Name` for one scoped to a sheet. A name resolves to its
+        /// anchor. One result comes back per target, in the order given.
+        #[arg(value_name = "TARGET", required = true)]
+        targets: Vec<String>,
+    },
+
     /// Print the version of xlsplice.
     Version,
 
@@ -95,6 +108,7 @@ impl Command {
         match self {
             Command::Sheets { .. } => "sheets",
             Command::Names { .. } => "names",
+            Command::Get { .. } => "get",
             Command::Version => "version",
             #[cfg(debug_assertions)]
             Command::Selftest { .. } => "selftest",

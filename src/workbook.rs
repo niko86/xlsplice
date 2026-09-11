@@ -13,13 +13,8 @@ use roxmltree::{Document, Node};
 use crate::error::{Error, Result};
 use crate::package::Package;
 use crate::reference::{Address, RefersTo, parse_refers_to};
-
-/// The relationship type of the package's main document.
-const OFFICE_DOCUMENT: &str =
-    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
-
-/// The root relationships part, which names the workbook part.
-const ROOT_RELS: &str = "_rels/.rels";
+use crate::relationships::{OFFICE_DOCUMENT, Relationships, part_or_conventional};
+use crate::xml::{children, text_of};
 
 /// Where the workbook part sits in every package Excel writes, used when the
 /// root relationships do not name one.
@@ -56,6 +51,9 @@ pub struct Sheet {
     pub name: String,
     /// Whether the tab is shown.
     pub state: SheetState,
+    /// The relationship naming the part that holds the sheet's cells. A
+    /// package another tool has mangled can lose it.
+    pub rel_id: Option<String>,
 }
 
 /// Where a defined name can be seen from.
@@ -118,6 +116,7 @@ pub struct DefinedName {
 /// A package's sheets and defined names.
 #[derive(Debug)]
 pub struct Workbook {
+    part: String,
     sheets: Vec<Sheet>,
     defined_names: Vec<DefinedName>,
 }
@@ -127,12 +126,20 @@ impl Workbook {
     pub fn read(package: &mut Package) -> Result<Self> {
         let part = workbook_part_path(package)?;
         let xml = package.read_part_text(&part)?;
-        Workbook::parse(&xml)
-            .map_err(|err| Error::new(err.code(), format!("{}: {err}", package.path().display())))
+        Workbook::parse_part(&xml, &part).map_err(|err| err.within(package.path().display()))
     }
 
     /// Build the model from the text of a workbook part.
+    ///
+    /// The part path a model built this way carries is the conventional one,
+    /// because the text alone does not say where it came from. Only
+    /// [`Workbook::read`] knows that, and it says so.
     pub fn parse(xml: &str) -> Result<Self> {
+        Workbook::parse_part(xml, CONVENTIONAL_WORKBOOK)
+    }
+
+    /// Build the model from the text of the workbook part at `part`.
+    fn parse_part(xml: &str, part: &str) -> Result<Self> {
         let document = Document::parse(xml).map_err(|err| {
             Error::unreadable(format!("the workbook part is not valid XML: {err}"))
         })?;
@@ -146,9 +153,17 @@ impl Workbook {
         let sheets = read_sheets(root)?;
         let defined_names = read_defined_names(root, &sheets)?;
         Ok(Workbook {
+            part: part.to_owned(),
             sheets,
             defined_names,
         })
+    }
+
+    /// The part the workbook was read from. Every relationship the workbook
+    /// owns, to a worksheet or to the shared string table, resolves against
+    /// it.
+    pub fn part(&self) -> &str {
+        &self.part
     }
 
     /// Every sheet, in workbook order.
@@ -167,59 +182,40 @@ impl Workbook {
     pub fn sheet_named(&self, name: &str) -> Option<&Sheet> {
         sheet_named_in(&self.sheets, name)
     }
+
+    /// The defined name called `name` and visible from `scope`, matched the
+    /// way Excel matches it: without regard to case. A scope is exact, so a
+    /// workbook-scoped lookup never finds a sheet-scoped name, or the other
+    /// way about.
+    pub fn name_in_scope(&self, name: &str, scope: &Scope) -> Option<&DefinedName> {
+        let wanted = name.to_lowercase();
+        self.defined_names
+            .iter()
+            .find(|defined| defined.scope == *scope && defined.name.to_lowercase() == wanted)
+    }
+
+    /// Every defined name visible from `scope`, in declaration order, for a
+    /// message that has to say what was there instead.
+    pub fn names_in_scope(&self, scope: &Scope) -> Vec<&str> {
+        self.defined_names
+            .iter()
+            .filter(|defined| defined.scope == *scope)
+            .map(|defined| defined.name.as_str())
+            .collect()
+    }
 }
 
 /// The path of the workbook part: what the root relationships point the
 /// main document at, falling back to where Excel always puts it for a
 /// package whose root relationships are missing or silent.
 fn workbook_part_path(package: &mut Package) -> Result<String> {
-    if let Some(target) = office_document_target(package)?
-        && package.has_part(&target)
-    {
-        return Ok(target);
-    }
-    if package.has_part(CONVENTIONAL_WORKBOOK) {
-        return Ok(CONVENTIONAL_WORKBOOK.to_owned());
-    }
-    Err(Error::unreadable(format!(
-        "{} holds no workbook part: it is a zip container, but not an Excel package.",
-        package.path().display()
-    )))
-}
-
-/// The target of the root relationship to the main document, if there is one.
-fn office_document_target(package: &mut Package) -> Result<Option<String>> {
-    if !package.has_part(ROOT_RELS) {
-        return Ok(None);
-    }
-    let xml = package.read_part_text(ROOT_RELS)?;
-    let document = Document::parse(&xml).map_err(|err| {
+    let named = Relationships::read(package, "")?.part_of_kind(OFFICE_DOCUMENT);
+    part_or_conventional(package, named, CONVENTIONAL_WORKBOOK).ok_or_else(|| {
         Error::unreadable(format!(
-            "{}: {ROOT_RELS} is not valid XML: {err}",
+            "{} holds no workbook part: it is a zip container, but not an Excel package.",
             package.path().display()
         ))
-    })?;
-    Ok(document
-        .root_element()
-        .children()
-        .filter(|node| node.is_element() && node.tag_name().name() == "Relationship")
-        .find(|node| node.attribute("Type") == Some(OFFICE_DOCUMENT))
-        .and_then(|node| node.attribute("Target"))
-        // The root relationships sit at the package root, so a target is
-        // already a part path once any leading slash is off it.
-        .map(|target| target.trim_start_matches('/').to_owned()))
-}
-
-/// The direct children of `parent` that are elements called `name`. Only the
-/// local name is compared, so a part written with a prefix, as every part a
-/// re-serialising tool has touched is, reads the same as one without.
-fn children<'a, 'input>(
-    parent: Node<'a, 'input>,
-    name: &'static str,
-) -> impl Iterator<Item = Node<'a, 'input>> {
-    parent
-        .children()
-        .filter(move |node| node.is_element() && node.tag_name().name() == name)
+    })
 }
 
 fn read_sheets(root: Node) -> Result<Vec<Sheet>> {
@@ -245,6 +241,10 @@ fn read_sheets(root: Node) -> Result<Vec<Sheet>> {
             Ok(Sheet {
                 name: name.to_owned(),
                 state,
+                rel_id: node
+                    .attributes()
+                    .find(|attribute| attribute.name() == "id")
+                    .map(|attribute| attribute.value().to_owned()),
             })
         })
         .collect()
@@ -260,14 +260,7 @@ fn read_defined_names(root: Node, sheets: &[Sheet]) -> Result<Vec<DefinedName>> 
                 Error::unreadable("a <definedName> in the workbook part has no name attribute")
             })?;
             let scope = scope_of(node, name, sheets)?;
-            // An entity reference splits the element's text in two, so every
-            // text node is taken rather than only the first.
-            let refers_to: String = node
-                .descendants()
-                .filter(|child| child.is_text())
-                .filter_map(|child| child.text())
-                .collect();
-            let refers_to = refers_to.trim().to_owned();
+            let refers_to = text_of(node).trim().to_owned();
             let resolved = resolve(&refers_to, &scope, sheets);
             Ok(DefinedName {
                 name: name.to_owned(),
@@ -378,15 +371,18 @@ mod tests {
             [
                 Sheet {
                     name: "Data".to_owned(),
-                    state: SheetState::Visible
+                    state: SheetState::Visible,
+                    rel_id: Some("rId1".to_owned()),
                 },
                 Sheet {
                     name: "Notes".to_owned(),
-                    state: SheetState::Hidden
+                    state: SheetState::Hidden,
+                    rel_id: Some("rId2".to_owned()),
                 },
                 Sheet {
                     name: "Parameters".to_owned(),
-                    state: SheetState::VeryHidden
+                    state: SheetState::VeryHidden,
+                    rel_id: Some("rId3".to_owned()),
                 },
             ]
         );
@@ -426,6 +422,57 @@ mod tests {
             );
         }
         assert_eq!(workbook.sheet_named("Absent"), None);
+    }
+
+    #[test]
+    fn a_name_is_found_in_its_own_scope_without_regard_to_case() {
+        let workbook = parse(&format!(
+            r#"{THREE_SHEETS}<definedNames>
+                <definedName name="Rate">Data!$A$1</definedName>
+                <definedName name="Rate" localSheetId="1">Notes!$A$1</definedName>
+              </definedNames>"#
+        ));
+
+        for spelling in ["Rate", "rate", "RATE"] {
+            assert_eq!(
+                workbook
+                    .name_in_scope(spelling, &Scope::Workbook)
+                    .map(|name| name.refers_to.as_str()),
+                Some("Data!$A$1"),
+                "{spelling}"
+            );
+        }
+        assert_eq!(
+            workbook
+                .name_in_scope("rate", &Scope::Sheet("Notes".to_owned()))
+                .map(|name| name.refers_to.as_str()),
+            Some("Notes!$A$1"),
+            "a scope is exact, so the sheet-scoped name is a different name"
+        );
+        assert_eq!(
+            workbook.name_in_scope("Rate", &Scope::Sheet("Data".to_owned())),
+            None
+        );
+    }
+
+    #[test]
+    fn the_names_of_a_scope_come_back_in_declaration_order() {
+        let workbook = parse(&format!(
+            r#"{THREE_SHEETS}<definedNames>
+                <definedName name="Second" localSheetId="1">Notes!$A$2</definedName>
+                <definedName name="First">Data!$A$1</definedName>
+                <definedName name="Third">Data!$A$3</definedName>
+              </definedNames>"#
+        ));
+
+        assert_eq!(
+            workbook.names_in_scope(&Scope::Workbook),
+            ["First", "Third"]
+        );
+        assert_eq!(
+            workbook.names_in_scope(&Scope::Sheet("Notes".to_owned())),
+            ["Second"]
+        );
     }
 
     #[test]

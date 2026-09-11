@@ -82,6 +82,56 @@ impl fmt::Display for Address {
     }
 }
 
+/// What one operand of a read or a write names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    /// One cell of one sheet, written out in full.
+    Address { sheet: String, cell: Cell },
+    /// A defined name scoped to one sheet.
+    SheetName { sheet: String, name: String },
+    /// A defined name scoped to the whole workbook.
+    Name(String),
+}
+
+impl Target {
+    /// Read one operand.
+    ///
+    /// The rule is the whole of it: a token holding `!` splits at its last
+    /// one, and what follows is an address if it reads as a cell and a
+    /// sheet-scoped defined name if it does not. A token with no `!` is a
+    /// workbook-scoped defined name. The last `!` rather than the first,
+    /// because a sheet name may hold one and a defined name may not.
+    ///
+    /// Nothing is looked up here: a sheet this package has never heard of
+    /// still parses, and is reported as missing by whoever goes looking.
+    pub fn parse(token: &str) -> Self {
+        let Some((sheet, rest)) = token.rsplit_once('!') else {
+            return Target::Name(token.to_owned());
+        };
+        let sheet = unquote_sheet_name(sheet);
+        match Cell::parse(rest) {
+            Some(cell) => Target::Address { sheet, cell },
+            None => Target::SheetName {
+                sheet,
+                name: rest.to_owned(),
+            },
+        }
+    }
+}
+
+/// Undo the quoting [`quote_sheet_name`] applies: the outer quotes come off
+/// and the doubled ones inside become single. A name that is not quoted is
+/// already its own spelling.
+pub fn unquote_sheet_name(text: &str) -> String {
+    match text
+        .strip_prefix('\'')
+        .and_then(|body| body.strip_suffix('\''))
+    {
+        Some(inner) => inner.replace("\'\'", "\'"),
+        None => text.to_owned(),
+    }
+}
+
 /// A sheet name as it appears inside a reference: quoted, with the quotes
 /// doubled inside, only when a bare name would not lex back to the same thing.
 pub fn quote_sheet_name(name: &str) -> String {
@@ -536,6 +586,93 @@ mod tests {
     fn text_joined_by_an_operator_is_a_formula_however_it_begins_and_ends() {
         for text in [r#""a"&"b""#, r#""a"&Sheet1!$A$1"#, r#""unterminated"#] {
             assert_eq!(parse_refers_to(text), RefersTo::Formula, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_token_holding_a_cell_after_its_last_bang_is_an_address() {
+        assert_eq!(
+            Target::parse("Inputs!B2"),
+            Target::Address {
+                sheet: "Inputs".to_owned(),
+                cell: cell(2, 2),
+            }
+        );
+        assert_eq!(
+            Target::parse("Inputs!$B$2"),
+            Target::Address {
+                sheet: "Inputs".to_owned(),
+                cell: cell(2, 2),
+            },
+            "dollars are no more significant in an operand than in a reference"
+        );
+    }
+
+    #[test]
+    fn a_quoted_sheet_in_an_operand_gives_up_its_quotes() {
+        assert_eq!(
+            Target::parse("'My Sheet'!A1"),
+            Target::Address {
+                sheet: "My Sheet".to_owned(),
+                cell: cell(1, 1),
+            }
+        );
+        assert_eq!(
+            Target::parse("'It''s'!A1"),
+            Target::Address {
+                sheet: "It's".to_owned(),
+                cell: cell(1, 1),
+            }
+        );
+    }
+
+    #[test]
+    fn a_token_whose_tail_is_not_a_cell_names_a_sheet_scoped_name() {
+        assert_eq!(
+            Target::parse("Notes!LocalNote"),
+            Target::SheetName {
+                sheet: "Notes".to_owned(),
+                name: "LocalNote".to_owned(),
+            }
+        );
+        assert_eq!(
+            Target::parse("Notes!A1048577"),
+            Target::SheetName {
+                sheet: "Notes".to_owned(),
+                name: "A1048577".to_owned(),
+            },
+            "a reference off the grid is not a cell, so it is a name"
+        );
+    }
+
+    #[test]
+    fn a_token_with_no_bang_names_a_workbook_scoped_name() {
+        assert_eq!(
+            Target::parse("MergedInput"),
+            Target::Name("MergedInput".to_owned())
+        );
+        assert_eq!(
+            Target::parse("A1"),
+            Target::Name("A1".to_owned()),
+            "an address needs a sheet; a bare cell reads as a name"
+        );
+    }
+
+    #[test]
+    fn the_last_bang_splits_the_token_so_a_sheet_may_hold_one() {
+        assert_eq!(
+            Target::parse("'Wow!'!A1"),
+            Target::Address {
+                sheet: "Wow!".to_owned(),
+                cell: cell(1, 1),
+            }
+        );
+    }
+
+    #[test]
+    fn a_sheet_name_survives_a_round_trip_through_quoting() {
+        for name in ["Sheet1", "My Sheet", "It's", "2024", "A1", "", "a-b"] {
+            assert_eq!(unquote_sheet_name(&quote_sheet_name(name)), name, "{name}");
         }
     }
 

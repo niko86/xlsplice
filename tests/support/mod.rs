@@ -79,6 +79,26 @@ impl Workspace {
         )
     }
 
+    /// Write the whole feature package: the workbook of [`feature_workbook`]
+    /// with the relationships, worksheets and shared strings that make its
+    /// sheets readable.
+    pub fn feature_package(&self, name: &str) -> PathBuf {
+        let workbook = feature_workbook();
+        self.zip(
+            name,
+            &[
+                (CONTENT_TYPES_PART, FEATURE_CONTENT_TYPES),
+                (ROOT_RELS_PART, ROOT_RELS),
+                (WORKBOOK_PART, &workbook),
+                (WORKBOOK_RELS_PART, WORKBOOK_RELS),
+                (SHEET1_PART, INPUTS_SHEET),
+                (SHEET2_PART, NOTES_SHEET),
+                (SHEET3_PART, PARAMETERS_SHEET),
+                (SHARED_STRINGS_PART, SHARED_STRINGS),
+            ],
+        )
+    }
+
     /// The directory itself, for a test that needs to name a path in it.
     pub fn dir(&self) -> &Path {
         &self.dir
@@ -94,6 +114,11 @@ impl Drop for Workspace {
 pub const CONTENT_TYPES_PART: &str = "[Content_Types].xml";
 pub const ROOT_RELS_PART: &str = "_rels/.rels";
 pub const WORKBOOK_PART: &str = "xl/workbook.xml";
+pub const WORKBOOK_RELS_PART: &str = "xl/_rels/workbook.xml.rels";
+pub const SHEET1_PART: &str = "xl/worksheets/sheet1.xml";
+pub const SHEET2_PART: &str = "xl/worksheets/sheet2.xml";
+pub const SHEET3_PART: &str = "xl/worksheets/sheet3.xml";
+pub const SHARED_STRINGS_PART: &str = "xl/sharedStrings.xml";
 
 pub const CONTENT_TYPES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -137,6 +162,88 @@ pub fn feature_workbook() -> String {
   </definedNames>"#,
     )
 }
+
+/// The content types of the feature package, declaring every part in it.
+pub const FEATURE_CONTENT_TYPES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+</Types>"#;
+
+/// What the workbook's relationship ids point at: one per sheet, in the order
+/// `feature_workbook` declares them, and the shared string table.
+pub const WORKBOOK_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/>
+  <Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+</Relationships>"#;
+
+/// The Inputs sheet: one cell of every stored type, a plain formula, a shared
+/// formula with a child, the anchor of the merged range, a cell holding a
+/// style and no value, and a gap where row 4 and row 5 would be.
+pub const INPUTS_SHEET: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:K6"/>
+  <sheetData>
+    <row r="1" spans="1:11">
+      <c r="A1"><v>1</v></c>
+      <c r="B1" s="1" t="s"><v>0</v></c>
+      <c r="C1" s="2" t="d"><v>2026-09-11T00:00:00</v></c>
+      <c r="D1" t="b"><v>1</v></c>
+      <c r="E1" t="e"><v>#DIV/0!</v></c>
+      <c r="F1" t="str"><f>CONCATENATE("a","b")</f><v>ab</v></c>
+      <c r="G1" t="inlineStr"><is><t xml:space="preserve">inline </t></is></c>
+      <c r="H1" t="inlineStr"><is><r><t>in</t></r><r><t>line</t></r></is></c>
+      <c r="I1" t="s"><v>1</v></c>
+      <c r="J1" t="s"><v>3</v></c>
+      <c r="K1" t="b"><v>0</v></c>
+    </row>
+    <row r="2" spans="1:5">
+      <c r="A2"><v>2.5</v></c>
+      <c r="B2" s="4" t="s"><v>2</v></c>
+      <c r="D2"><f>SUM(A1:A5)</f><v>15</v></c>
+      <c r="E2"><f t="shared" ref="E2:E3" si="0">A2*2</f><v>5</v></c>
+    </row>
+    <row r="3" spans="1:5">
+      <c r="A3"><v>-3</v></c>
+      <c r="E3"><f t="shared" si="0"/><v>-6</v></c>
+    </row>
+    <row r="6" spans="1:1"><c r="A6" s="5"/></row>
+  </sheetData>
+  <mergeCells count="1"><mergeCell ref="B2:C3"/></mergeCells>
+</worksheet>"#;
+
+/// The Notes sheet, holding the cell the sheet-scoped name points at.
+pub const NOTES_SHEET: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="5" spans="1:1"><c r="A5" t="inlineStr"><is><t>note</t></is></c></row>
+  </sheetData>
+</worksheet>"#;
+
+/// The Parameters sheet, which holds no cells at all.
+pub const PARAMETERS_SHEET: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData/>
+</worksheet>"#;
+
+/// The shared string table: a plain string, one built of rich-text runs, the
+/// string in the merged range's anchor, and one carrying phonetic text that
+/// is no part of its value.
+pub const SHARED_STRINGS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="5" uniqueCount="4">
+  <si><t>hello</t></si>
+  <si><r><rPr><b/></rPr><t>rich</t></r><r><t> text</t></r></si>
+  <si><t>merged</t></si>
+  <si><t>東京</t><rPh sb="0" eb="2"><t>トウキョウ</t></rPh><phoneticPr fontId="1"/></si>
+</sst>"#;
 
 /// Run the binary with `args` and both streams captured, so stdout is a pipe
 /// rather than a terminal.

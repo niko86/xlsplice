@@ -5,3 +5,15 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
+# No colour: the contract says human output is plain, so clap's `color`
+# feature is left out rather than switched off at runtime.
+clap = { version = "4.6.6", default-features = false, features = [
+    "std",
+    "help",
+    "usage",
+    "error-context",
+    "suggestions",
+    "derive",
+] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"

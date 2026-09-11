@@ -1,0 +1,30 @@
+# The only workflow that runs on a push or a pull request. Actions minutes on
+# this private repository are limited, so this is one job on one platform, with
+# the cargo cache and with superseded runs cancelled. Release builds belong on
+# a version tag, in their own workflow; the Excel oracle suite never runs here.
+name: test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: cargo test (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo test --locked

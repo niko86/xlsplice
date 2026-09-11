@@ -18,6 +18,7 @@ use crate::error::{Error, Result};
 use crate::package::Package;
 use crate::reference::Cell;
 use crate::relationships::Relationships;
+use crate::splice::{Element, Splice};
 use crate::strings::string_item_text;
 use crate::workbook::Workbook;
 use crate::xml::{children, text_of};
@@ -184,6 +185,20 @@ pub enum Found {
     NoRow,
 }
 
+/// The same three answers, in terms of the element rather than its contents.
+///
+/// A write needs the element, because a splice is taken from where the
+/// element sits in the part; a read needs only what it holds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Located<'a, 'input> {
+    /// The cell element.
+    Cell(Node<'a, 'input>),
+    /// The row is there; the cell is not.
+    Absent,
+    /// The part holds no row of that number.
+    NoRow,
+}
+
 /// The cells of one sheet, ready to be looked in.
 #[derive(Debug)]
 pub struct Worksheet<'a, 'input> {
@@ -209,15 +224,24 @@ impl<'a, 'input> Worksheet<'a, 'input> {
         })
     }
 
-    /// Look `cell` up.
+    /// Look `cell` up and read what it stores.
     pub fn cell(&self, cell: Cell) -> Result<Found> {
+        Ok(match self.locate(cell)? {
+            Located::Cell(node) => Found::Cell(stored(node, cell)?),
+            Located::Absent => Found::Absent,
+            Located::NoRow => Found::NoRow,
+        })
+    }
+
+    /// Find the element `cell` sits in, without reading it.
+    pub fn locate(&self, cell: Cell) -> Result<Located<'a, 'input>> {
         let Some(row) = self.row(cell.row())? else {
-            return Ok(Found::NoRow);
+            return Ok(Located::NoRow);
         };
-        match cell_in(row, cell)? {
-            Some(node) => Ok(Found::Cell(stored(node, cell)?)),
-            None => Ok(Found::Absent),
-        }
+        Ok(match cell_in(row, cell)? {
+            Some(node) => Located::Cell(node),
+            None => Located::Absent,
+        })
     }
 
     /// The row element numbered `wanted`. A row declares its number; one that
@@ -286,10 +310,7 @@ fn stored(node: Node, at: Cell) -> Result<Stored> {
             Some(_) => StoredType::declared(declared, at)?,
         },
         raw,
-        formula: children(node, "f")
-            .next()
-            .map(|node| Formula::of(node, at))
-            .transpose()?,
+        formula: formula_of(node, at)?,
         style: match node.attribute("s") {
             None => 0,
             Some(index) => index.parse().map_err(|_| {
@@ -299,6 +320,161 @@ fn stored(node: Node, at: Cell) -> Result<Stored> {
             })?,
         },
     })
+}
+
+/// A value on its way into a cell, typed by what it is to become there.
+///
+/// The three the write path knows are the three `set` offers. A date is a
+/// number once the workbook's date system has had its say, and clearing a
+/// cell is not writing a value at all, so neither is a variant here.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Written {
+    /// A number, stored without a type attribute: what a cell with no `t`
+    /// holds.
+    Number(f64),
+    /// Text, stored in the cell as an inline string so that the shared string
+    /// table is never a target (ADR-0001).
+    Text(String),
+    /// A boolean, stored as `1` or `0`.
+    Bool(bool),
+}
+
+impl Written {
+    /// Read a number from the command line or a batch.
+    ///
+    /// Only a finite number is a number: Excel has no cell that holds an
+    /// infinity or a not-a-number, so asking for one is a usage error rather
+    /// than something to store.
+    pub fn number(text: &str) -> Result<Self> {
+        text.parse::<f64>()
+            .ok()
+            .filter(|number| number.is_finite())
+            .map(Written::Number)
+            .ok_or_else(|| {
+                Error::usage(format!(
+                    "'{text}' is not a number; --type number takes a finite \
+                     decimal number such as 42, -2.5 or 1e6"
+                ))
+            })
+    }
+
+    /// Read a boolean, in either the spelling the schema uses or the one
+    /// Excel shows, and in any case.
+    pub fn boolean(text: &str) -> Result<Self> {
+        match text.to_ascii_lowercase().as_str() {
+            "true" | "1" => Ok(Written::Bool(true)),
+            "false" | "0" => Ok(Written::Bool(false)),
+            _ => Err(Error::usage(format!(
+                "'{text}' is not a boolean; --type bool takes true or false, \
+                 or 1 or 0"
+            ))),
+        }
+    }
+
+    /// Read text, which is whatever was given, whitespace and all.
+    pub fn text(text: &str) -> Self {
+        Written::Text(text.to_owned())
+    }
+
+    /// The `t` attribute the cell carries once this is in it, or `None` for a
+    /// number, which declares no type.
+    fn declares(&self) -> Option<&'static str> {
+        match self {
+            Written::Number(_) => None,
+            Written::Text(_) => Some(StoredType::InlineString.as_str()),
+            Written::Bool(_) => Some(StoredType::Bool.as_str()),
+        }
+    }
+
+    /// What goes between the cell's tags, written with the same namespace
+    /// prefix the cell itself carries.
+    fn content(&self, prefix: &str) -> String {
+        match self {
+            Written::Number(number) => format!("<{prefix}v>{}</{prefix}v>", number_text(*number)),
+            Written::Bool(yes) => format!("<{prefix}v>{}</{prefix}v>", u8::from(*yes)),
+            Written::Text(text) => format!(
+                "<{prefix}is><{prefix}t{}>{}</{prefix}t></{prefix}is>",
+                space_attribute(text),
+                escape(text)
+            ),
+        }
+    }
+}
+
+/// A number in the shortest form that reads back as itself.
+///
+/// Rust's own form is that: the fewest decimal digits that parse back to the
+/// same double, and no decimal point when the value is integral, which is how
+/// a package spells a whole number. It is always positional, so a value at the
+/// far end of the range is written out in full rather than with an exponent.
+/// Excel writes an exponent there and both read back the same, so whether to
+/// follow it is a question for the oracle suite rather than a guess here.
+///
+/// Negative zero is written as zero: a cell has one zero, and it is not
+/// spelled with a sign.
+fn number_text(number: f64) -> String {
+    let number = if number == 0.0 { 0.0 } else { number };
+    number.to_string()
+}
+
+/// `xml:space="preserve"`, where the text has whitespace at an end that a
+/// reader would otherwise be free to drop. Excel writes the attribute under
+/// the same rule, so text written back unchanged is written back byte for
+/// byte.
+fn space_attribute(text: &str) -> &'static str {
+    let padded = text.starts_with(char::is_whitespace) || text.ends_with(char::is_whitespace);
+    if padded {
+        " xml:space=\"preserve\""
+    } else {
+        ""
+    }
+}
+
+/// Text as XML character data.
+///
+/// The three characters that would otherwise be markup are escaped. So is a
+/// carriage return, which a parser is required to turn into a line feed when
+/// it reads the part back: written as itself it would not survive the trip.
+fn escape(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '\r' => escaped.push_str("&#13;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+/// The formula the cell element carries, if it carries one.
+pub fn formula_of(node: Node, at: Cell) -> Result<Option<Formula>> {
+    children(node, "f")
+        .next()
+        .map(|node| Formula::of(node, at))
+        .transpose()
+}
+
+/// The splices that put `written` into the cell element `node`.
+///
+/// Two at most, and both inside the element: the type attribute the value
+/// needs, added, changed or taken away, and everything between the tags. Every
+/// other attribute the cell carries is left where it is, because nothing here
+/// touches a byte outside those two places.
+///
+/// `source` must be the text the node's document was parsed from.
+pub fn value_splices(node: Node<'_, '_>, source: &str, written: &Written) -> Result<Vec<Splice>> {
+    let element = Element::of(node, source)?;
+    let mut splices = Vec::new();
+    // The schema orders a cell's attributes r, s, t, so a type the cell does
+    // not yet declare goes in after whichever of the first two it carries.
+    if let Some(splice) = element.attribute_splice("t", written.declares(), &["r", "s"]) {
+        splices.push(splice);
+    }
+    splices.push(element.content_splice(&written.content(element.prefix())));
+    Ok(splices)
 }
 
 /// The part holding the cells of `sheet`, which is named in the package's own
@@ -549,6 +725,160 @@ mod tests {
         ] {
             let err = at(&sheet(body), "A1").expect_err(body);
             assert_eq!(err.code(), ErrorCode::Unreadable, "{body}");
+        }
+    }
+
+    /// The one cell of `xml` with `written` in it.
+    fn written_into(xml: &str, a1: &str, written: &Written) -> String {
+        let document = Document::parse(xml).expect("the test part must parse");
+        let at = Cell::parse(a1).expect("the test asks for a cell");
+        let node = match Worksheet::of(&document)
+            .expect("a worksheet")
+            .locate(at)
+            .expect("the cell must be locatable")
+        {
+            Located::Cell(node) => node,
+            other => panic!("{a1} is {other:?}, not a cell"),
+        };
+        let splices = value_splices(node, xml, written).expect("the cell must take the value");
+        crate::splice::apply(xml, &splices).expect("the splices must apply")
+    }
+
+    #[test]
+    fn a_number_is_written_with_no_type_attribute_and_the_old_one_taken_away() {
+        assert_eq!(
+            written_into(
+                &sheet(r#"<row r="1"><c r="A1" s="2" t="s"><v>0</v></c></row>"#),
+                "A1",
+                &Written::Number(42.0),
+            ),
+            sheet(r#"<row r="1"><c r="A1" s="2"><v>42</v></c></row>"#),
+        );
+    }
+
+    #[test]
+    fn text_is_written_as_an_inline_string_and_the_style_is_kept() {
+        assert_eq!(
+            written_into(
+                &sheet(r#"<row r="1"><c r="B1" s="1" t="s"><v>0</v></c></row>"#),
+                "B1",
+                &Written::text("hello"),
+            ),
+            sheet(r#"<row r="1"><c r="B1" s="1" t="inlineStr"><is><t>hello</t></is></c></row>"#),
+        );
+    }
+
+    #[test]
+    fn text_with_whitespace_at_an_end_says_so_and_text_without_does_not() {
+        for (text, expected) in [
+            (" padded ", r#"<t xml:space="preserve"> padded </t>"#),
+            ("plain", r#"<t>plain</t>"#),
+        ] {
+            let written = written_into(
+                &sheet(r#"<row r="1"><c r="A1"/></row>"#),
+                "A1",
+                &Written::text(text),
+            );
+            assert!(written.contains(expected), "{text:?} became {written}");
+        }
+    }
+
+    #[test]
+    fn text_that_would_be_markup_is_escaped_and_a_carriage_return_survives() {
+        let written = written_into(
+            &sheet(r#"<row r="1"><c r="A1"/></row>"#),
+            "A1",
+            &Written::text("a<b&c>d\re"),
+        );
+
+        assert!(
+            written.contains("<t>a&lt;b&amp;c&gt;d&#13;e</t>"),
+            "{written}"
+        );
+    }
+
+    #[test]
+    fn a_boolean_is_written_as_the_schema_spells_one() {
+        assert_eq!(
+            written_into(
+                &sheet(r#"<row r="1"><c r="A1"><v>1</v></c></row>"#),
+                "A1",
+                &Written::Bool(false),
+            ),
+            sheet(r#"<row r="1"><c r="A1" t="b"><v>0</v></c></row>"#),
+        );
+    }
+
+    #[test]
+    fn a_cell_holding_nothing_is_opened_to_take_a_value_and_keeps_its_style() {
+        assert_eq!(
+            written_into(
+                &sheet(r#"<row r="2"><c r="B2" s="4"/></row>"#),
+                "B2",
+                &Written::text("filled"),
+            ),
+            sheet(r#"<row r="2"><c r="B2" s="4" t="inlineStr"><is><t>filled</t></is></c></row>"#),
+        );
+    }
+
+    #[test]
+    fn writing_the_value_already_there_changes_no_byte_at_all() {
+        let xml = sheet(r#"<row r="1"><c r="A1" s="2"><v>2.5</v></c></row>"#);
+
+        assert_eq!(written_into(&xml, "A1", &Written::Number(2.5)), xml);
+    }
+
+    #[test]
+    fn a_prefixed_part_takes_its_value_in_the_same_prefix() {
+        let xml = format!(
+            r#"<x:worksheet xmlns:x="{NS}"><x:sheetData><x:row r="1"><x:c r="A1"><x:v>1</x:v></x:c></x:row></x:sheetData></x:worksheet>"#
+        );
+
+        assert!(
+            written_into(&xml, "A1", &Written::text("hi"))
+                .contains(r#"<x:c r="A1" t="inlineStr"><x:is><x:t>hi</x:t></x:is></x:c>"#),
+            "{}",
+            written_into(&xml, "A1", &Written::text("hi"))
+        );
+    }
+
+    #[test]
+    fn a_number_is_written_in_the_shortest_form_that_reads_back_as_itself() {
+        for (number, expected) in [
+            (42.0, "42"),
+            (-3.0, "-3"),
+            (2.5, "2.5"),
+            (0.0, "0"),
+            (-0.0, "0"),
+            (1e-7, "0.0000001"),
+            (0.1 + 0.2, "0.30000000000000004"),
+        ] {
+            assert_eq!(number_text(number), expected, "{number}");
+        }
+        // Shortest is worth nothing if it does not still read back as itself.
+        for number in [42.0, 2.5, 1e-7, 1e300, f64::MIN, 0.1 + 0.2] {
+            assert_eq!(
+                number_text(number)
+                    .parse::<f64>()
+                    .expect("the written form must parse"),
+                number,
+                "{number}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_number_that_is_not_one_is_a_usage_error_and_so_is_a_boolean_that_is_not() {
+        for text in ["", "hello", "1,5", "inf", "NaN", "2 "] {
+            let err = Written::number(text).expect_err(text);
+            assert_eq!(err.code(), ErrorCode::Usage, "{text}");
+        }
+        for text in ["TRUE", "False", "1", "0"] {
+            Written::boolean(text).expect(text);
+        }
+        for text in ["", "yes", "2"] {
+            let err = Written::boolean(text).expect_err(text);
+            assert_eq!(err.code(), ErrorCode::Usage, "{text}");
         }
     }
 

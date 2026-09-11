@@ -1,20 +1,33 @@
-//! The package layer: a zip container of parts, opened for reading.
+//! The package layer: a zip container of parts, opened for reading and
+//! rebuilt for writing.
 //!
 //! Nothing here knows what a part means. Its job is to say which parts a
-//! package holds, in container order, and to hand one over whole. Container
-//! order is kept because the write path must preserve it (ADR-0001), and a
-//! part is handed over exactly as stored, byte-order mark and all, because the
-//! splice layer will take byte ranges from the same text roxmltree parsed.
+//! package holds, in container order, to hand one over whole, and to put a
+//! package back together with some of them replaced. Container order is kept
+//! because ADR-0001 says the write path must preserve it, and a part is handed
+//! over exactly as stored, byte-order mark and all, because the splice layer
+//! takes byte ranges from the same text roxmltree parsed.
 //!
-//! Every failure here is [`unreadable`](crate::error::ErrorCode::Unreadable)
-//! or, for a part the caller named and the package does not have,
-//! [`not_found`](crate::error::ErrorCode::NotFound).
+//! [`Package::rebuild`] copies every part it was not given new bytes for with
+//! the container crate's raw copy, which keeps the compressed bytes, the
+//! method, the CRC and the timestamp; a replaced part is compressed afresh
+//! under the options its own entry carried. The container's own bytes may
+//! differ from the original's, which ADR-0001 records as a known deviation.
+//!
+//! Rebuilding gives back bytes and touches no disk. Putting those bytes
+//! somewhere safely is another level altogether, and lives in
+//! [`crate::atomic`].
+//!
+//! Failures here are [`unreadable`](crate::error::ErrorCode::Unreadable), or
+//! [`not_found`](crate::error::ErrorCode::NotFound) for a part the caller
+//! named and the package does not have.
 
+use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 
-use zip::ZipArchive;
+use zip::{ZipArchive, ZipWriter};
 
 use crate::error::{Error, Result};
 
@@ -96,5 +109,51 @@ impl Package {
                 self.path.display()
             ))
         })
+    }
+
+    /// The bytes of the whole package, with the parts named in `replaced`
+    /// carrying their new contents and every other part copied raw.
+    ///
+    /// Nothing reaches the disk here: the result is the package a caller may
+    /// then hand to [`crate::atomic::replace`].
+    pub fn rebuild(&mut self, replaced: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>> {
+        let file = self.path.clone();
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        for index in 0..self.archive.len() {
+            let entry = self.archive.by_index(index).map_err(|err| {
+                Error::unreadable(format!(
+                    "{}: part {index} cannot be read: {err}",
+                    file.display()
+                ))
+            })?;
+            let part = entry.name().to_owned();
+            let written = match replaced.get(&part) {
+                None => writer.raw_copy_file(entry),
+                Some(bytes) => {
+                    // The entry's own options carry its method, timestamp and
+                    // permissions, so a spliced part keeps everything about
+                    // its place in the container but its length.
+                    let options = entry.options();
+                    writer
+                        .start_file(&part, options)
+                        .and_then(|()| writer.write_all(bytes).map_err(Into::into))
+                }
+            };
+            written.map_err(|err| {
+                Error::internal(format!(
+                    "{}: part '{part}' cannot be written: {err}",
+                    file.display()
+                ))
+            })?;
+        }
+        Ok(writer
+            .finish()
+            .map_err(|err| {
+                Error::internal(format!(
+                    "{}: the rebuilt container will not close: {err}",
+                    file.display()
+                ))
+            })?
+            .into_inner())
     }
 }

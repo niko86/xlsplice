@@ -11,6 +11,7 @@
 
 use serde::Serialize;
 
+use xlsplice::batch::{OperationReport, Report};
 use xlsplice::cells::{CellReport, Value};
 use xlsplice::workbook::{DefinedName, Resolved, Scope, Sheet, Workbook};
 
@@ -19,6 +20,9 @@ pub const SHEET_HEADERS: [&str; 2] = ["NAME", "STATE"];
 
 /// The columns of `names`.
 pub const NAME_HEADERS: [&str; 5] = ["NAME", "SCOPE", "REFERS TO", "ANCHOR", "REASON"];
+
+/// The columns of `set`, and of every writing verb after it.
+pub const WRITE_HEADERS: [&str; 4] = ["TARGET", "NAME", "ADDRESS", "CHANGED"];
 
 /// The columns of `get`.
 pub const CELL_HEADERS: [&str; 11] = [
@@ -272,6 +276,90 @@ fn cell_row(report: &CellReport) -> Vec<String> {
         range,
         group,
     ]
+}
+
+/// The payload of a writing verb under `--json`.
+#[derive(Serialize)]
+pub struct WriteReport {
+    /// One result per operation, in the order the operations were given.
+    operations: Vec<OperationEntry>,
+    /// Which parts of the package the batch changed, added and removed.
+    parts: PartsEntry,
+    /// Where the result was written, or would have been under a dry run.
+    output: String,
+    /// Whether nothing was written because this was a dry run.
+    dry_run: bool,
+}
+
+#[derive(Serialize)]
+struct OperationEntry {
+    /// The operand exactly as it was given.
+    target: String,
+    /// The defined name the operand went through, in the package's own
+    /// spelling, or `null` when the operand was an address.
+    name: Option<String>,
+    /// The sheet, in the package's own spelling.
+    sheet: String,
+    /// The cell in A1 form.
+    cell: String,
+    /// Both together, quoted as a reference: what `get` would accept back.
+    address: String,
+    /// Whether the operation changed a byte. A write of the value already
+    /// there did not.
+    changed: bool,
+}
+
+#[derive(Serialize)]
+struct PartsEntry {
+    /// The parts whose bytes differ from the ones read, in path order.
+    changed: Vec<String>,
+    /// The parts the batch created.
+    added: Vec<String>,
+    /// The parts the batch removed.
+    removed: Vec<String>,
+}
+
+/// The payload of a writing verb.
+pub fn written(report: &Report) -> WriteReport {
+    WriteReport {
+        operations: report.operations.iter().map(operation_entry).collect(),
+        parts: PartsEntry {
+            changed: report.parts.changed.clone(),
+            added: report.parts.added.clone(),
+            removed: report.parts.removed.clone(),
+        },
+        output: report.output.display().to_string(),
+        dry_run: report.dry_run,
+    }
+}
+
+fn operation_entry(operation: &OperationReport) -> OperationEntry {
+    OperationEntry {
+        target: operation.target.clone(),
+        name: operation.name.clone(),
+        sheet: operation.address.sheet.clone(),
+        cell: operation.address.cell.a1(),
+        address: operation.address.to_string(),
+        changed: operation.changed,
+    }
+}
+
+/// The rows of a writing verb, one per operation, in the order the operations
+/// were given. What the envelope says about the parts and the output path has
+/// no row of its own: the stable interface is `--json`.
+pub fn written_rows(report: &Report) -> Vec<Vec<String>> {
+    report
+        .operations
+        .iter()
+        .map(|operation| {
+            vec![
+                operation.target.clone(),
+                operation.name.clone().unwrap_or_default(),
+                operation.address.to_string(),
+                operation.changed.to_string(),
+            ]
+        })
+        .collect()
 }
 
 /// A number as JSON.

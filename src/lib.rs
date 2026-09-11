@@ -9,16 +9,21 @@
 //! stdout. Over it sit the reading layers: a [`package`] of parts joined by
 //! [`relationships`], the [`workbook`] model over one of them, the
 //! [`worksheet`] and [`strings`] parts a cell's content is spread across, and
-//! [`cells`], where an operand becomes an answer.
+//! [`cells`], where an operand becomes an answer. The write path runs the
+//! other way: a [`batch`] of operations becomes [`splice`]s over the parts
+//! they touch, and the package is rebuilt around them.
 //!
 //! See `CONTEXT.md` for the vocabulary, `docs/adr/` for the decisions.
 
+pub mod atomic;
+pub mod batch;
 pub mod cells;
 pub mod envelope;
 pub mod error;
 pub mod package;
 pub mod reference;
 pub mod relationships;
+pub mod splice;
 pub mod strings;
 pub mod workbook;
 pub mod worksheet;

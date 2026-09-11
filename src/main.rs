@@ -8,11 +8,12 @@ mod cli;
 mod out;
 mod render;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
 
+use xlsplice::batch::{self, Batch, Destination, Operation, Report};
 use xlsplice::cells::{self, CellReport};
 use xlsplice::error::Error;
 use xlsplice::package::Package;
@@ -75,6 +76,22 @@ fn run(command: Command, out: &Out) -> ExitCode {
             Err(err) => out.failure(&err),
         },
 
+        Command::Set {
+            file,
+            target,
+            value,
+            kind,
+            out: destination,
+            dry_run,
+        } => match set(&file, &target, &value, kind, destination, dry_run, out) {
+            Ok(report) => out.rows(
+                render::written(&report),
+                &render::WRITE_HEADERS,
+                &render::written_rows(&report),
+            ),
+            Err(err) => out.failure(&err),
+        },
+
         Command::Version => {
             let version = env!("CARGO_PKG_VERSION");
             out.success(Version { version }, &format!("xlsplice {version}"))
@@ -116,6 +133,38 @@ fn get(path: &Path, targets: &[String], out: &Out) -> xlsplice::Result<Vec<CellR
     let (mut package, workbook) = open(path, out)?;
     out.trace(&format!("reading {} target(s)", targets.len()));
     cells::read(&mut package, &workbook, targets)
+}
+
+/// Write one value into one cell, as a batch of one operation.
+fn set(
+    path: &Path,
+    target: &str,
+    value: &str,
+    kind: cli::WriteType,
+    destination: Option<PathBuf>,
+    dry_run: bool,
+    out: &Out,
+) -> xlsplice::Result<Report> {
+    let batch = Batch::of(Operation::Set {
+        target: target.to_owned(),
+        value: kind.read(value)?,
+    });
+    let destination = Destination::from(destination);
+    out.trace(&format!(
+        "writing {target} in {}{}",
+        destination.path(path).display(),
+        if dry_run { " (dry run)" } else { "" }
+    ));
+    let report = batch::run(path, &batch, &destination, dry_run)?;
+    out.trace(&format!(
+        "{} part(s) changed: {}",
+        report.parts.changed.len(),
+        match report.parts.changed.is_empty() {
+            true => "none".to_owned(),
+            false => report.parts.changed.join(", "),
+        }
+    ));
+    Ok(report)
 }
 
 /// The payload of a `selftest` that was asked for nothing.

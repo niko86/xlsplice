@@ -100,15 +100,24 @@ pub fn read(
 }
 
 /// One target, resolved to the cell and the part it names.
-struct Resolution {
-    target: String,
-    name: Option<String>,
-    address: Address,
-    part: String,
+///
+/// Reads and writes resolve a target by the same rule, so both come through
+/// [`resolve`] and neither has a spelling of the address rule of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolution {
+    /// The target exactly as it was given.
+    pub target: String,
+    /// The defined name it went through, in the package's own spelling, or
+    /// `None` when the target was an address.
+    pub name: Option<String>,
+    /// The cell it resolved to, in the package's own spelling.
+    pub address: Address,
+    /// The worksheet part that cell sits in.
+    pub part: String,
 }
 
 /// Resolve one target to the cell it names and the part that cell sits in.
-fn resolve(
+pub fn resolve(
     package: &Package,
     rels: &Relationships,
     workbook: &Workbook,
@@ -215,7 +224,7 @@ fn list<'a>(names: impl Iterator<Item = &'a str>) -> String {
 /// column of cells costs one parse rather than one per cell.
 fn read_cells(package: &mut Package, resolved: &[Resolution]) -> Result<Vec<Option<Stored>>> {
     let mut stored: Vec<Option<Stored>> = vec![None; resolved.len()];
-    for part in parts_of(resolved) {
+    for part in parts_of(resolved.iter()) {
         let xml = package.read_part_text(&part)?;
         let document = Document::parse(&xml)
             .map_err(|err| Error::unreadable(format!("not valid XML: {err}")).within(&part))?;
@@ -246,7 +255,10 @@ fn read_cells(package: &mut Package, resolved: &[Resolution]) -> Result<Vec<Opti
 }
 
 /// Each part the resolved cells sit in, once, in the order first named.
-fn parts_of(resolved: &[Resolution]) -> Vec<String> {
+///
+/// Reading and writing both work part by part, so both ask this which parts
+/// they have to open.
+pub fn parts_of<'a>(resolved: impl IntoIterator<Item = &'a Resolution>) -> Vec<String> {
     let mut parts: Vec<String> = Vec::new();
     for at in resolved {
         if !parts.contains(&at.part) {
@@ -369,6 +381,23 @@ mod tests {
         let err = value(kind, raw).expect_err(raw);
         assert_eq!(err.code(), ErrorCode::Unreadable, "{raw}");
         assert!(err.message().contains("Inputs!A1"), "{}", err.message());
+    }
+
+    #[test]
+    fn each_part_the_targets_land_in_is_listed_once_in_the_order_first_named() {
+        let landing = |part: &str| Resolution {
+            target: String::new(),
+            name: None,
+            address: at(),
+            part: part.to_owned(),
+        };
+        let resolved = [
+            landing("sheet2.xml"),
+            landing("sheet1.xml"),
+            landing("sheet2.xml"),
+        ];
+
+        assert_eq!(parts_of(resolved.iter()), ["sheet2.xml", "sheet1.xml"]);
     }
 
     #[test]

@@ -88,6 +88,38 @@ The number on a cell pointing into the package's formats. A cell declaring
 none carries index 0, the default format.
 _Avoid_: format id, xf
 
+### Writing
+
+**Operation**:
+One thing a command does to a package: writing a cell, clearing one, setting a
+property, setting the calculate-on-load flag. Named by what it does, not by the
+verb that carried it.
+_Avoid_: action, change, edit
+
+**Batch**:
+The list of operations one invocation asks of one package, validated whole
+before anything is spliced and applied whole afterwards. A command line builds
+a batch of one.
+_Avoid_: transaction, job, plan
+
+**Report**:
+What came of a batch: a result per operation with whether it changed anything,
+the parts changed, added and removed, where the result went, and whether it was
+a dry run.
+_Avoid_: summary, result, log
+
+**Write type**:
+What a write says a value is to become in the cell: `number`, `text` or
+`bool`, and later `date`. Not a _stored type_, which is how the cell then
+spells it: a write type of `text` is stored as `inlineStr`, and one of
+`number` declares no type at all.
+_Avoid_: value type, data type
+
+**Dry run**:
+A batch done in full and put nowhere. It writes no file at all, and reports
+what a real run would have changed.
+_Avoid_: preview, simulation, check
+
 ### The contract
 
 **JSON envelope**:

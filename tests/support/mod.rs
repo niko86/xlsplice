@@ -1,18 +1,26 @@
-//! Packages for the tests to read, and somewhere to keep them.
+//! Packages for the tests to read and to write, somewhere to keep them, and
+//! the comparison that holds the byte-level guarantee.
 //!
-//! Issue #4 commits three fixtures saved from Excel. Until they land, and
-//! afterwards for the shapes Excel cannot be made to save, a test builds the
-//! package it needs here: the parts are written out by hand, so what a test
-//! asserts is visible in the test rather than buried in a binary.
+//! Three fixtures saved from Excel live in `tests/fixtures/`. [`fixture`]
+//! names one and [`Workspace::copy_of`] takes a writable copy, because a
+//! fixture's bytes are the baseline and nothing may write over them. For the
+//! shapes Excel cannot be made to save, a test builds the package it needs
+//! here: the parts are written out by hand, so what a test asserts is visible
+//! in the test rather than buried in a binary.
 //!
-//! These are not fixtures in this repository's sense. A fixture is a package
-//! Excel saved; everything here is scaffolding for a test, thrown away when
-//! the test ends.
+//! What every write test asserts comes from [`compare`], which reads two
+//! packages part by part with the container crate and is no part of the tool
+//! under test: the tool's own `diff` must not be the judge of the tool's own
+//! guarantee.
+//!
+//! The packages this module builds are not fixtures in this repository's
+//! sense. A fixture is a package Excel saved; everything built here is
+//! scaffolding for a test, thrown away when the test ends.
 
 #![allow(dead_code)]
 
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -99,10 +107,223 @@ impl Workspace {
         )
     }
 
+    /// A writable copy of the committed fixture called `name`, so that a test
+    /// may write to it without touching the baseline its bytes are.
+    pub fn copy_of(&self, name: &str) -> PathBuf {
+        let path = self.dir.join(name);
+        fs::copy(fixture(name), &path).expect("a fixture must be copyable into a test");
+        path
+    }
+
     /// The directory itself, for a test that needs to name a path in it.
     pub fn dir(&self) -> &Path {
         &self.dir
     }
+}
+
+/// The committed fixture called `name`, in `tests/fixtures/`.
+///
+/// A fixture is a package Excel saved and its bytes are the baseline every
+/// byte-preservation test compares against, so nothing ever writes here: take
+/// a [`Workspace::copy_of`] instead.
+pub fn fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name)
+}
+
+/// One part of a package, with everything the guarantee is about.
+///
+/// ADR-0001 promises an untouched part is copied raw, so its compressed size,
+/// its method and its timestamp are as much a part of what must not move as
+/// the bytes it decompresses to. All of it is compared, so a part quietly
+/// recompressed at another level fails even though its contents match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Part {
+    /// The part's path, which names it.
+    pub path: String,
+    /// What it decompresses to.
+    pub bytes: Vec<u8>,
+    /// How it is stored: deflate, for everything Excel writes.
+    pub method: String,
+    /// How many bytes it takes up stored.
+    pub compressed: u64,
+    /// The timestamp its entry carries.
+    pub modified: String,
+}
+
+/// Every part of the package at `path`, in container order.
+pub fn parts(path: &Path) -> Vec<Part> {
+    let file =
+        File::open(path).unwrap_or_else(|err| panic!("{} must be readable: {err}", path.display()));
+    let mut archive = zip::ZipArchive::new(file)
+        .unwrap_or_else(|err| panic!("{} must be a package: {err}", path.display()));
+    (0..archive.len())
+        .map(|index| {
+            let mut entry = archive.by_index(index).expect("a part of the package");
+            let described = Part {
+                path: entry.name().to_owned(),
+                bytes: Vec::new(),
+                method: format!("{:?}", entry.compression()),
+                compressed: entry.compressed_size(),
+                modified: format!("{:?}", entry.last_modified()),
+            };
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).expect("a part must be read");
+            Part { bytes, ..described }
+        })
+        .collect()
+}
+
+/// One part of the package at `path`.
+pub fn part(path: &Path, wanted: &str) -> Part {
+    parts(path)
+        .into_iter()
+        .find(|part| part.path == wanted)
+        .unwrap_or_else(|| panic!("{} must hold {wanted}", path.display()))
+}
+
+/// The names of the files directly in `dir`, sorted.
+pub fn files_in(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .unwrap_or_else(|err| panic!("{} must be readable: {err}", dir.display()))
+        .map(|entry| {
+            entry
+                .expect("an entry of the directory")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// The text of one part of the package at `path`.
+pub fn part_text(path: &Path, wanted: &str) -> String {
+    String::from_utf8(part(path, wanted).bytes).unwrap_or_else(|_| panic!("{wanted} must be UTF-8"))
+}
+
+/// Two packages, compared part by part.
+///
+/// This is the comparator every write test judges the byte-level guarantee
+/// with. It reads both containers itself rather than asking the tool, so a
+/// tool that is wrong about what it changed cannot also be the witness.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Comparison {
+    /// Parts in both packages, byte for byte the same.
+    pub identical: Vec<String>,
+    /// Parts in both packages whose bytes differ.
+    pub differs: Vec<String>,
+    /// Parts the second package has and the first does not.
+    pub added: Vec<String>,
+    /// Parts the first package has and the second does not.
+    pub removed: Vec<String>,
+    /// Whether the parts both packages hold are still in the order the first
+    /// package held them in.
+    pub order_kept: bool,
+}
+
+/// Compare the packages at `before` and `after` part by part.
+pub fn compare(before: &Path, after: &Path) -> Comparison {
+    let (was, now) = (parts(before), parts(after));
+    let mut comparison = Comparison {
+        order_kept: kept(&was, &now),
+        ..Comparison::default()
+    };
+    for part in &was {
+        match now.iter().find(|other| other.path == part.path) {
+            None => comparison.removed.push(part.path.clone()),
+            Some(other) if other == part => comparison.identical.push(part.path.clone()),
+            Some(_) => comparison.differs.push(part.path.clone()),
+        }
+    }
+    for part in &now {
+        if !was.iter().any(|other| other.path == part.path) {
+            comparison.added.push(part.path.clone());
+        }
+    }
+    comparison
+}
+
+/// Whether the parts both packages hold appear in the same relative order.
+fn kept(was: &[Part], now: &[Part]) -> bool {
+    let shared = |parts: &[Part], other: &[Part]| -> Vec<String> {
+        parts
+            .iter()
+            .map(|part| part.path.clone())
+            .filter(|path| other.iter().any(|other| &other.path == path))
+            .collect()
+    };
+    shared(was, now) == shared(now, was)
+}
+
+/// Assert that `after` is `before` with exactly the named parts changed: every
+/// other part identical, none added, none removed, and the order kept.
+///
+/// The positive half is the one that matters, so it is asserted as such: these
+/// are the parts that must still be there, raw copy and all.
+pub fn assert_only_these_differ(before: &Path, after: &Path, expected: &[&str]) {
+    let comparison = compare(before, after);
+    let untouched: Vec<String> = parts(before)
+        .into_iter()
+        .map(|part| part.path)
+        .filter(|path| !expected.contains(&path.as_str()))
+        .collect();
+
+    assert_eq!(comparison.differs, expected, "the wrong parts differ");
+    assert_eq!(
+        comparison.identical, untouched,
+        "a part outside the target did not survive"
+    );
+    assert_eq!(comparison.added, Vec::<String>::new(), "a part was added");
+    assert_eq!(
+        comparison.removed,
+        Vec::<String>::new(),
+        "a part was removed"
+    );
+    assert!(comparison.order_kept, "the parts were reordered");
+}
+
+/// Assert that the two packages hold the same parts, in the same order, with
+/// the same bytes.
+pub fn assert_same_parts(before: &Path, after: &Path) {
+    assert_only_these_differ(before, after, &[]);
+}
+
+/// Assert that the two files are the same file, byte for byte.
+pub fn assert_same_bytes(before: &Path, after: &Path) {
+    let (was, now) = (
+        fs::read(before).expect("the first file must be readable"),
+        fs::read(after).expect("the second file must be readable"),
+    );
+
+    assert_eq!(
+        was.len(),
+        now.len(),
+        "{} is {} bytes and {} is {}",
+        before.display(),
+        was.len(),
+        after.display(),
+        now.len()
+    );
+    assert!(was == now, "the two files differ somewhere in their bytes");
+}
+
+/// Assert that `written` is `original` with `before` become `after` and every
+/// other byte the byte that was there.
+///
+/// Both sides of the splice are written out by the test, so what a write is
+/// expected to produce is pinned in the test rather than derived from what it
+/// produced.
+pub fn assert_spliced(original: &str, written: &str, before: &str, after: &str) {
+    assert_eq!(
+        original.matches(before).count(),
+        1,
+        "the test's own `before` must name one place in the part, not {}",
+        original.matches(before).count()
+    );
+    assert_eq!(written, original.replacen(before, after, 1));
 }
 
 impl Drop for Workspace {

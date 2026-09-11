@@ -3,7 +3,9 @@
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+
+use xlsplice::worksheet::Written;
 
 #[cfg(debug_assertions)]
 use xlsplice::error::ErrorCode;
@@ -67,6 +69,41 @@ pub enum Command {
         targets: Vec<String>,
     },
 
+    /// Write a value into one cell, named by an address or a defined name.
+    ///
+    /// The cell must already be there, and must not hold a formula. Every
+    /// part of the package outside the cell is copied byte for byte.
+    Set {
+        /// The package to write. Written in place unless `--out` is given.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+
+        /// The cell to write: `Sheet!A1`, a workbook-scoped defined name, or
+        /// `Sheet!Name` for one scoped to a sheet. A name resolves to its
+        /// anchor.
+        #[arg(value_name = "TARGET")]
+        target: String,
+
+        /// The value, read according to `--type`.
+        #[arg(value_name = "VALUE")]
+        value: String,
+
+        /// How to read VALUE and store it: a number, text written as an
+        /// inline string, or a boolean.
+        #[arg(long = "type", value_name = "TYPE")]
+        kind: WriteType,
+
+        /// Write the result here instead, leaving FILE untouched. An existing
+        /// file at this path is replaced.
+        #[arg(long, value_name = "PATH")]
+        out: Option<PathBuf>,
+
+        /// Do everything but put the result anywhere, and report what would
+        /// have changed.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Print the version of xlsplice.
     Version,
 
@@ -84,6 +121,28 @@ pub enum Command {
         #[arg(long)]
         panic: bool,
     },
+}
+
+/// How `--type` says a value is to be read and stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum WriteType {
+    /// A finite decimal number, stored without a type attribute.
+    Number,
+    /// Text, stored in the cell as an inline string.
+    Text,
+    /// `true` or `false`, or `1` or `0`, stored as a boolean cell.
+    Bool,
+}
+
+impl WriteType {
+    /// Read `value` the way this type says to.
+    pub fn read(self, value: &str) -> xlsplice::Result<Written> {
+        match self {
+            WriteType::Number => Written::number(value),
+            WriteType::Text => Ok(Written::text(value)),
+            WriteType::Bool => Written::boolean(value),
+        }
+    }
 }
 
 /// Look a code up by the name it carries in the envelope, so the stub has no
@@ -109,6 +168,7 @@ impl Command {
             Command::Sheets { .. } => "sheets",
             Command::Names { .. } => "names",
             Command::Get { .. } => "get",
+            Command::Set { .. } => "set",
             Command::Version => "version",
             #[cfg(debug_assertions)]
             Command::Selftest { .. } => "selftest",

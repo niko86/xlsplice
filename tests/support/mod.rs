@@ -24,6 +24,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use xlsplice::answer::Answer;
+use xlsplice::render::{OutputMode, Rendered, render};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
@@ -465,6 +467,90 @@ pub const SHARED_STRINGS: &str = r#"<?xml version="1.0" encoding="UTF-8" standal
   <si><t>merged</t></si>
   <si><t>東京</t><rPh sb="0" eb="2"><t>トウキョウ</t></rPh><phoneticPr fontId="1"/></si>
 </sst>"#;
+
+/// The verbs, called the way the binary calls them, without a process.
+///
+/// A test that is not about argv, a real stream or a real exit calls these
+/// instead of [`run`]: the same library calls in the same order, answered with
+/// the same `Answer`, and rendered by the same `render`. What the binary keeps
+/// to itself is the little that only a process has, so what these leave
+/// untested is the wiring of one dispatch arm to one verb, which the tests
+/// that do spawn still cross.
+///
+/// `set` takes the value already read into a [`Written`], because `--type` is
+/// the command line's own and reads it there until #20 moves it into the
+/// batch.
+pub mod verb {
+    use std::path::{Path, PathBuf};
+
+    use xlsplice::Result;
+    use xlsplice::answer::{self, Answer};
+    use xlsplice::batch::{self, Batch, Destination, Operation};
+    use xlsplice::cells;
+    use xlsplice::package::Package;
+    use xlsplice::workbook::Workbook;
+    use xlsplice::worksheet::Written;
+
+    /// Open a package and read its workbook: what every read verb starts
+    /// with. The package comes back too, because a verb that reads cells goes
+    /// on to read more of its parts.
+    fn open(path: &Path) -> Result<(Package, Workbook)> {
+        let mut package = Package::open(path)?;
+        let workbook = Workbook::read(&mut package)?;
+        Ok((package, workbook))
+    }
+
+    /// `xlsplice sheets FILE`.
+    pub fn sheets(path: &Path) -> Result<Answer> {
+        answer::sheets(&open(path)?.1)
+    }
+
+    /// `xlsplice names FILE`.
+    pub fn names(path: &Path) -> Result<Answer> {
+        answer::names(&open(path)?.1)
+    }
+
+    /// `xlsplice get FILE TARGET...`.
+    pub fn get(path: &Path, targets: &[&str]) -> Result<Answer> {
+        let (mut package, workbook) = open(path)?;
+        let targets: Vec<String> = targets.iter().map(|target| (*target).to_owned()).collect();
+        answer::cells(&cells::read(&mut package, &workbook, &targets)?)
+    }
+
+    /// `xlsplice set FILE TARGET VALUE --type TYPE [--out PATH] [--dry-run]`.
+    pub fn set(
+        path: &Path,
+        target: &str,
+        value: Written,
+        out: Option<PathBuf>,
+        dry_run: bool,
+    ) -> Result<Answer> {
+        let batch = Batch::of(Operation::Set {
+            target: target.to_owned(),
+            value,
+        });
+        answer::written(&batch::run(path, &batch, &Destination::from(out), dry_run)?)
+    }
+}
+
+/// What a verb writes down a pipe under `--json`: one envelope on stdout, a
+/// silent stderr, and the exit code.
+pub fn under_json(outcome: xlsplice::Result<Answer>) -> Rendered {
+    render(outcome, OutputMode::new(true, false))
+}
+
+/// What a verb writes down a pipe without `--json`: tab-separated fields on
+/// stdout, or a failure on stderr.
+pub fn in_text(outcome: xlsplice::Result<Answer>) -> Rendered {
+    render(outcome, OutputMode::new(false, false))
+}
+
+/// The JSON envelope a verb put on stdout, parsed: what [`json`] gives for a
+/// verb that went round through a process.
+pub fn envelope(rendered: &Rendered) -> serde_json::Value {
+    serde_json::from_str(&rendered.stdout)
+        .unwrap_or_else(|err| panic!("stdout under --json must be one JSON document: {err}"))
+}
 
 /// Run the binary with `args` and both streams captured, so stdout is a pipe
 /// rather than a terminal.

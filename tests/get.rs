@@ -1,38 +1,46 @@
-//! Contract tests for `get`: everything here observes the built binary from
-//! outside, through its argv, its two streams and its exit code. stdout is a
-//! pipe in every one of them, so the text these assert is the tab-separated
-//! form.
+//! Contract tests for `get`.
+//!
+//! Most of these call the library in process, through the verbs in `support`,
+//! and read what `render` put on the two streams: one envelope, or the
+//! tab-separated form a pipe gets.
+//!
+//! Three still spawn, because the process is what they are about: what clap
+//! does with a target missing, what `--` does with the operands after it, and
+//! what `--quiet` and `--verbose` do to stderr. The second of those takes
+//! `get` end to end, argv to stdout, so its dispatch arm does not go
+//! unexercised.
 
 mod support;
 
+use std::path::{Path, PathBuf};
+
 use serde_json::json;
-use support::{Workspace, exit_code, json, run, stderr, stdout, workbook_xml};
+use support::{
+    Workspace, envelope, exit_code, in_text, run, stderr, under_json, verb, workbook_xml,
+};
+use xlsplice::render::Rendered;
 
 /// The feature package, and the workspace holding it alive for as long as the
 /// test needs it.
-fn feature(label: &str) -> (Workspace, String) {
+fn feature(label: &str) -> (Workspace, PathBuf) {
     let workspace = Workspace::new(label);
     let path = workspace.feature_package("feature.xlsx");
-    let path = path
-        .to_str()
-        .expect("a temporary path must be UTF-8")
-        .to_owned();
     (workspace, path)
 }
 
 /// The message of a failed envelope.
-fn error_message(out: &std::process::Output) -> String {
-    json(out)["error"]["message"]
+fn error_message(out: &Rendered) -> String {
+    envelope(out)["error"]["message"]
         .as_str()
         .expect("a failed envelope carries a message")
         .to_owned()
 }
 
 /// The one cell `target` names, out of the envelope.
-fn cell(package: &str, target: &str) -> serde_json::Value {
-    let out = run(&["get", package, target, "--json"]);
-    assert_eq!(exit_code(&out), 0, "get {target}: {}", stderr(&out));
-    json(&out)["cells"][0].clone()
+fn cell(package: &Path, target: &str) -> serde_json::Value {
+    let out = under_json(verb::get(package, &[target]));
+    assert_eq!(out.exit, 0, "get {target}: {}", out.stderr);
+    envelope(&out)["cells"][0].clone()
 }
 
 #[test]
@@ -279,18 +287,13 @@ fn dollars_in_an_address_are_no_more_significant_than_in_a_reference() {
 fn several_targets_come_back_one_per_target_in_the_order_they_were_given() {
     let (_workspace, package) = feature("several");
 
-    let out = run(&[
-        "get",
+    let out = under_json(verb::get(
         &package,
-        "Inputs!A3",
-        "MergedInput",
-        "Notes!LocalNote",
-        "Inputs!A1",
-        "--json",
-    ]);
+        &["Inputs!A3", "MergedInput", "Notes!LocalNote", "Inputs!A1"],
+    ));
 
-    assert_eq!(exit_code(&out), 0);
-    let cells = json(&out)["cells"].clone();
+    assert_eq!(out.exit, 0);
+    let cells = envelope(&out)["cells"].clone();
     let targets: Vec<_> = cells
         .as_array()
         .expect("cells is a list")
@@ -315,12 +318,15 @@ fn several_targets_come_back_one_per_target_in_the_order_they_were_given() {
 fn one_target_is_one_tab_separated_line_with_every_field_in_its_place() {
     let (_workspace, package) = feature("rows");
 
-    let out = run(&["get", &package, "MergedInput", "Inputs!E2", "Inputs!Z1"]);
+    let out = in_text(verb::get(
+        &package,
+        &["MergedInput", "Inputs!E2", "Inputs!Z1"],
+    ));
 
-    assert_eq!(exit_code(&out), 0);
-    assert_eq!(stderr(&out), "");
+    assert_eq!(out.exit, 0);
+    assert_eq!(out.stderr, "");
     assert_eq!(
-        stdout(&out),
+        out.stdout,
         concat!(
             "MergedInput\tMergedInput\tInputs!B2\ts\tmerged\t2\t4\t\t\t\t\n",
             "Inputs!E2\t\tInputs!E2\tn\t5\t5\t0\tA2*2\tshared_master\tE2:E3\t0\n",
@@ -333,7 +339,7 @@ fn one_target_is_one_tab_separated_line_with_every_field_in_its_place() {
 fn the_envelope_leads_with_ok_and_the_schema_version() {
     let (_workspace, package) = feature("envelope");
 
-    let body = json(&run(&["get", &package, "Inputs!A1", "--json"]));
+    let body = envelope(&under_json(verb::get(&package, &["Inputs!A1"])));
 
     assert_eq!(body["ok"], json!(true));
     assert_eq!(body["schema_version"], json!(1));
@@ -344,11 +350,11 @@ fn the_envelope_leads_with_ok_and_the_schema_version() {
 fn an_unknown_sheet_is_not_found_and_the_message_lists_the_sheets() {
     let (_workspace, package) = feature("no-sheet");
 
-    let out = run(&["get", &package, "Missing!A1", "--json"]);
+    let out = under_json(verb::get(&package, &["Missing!A1"]));
 
-    assert_eq!(exit_code(&out), 3);
+    assert_eq!(out.exit, 3);
     let message = error_message(&out);
-    assert_eq!(json(&out)["error"]["code"], json!("not_found"));
+    assert_eq!(envelope(&out)["error"]["code"], json!("not_found"));
     assert!(message.contains("Missing"), "{message}");
     for sheet in ["Inputs", "Notes", "Parameters"] {
         assert!(message.contains(sheet), "{message} must name {sheet}");
@@ -359,11 +365,11 @@ fn an_unknown_sheet_is_not_found_and_the_message_lists_the_sheets() {
 fn an_unknown_name_is_not_found_and_the_message_lists_the_names_of_its_scope() {
     let (_workspace, package) = feature("no-name-found");
 
-    let out = run(&["get", &package, "Absent", "--json"]);
+    let out = under_json(verb::get(&package, &["Absent"]));
 
-    assert_eq!(exit_code(&out), 3);
+    assert_eq!(out.exit, 3);
     let message = error_message(&out);
-    assert_eq!(json(&out)["error"]["code"], json!("not_found"));
+    assert_eq!(envelope(&out)["error"]["code"], json!("not_found"));
     assert!(message.contains("Absent"), "{message}");
     assert!(message.contains("MergedInput"), "{message}");
     assert!(
@@ -376,9 +382,9 @@ fn an_unknown_name_is_not_found_and_the_message_lists_the_names_of_its_scope() {
 fn an_unknown_sheet_scoped_name_names_the_sheet_it_was_looked_for_on() {
     let (_workspace, package) = feature("no-local-name");
 
-    let out = run(&["get", &package, "Notes!Absent", "--json"]);
+    let out = under_json(verb::get(&package, &["Notes!Absent"]));
 
-    assert_eq!(exit_code(&out), 3);
+    assert_eq!(out.exit, 3);
     let message = error_message(&out);
     assert!(message.contains("Notes"), "{message}");
     assert!(message.contains("LocalNote"), "{message}");
@@ -394,10 +400,10 @@ fn a_name_that_is_not_a_reference_is_refused_with_what_it_refers_to() {
     ];
 
     for (target, refers_to) in cases {
-        let out = run(&["get", &package, target, "--json"]);
+        let out = under_json(verb::get(&package, &[target]));
 
-        assert_eq!(exit_code(&out), 4, "{target}");
-        let body = json(&out);
+        assert_eq!(out.exit, 4, "{target}");
+        let body = envelope(&out);
         assert_eq!(body["ok"], json!(false), "{target}");
         assert_eq!(body["error"]["code"], json!("refused"), "{target}");
         let message = error_message(&out);
@@ -413,11 +419,15 @@ fn a_cell_outside_every_row_the_sheet_holds_is_not_found() {
     let (_workspace, package) = feature("no-row");
 
     for target in ["Inputs!A99", "Parameters!A1"] {
-        let out = run(&["get", &package, target, "--json"]);
+        let out = under_json(verb::get(&package, &[target]));
 
-        assert_eq!(exit_code(&out), 3, "{target}");
+        assert_eq!(out.exit, 3, "{target}");
         let message = error_message(&out);
-        assert_eq!(json(&out)["error"]["code"], json!("not_found"), "{target}");
+        assert_eq!(
+            envelope(&out)["error"]["code"],
+            json!("not_found"),
+            "{target}"
+        );
         assert!(
             message.contains("row"),
             "{target}: {message} must say what was searched"
@@ -436,14 +446,9 @@ fn a_name_whose_sheet_is_not_in_the_package_is_not_found() {
         ),
     );
 
-    let out = run(&[
-        "get",
-        package.to_str().expect("a UTF-8 path"),
-        "Away",
-        "--json",
-    ]);
+    let out = under_json(verb::get(&package, &["Away"]));
 
-    assert_eq!(exit_code(&out), 3);
+    assert_eq!(out.exit, 3);
     let message = error_message(&out);
     assert!(message.contains("Gone!$A$1"), "{message}");
 }
@@ -452,15 +457,14 @@ fn a_name_whose_sheet_is_not_in_the_package_is_not_found() {
 fn one_failing_target_fails_the_whole_read_and_leaves_stdout_empty() {
     let (_workspace, package) = feature("all-or-nothing");
 
-    let out = run(&["get", &package, "Inputs!A1", "Missing!A1"]);
+    let out = in_text(verb::get(&package, &["Inputs!A1", "Missing!A1"]));
 
-    assert_eq!(exit_code(&out), 3);
+    assert_eq!(out.exit, 3);
     assert_eq!(
-        stdout(&out),
-        "",
+        out.stdout, "",
         "a failure leaves the data channel empty, part-read or not"
     );
-    assert!(stderr(&out).starts_with("error: "), "{}", stderr(&out));
+    assert!(out.stderr.starts_with("error: "), "{}", out.stderr);
 }
 
 #[test]
@@ -482,15 +486,10 @@ fn a_sheet_whose_name_needs_quoting_is_addressed_and_reported_quoted() {
         ],
     );
 
-    let out = run(&[
-        "get",
-        package.to_str().expect("a UTF-8 path"),
-        "'My Sheet'!A5",
-        "--json",
-    ]);
+    let out = under_json(verb::get(&package, &["'My Sheet'!A5"]));
 
-    assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
-    let cell = json(&out)["cells"][0].clone();
+    assert_eq!(out.exit, 0, "{}", out.stderr);
+    let cell = envelope(&out)["cells"][0].clone();
     assert_eq!(cell["sheet"], json!("My Sheet"));
     assert_eq!(cell["address"], json!("'My Sheet'!A5"));
     assert_eq!(cell["value"], json!("note"));
@@ -501,17 +500,28 @@ fn get_needs_a_package_and_at_least_one_target() {
     let (_workspace, package) = feature("usage");
 
     assert_eq!(exit_code(&run(&["get"])), 2);
-    assert_eq!(exit_code(&run(&["get", &package])), 2);
+    assert_eq!(
+        exit_code(&run(&["get", package.to_str().expect("a UTF-8 path")])),
+        2
+    );
 }
 
+/// `get` end to end through the process: `--` demotes what follows it to an
+/// operand, and what comes back on stdout is what the library answered.
 #[test]
 fn the_double_dash_still_hands_the_operands_over() {
     let (_workspace, package) = feature("double-dash");
 
-    let out = run(&["get", "--json", "--", &package, "Inputs!A1"]);
+    let out = run(&[
+        "get",
+        "--json",
+        "--",
+        package.to_str().expect("a UTF-8 path"),
+        "Inputs!A1",
+    ]);
 
     assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
-    assert_eq!(json(&out)["cells"][0]["value"], json!(1));
+    assert_eq!(support::json(&out)["cells"][0]["value"], json!(1));
 }
 
 #[test]
@@ -519,27 +529,23 @@ fn a_path_that_is_not_a_package_is_unreadable() {
     let workspace = Workspace::new("get-unreadable");
     let path = workspace.file("notes.txt", b"this is not a package");
 
-    let out = run(&[
-        "get",
-        path.to_str().expect("a UTF-8 path"),
-        "Inputs!A1",
-        "--json",
-    ]);
+    let out = under_json(verb::get(&path, &["Inputs!A1"]));
 
-    assert_eq!(exit_code(&out), 5);
-    assert_eq!(json(&out)["error"]["code"], json!("unreadable"));
+    assert_eq!(out.exit, 5);
+    assert_eq!(envelope(&out)["error"]["code"], json!("unreadable"));
 }
 
 #[test]
 fn quiet_and_verbose_move_stderr_only() {
     let (_workspace, package) = feature("get-streams");
+    let package = package.to_str().expect("a UTF-8 path");
 
-    let plain = run(&["get", &package, "Inputs!A1"]);
-    let loud = run(&["get", &package, "Inputs!A1", "--verbose"]);
-    let hushed = run(&["get", &package, "Inputs!A1", "--quiet"]);
+    let plain = run(&["get", package, "Inputs!A1"]);
+    let loud = run(&["get", package, "Inputs!A1", "--verbose"]);
+    let hushed = run(&["get", package, "Inputs!A1", "--quiet"]);
 
-    assert_eq!(stdout(&loud), stdout(&plain));
-    assert_eq!(stdout(&hushed), stdout(&plain));
+    assert_eq!(support::stdout(&loud), support::stdout(&plain));
+    assert_eq!(support::stdout(&hushed), support::stdout(&plain));
     assert!(!stderr(&loud).is_empty(), "--verbose must trace on stderr");
     assert_eq!(stderr(&hushed), "");
 }
@@ -571,20 +577,14 @@ fn a_sheet_whose_relationship_is_gone_is_not_found_rather_than_guessed_at() {
         ],
     );
 
-    let out = run(&[
-        "get",
-        package.to_str().expect("a UTF-8 path"),
-        "Second!A1",
-        "--json",
-    ]);
+    let out = under_json(verb::get(&package, &["Second!A1"]));
 
     assert_eq!(
-        exit_code(&out),
-        3,
+        out.exit, 3,
         "a wrong answer is worse than no answer: {}",
-        stdout(&out)
+        out.stdout
     );
-    assert_eq!(json(&out)["error"]["code"], json!("not_found"));
+    assert_eq!(envelope(&out)["error"]["code"], json!("not_found"));
     assert!(
         error_message(&out).contains("Second"),
         "{}",
@@ -617,15 +617,10 @@ fn a_shared_string_table_the_relationships_do_not_name_is_still_found() {
         ],
     );
 
-    let out = run(&[
-        "get",
-        package.to_str().expect("a UTF-8 path"),
-        "Inputs!B1",
-        "--json",
-    ]);
+    let out = under_json(verb::get(&package, &["Inputs!B1"]));
 
-    assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
-    assert_eq!(json(&out)["cells"][0]["value"], json!("hello"));
+    assert_eq!(out.exit, 0, "{}", out.stderr);
+    assert_eq!(envelope(&out)["cells"][0]["value"], json!("hello"));
 }
 
 #[test]
@@ -636,15 +631,10 @@ fn a_sheet_the_package_holds_no_worksheet_part_for_is_not_found() {
         &workbook_xml(r#"<sheets><sheet name="Only" sheetId="1" r:id="rId1"/></sheets>"#),
     );
 
-    let out = run(&[
-        "get",
-        package.to_str().expect("a UTF-8 path"),
-        "Only!A1",
-        "--json",
-    ]);
+    let out = under_json(verb::get(&package, &["Only!A1"]));
 
-    assert_eq!(exit_code(&out), 3);
+    assert_eq!(out.exit, 3);
     let message = error_message(&out);
-    assert_eq!(json(&out)["error"]["code"], json!("not_found"));
+    assert_eq!(envelope(&out)["error"]["code"], json!("not_found"));
     assert!(message.contains("Only"), "{message}");
 }

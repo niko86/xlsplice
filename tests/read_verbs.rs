@@ -1,39 +1,54 @@
-//! Contract tests for `sheets` and `names`: everything here observes the
-//! built binary from outside, through its argv, its two streams and its exit
-//! code. stdout is a pipe in every one of them, so the text these assert is
-//! the tab-separated form; the aligned form is held by the binary's own unit
-//! tests over `render_rows` and `TextStyle::for_terminal`, because a spawned
-//! process has no terminal to give it.
+//! Contract tests for `sheets` and `names`.
+//!
+//! Most of these call the library in process, through the verbs in `support`,
+//! and read what `render` put on the two streams: one envelope, or the
+//! tab-separated form a pipe gets. The aligned form is not here and never
+//! was — `render`'s own unit tests hold it, being able to say what a terminal
+//! would have been given.
+//!
+//! Three still spawn, because the process is what they are about: what clap
+//! does with no package to read, what `--` does with the one that follows it,
+//! and what `--quiet` and `--verbose` do to stderr. Between them the two verbs
+//! are each crossed end to end, argv to stdout, so no dispatch arm goes
+//! unexercised.
 
 mod support;
 
+use std::path::{Path, PathBuf};
+
+use serde_json::json;
 use support::{
     CONTENT_TYPES, CONTENT_TYPES_PART, ROOT_RELS, ROOT_RELS_PART, WORKBOOK_PART, Workspace,
-    exit_code, feature_workbook, json, run, stderr, stdout, workbook_xml,
+    envelope, exit_code, feature_workbook, in_text, run, stderr, stdout, under_json, verb,
+    workbook_xml,
 };
+use xlsplice::Result;
+use xlsplice::answer::Answer;
 
 /// The feature workbook, written to a package, and the workspace holding it
 /// alive for as long as the test needs it.
-fn feature_package(label: &str) -> (Workspace, String) {
+fn feature_package(label: &str) -> (Workspace, PathBuf) {
     let workspace = Workspace::new(label);
     let path = workspace.package("feature.xlsx", &feature_workbook());
-    let path = path
-        .to_str()
-        .expect("a temporary path must be UTF-8")
-        .to_owned();
     (workspace, path)
 }
+
+/// A read verb: a package in, an answer out.
+type Read = fn(&Path) -> Result<Answer>;
+
+/// Both read verbs, to say of each of them what is true of either.
+const BOTH: [(&str, Read); 2] = [("sheets", verb::sheets), ("names", verb::names)];
 
 #[test]
 fn sheets_reports_every_sheet_with_its_state_in_workbook_order() {
     let (_workspace, package) = feature_package("sheets-order");
 
-    let out = run(&["sheets", &package]);
+    let out = in_text(verb::sheets(&package));
 
-    assert_eq!(exit_code(&out), 0);
-    assert_eq!(stderr(&out), "");
+    assert_eq!(out.exit, 0);
+    assert_eq!(out.stderr, "");
     assert_eq!(
-        stdout(&out),
+        out.stdout,
         "Inputs\tvisible\nNotes\thidden\nParameters\tveryHidden\n"
     );
 }
@@ -42,16 +57,16 @@ fn sheets_reports_every_sheet_with_its_state_in_workbook_order() {
 fn sheets_json_carries_the_same_sheets_in_the_envelope() {
     let (_workspace, package) = feature_package("sheets-json");
 
-    let out = run(&["sheets", &package, "--json"]);
+    let out = under_json(verb::sheets(&package));
 
-    assert_eq!(exit_code(&out), 0);
-    assert_eq!(stderr(&out), "");
-    let body = json(&out);
-    assert_eq!(body["ok"], serde_json::json!(true));
-    assert_eq!(body["schema_version"], serde_json::json!(1));
+    assert_eq!(out.exit, 0);
+    assert_eq!(out.stderr, "");
+    let body = envelope(&out);
+    assert_eq!(body["ok"], json!(true));
+    assert_eq!(body["schema_version"], json!(1));
     assert_eq!(
         body["sheets"],
-        serde_json::json!([
+        json!([
             {"name": "Inputs", "state": "visible"},
             {"name": "Notes", "state": "hidden"},
             {"name": "Parameters", "state": "veryHidden"},
@@ -63,12 +78,12 @@ fn sheets_json_carries_the_same_sheets_in_the_envelope() {
 fn names_reports_the_scope_the_reference_the_anchor_and_the_reason() {
     let (_workspace, package) = feature_package("names-rows");
 
-    let out = run(&["names", &package]);
+    let out = in_text(verb::names(&package));
 
-    assert_eq!(exit_code(&out), 0);
-    assert_eq!(stderr(&out), "");
+    assert_eq!(out.exit, 0);
+    assert_eq!(out.stderr, "");
     assert_eq!(
-        stdout(&out),
+        out.stdout,
         concat!(
             "MergedInput\tworkbook\tInputs!$B$2:$C$3\tInputs!B2\t\n",
             "LocalNote\tNotes\tNotes!$A$5\tNotes!A5\t\n",
@@ -84,37 +99,37 @@ fn names_reports_the_scope_the_reference_the_anchor_and_the_reason() {
 fn a_workbook_scoped_name_anchors_at_the_merged_ranges_top_left() {
     let (_workspace, package) = feature_package("names-merged");
 
-    let body = json(&run(&["names", &package, "--json"]));
+    let body = envelope(&under_json(verb::names(&package)));
     let merged = &body["names"][0];
 
-    assert_eq!(merged["name"], serde_json::json!("MergedInput"));
-    assert_eq!(merged["scope"], serde_json::json!("workbook"));
-    assert_eq!(merged["scope_sheet"], serde_json::json!(null));
-    assert_eq!(merged["refers_to"], serde_json::json!("Inputs!$B$2:$C$3"));
+    assert_eq!(merged["name"], json!("MergedInput"));
+    assert_eq!(merged["scope"], json!("workbook"));
+    assert_eq!(merged["scope_sheet"], json!(null));
+    assert_eq!(merged["refers_to"], json!("Inputs!$B$2:$C$3"));
     assert_eq!(
         merged["anchor"],
-        serde_json::json!({"sheet": "Inputs", "cell": "B2", "address": "Inputs!B2"})
+        json!({"sheet": "Inputs", "cell": "B2", "address": "Inputs!B2"})
     );
-    assert_eq!(merged["reason"], serde_json::json!(null));
+    assert_eq!(merged["reason"], json!(null));
 }
 
 #[test]
 fn a_sheet_scoped_name_reports_the_sheet_it_is_scoped_to() {
     let (_workspace, package) = feature_package("names-local");
 
-    let local = json(&run(&["names", &package, "--json"]))["names"][1].clone();
+    let local = envelope(&under_json(verb::names(&package)))["names"][1].clone();
 
-    assert_eq!(local["name"], serde_json::json!("LocalNote"));
-    assert_eq!(local["scope"], serde_json::json!("sheet"));
-    assert_eq!(local["scope_sheet"], serde_json::json!("Notes"));
-    assert_eq!(local["anchor"]["address"], serde_json::json!("Notes!A5"));
+    assert_eq!(local["name"], json!("LocalNote"));
+    assert_eq!(local["scope"], json!("sheet"));
+    assert_eq!(local["scope_sheet"], json!("Notes"));
+    assert_eq!(local["anchor"]["address"], json!("Notes!A5"));
 }
 
 #[test]
 fn a_name_that_resolves_to_no_cell_carries_the_reason_and_no_anchor() {
     let (_workspace, package) = feature_package("names-reasons");
 
-    let body = json(&run(&["names", &package, "--json"]));
+    let body = envelope(&under_json(verb::names(&package)));
     let reasons: Vec<_> = body["names"]
         .as_array()
         .expect("names is a list")
@@ -126,9 +141,9 @@ fn a_name_that_resolves_to_no_cell_carries_the_reason_and_no_anchor() {
     assert_eq!(
         reasons,
         [
-            (serde_json::json!("Gone"), serde_json::json!("ref_error")),
-            (serde_json::json!("Rate"), serde_json::json!("constant")),
-            (serde_json::json!("Total"), serde_json::json!("formula")),
+            (json!("Gone"), json!("ref_error")),
+            (json!("Rate"), json!("constant")),
+            (json!("Total"), json!("formula")),
         ]
     );
 }
@@ -137,15 +152,15 @@ fn a_name_that_resolves_to_no_cell_carries_the_reason_and_no_anchor() {
 fn a_reference_spelled_in_another_case_resolves_to_the_packages_spelling() {
     let (_workspace, package) = feature_package("names-case");
 
-    let loud = json(&run(&["names", &package, "--json"]))["names"][2].clone();
+    let loud = envelope(&under_json(verb::names(&package)))["names"][2].clone();
 
     assert_eq!(
         loud["refers_to"],
-        serde_json::json!("INPUTS!$E$1"),
+        json!("INPUTS!$E$1"),
         "the reference is reported as the package holds it"
     );
-    assert_eq!(loud["anchor"]["sheet"], serde_json::json!("Inputs"));
-    assert_eq!(loud["anchor"]["address"], serde_json::json!("Inputs!E1"));
+    assert_eq!(loud["anchor"]["sheet"], json!("Inputs"));
+    assert_eq!(loud["anchor"]["address"], json!("Inputs!E1"));
 }
 
 #[test]
@@ -159,13 +174,13 @@ fn an_anchor_on_a_sheet_needing_quotes_is_quoted() {
         ),
     );
 
-    let out = run(&["names", package.to_str().expect("a UTF-8 path")]);
+    let out = in_text(verb::names(&package));
 
-    assert_eq!(exit_code(&out), 0);
+    assert_eq!(out.exit, 0);
     assert!(
-        stdout(&out).contains("'My Sheet'!A1"),
+        out.stdout.contains("'My Sheet'!A1"),
         "stdout: {}",
-        stdout(&out)
+        out.stdout
     );
 }
 
@@ -177,12 +192,11 @@ fn a_package_with_no_defined_names_says_nothing_down_the_pipe() {
         &workbook_xml(r#"<sheets><sheet name="Sheet1" sheetId="1"/></sheets>"#),
     );
 
-    let out = run(&["names", package.to_str().expect("a UTF-8 path")]);
+    let out = in_text(verb::names(&package));
 
-    assert_eq!(exit_code(&out), 0);
+    assert_eq!(out.exit, 0);
     assert_eq!(
-        stdout(&out),
-        "",
+        out.stdout, "",
         "an empty list is no lines at all, not a blank one"
     );
 }
@@ -202,10 +216,10 @@ fn a_package_whose_root_relationships_are_missing_is_read_from_the_usual_place()
         ],
     );
 
-    let out = run(&["sheets", package.to_str().expect("a UTF-8 path")]);
+    let out = in_text(verb::sheets(&package));
 
-    assert_eq!(exit_code(&out), 0);
-    assert_eq!(stdout(&out), "Only\tvisible\n");
+    assert_eq!(out.exit, 0);
+    assert_eq!(out.stdout, "Only\tvisible\n");
 }
 
 #[test]
@@ -250,17 +264,16 @@ fn a_path_that_is_not_a_package_is_unreadable() {
     ];
 
     for (what, path) in cases {
-        let path = path.to_str().expect("a UTF-8 path");
-        for verb in ["sheets", "names"] {
-            let out = run(&[verb, path, "--json"]);
+        for (verb, read) in BOTH {
+            let out = under_json(read(&path));
 
-            assert_eq!(exit_code(&out), 5, "{verb} on {what}");
-            assert_eq!(stderr(&out), "", "{verb} on {what}");
-            let body = json(&out);
-            assert_eq!(body["ok"], serde_json::json!(false), "{verb} on {what}");
+            assert_eq!(out.exit, 5, "{verb} on {what}");
+            assert_eq!(out.stderr, "", "{verb} on {what}");
+            let body = envelope(&out);
+            assert_eq!(body["ok"], json!(false), "{verb} on {what}");
             assert_eq!(
                 body["error"]["code"],
-                serde_json::json!("unreadable"),
+                json!("unreadable"),
                 "{verb} on {what}"
             );
             assert!(
@@ -279,44 +292,57 @@ fn an_unreadable_package_reports_on_stderr_without_json() {
     let workspace = Workspace::new("unreadable-text");
     let path = workspace.file("notes.txt", b"this is not a package");
 
-    let out = run(&["sheets", path.to_str().expect("a UTF-8 path")]);
+    let out = in_text(verb::sheets(&path));
 
-    assert_eq!(exit_code(&out), 5);
-    assert_eq!(stdout(&out), "", "a failure leaves the data channel empty");
-    assert!(
-        stderr(&out).starts_with("error: "),
-        "stderr: {}",
-        stderr(&out)
-    );
+    assert_eq!(out.exit, 5);
+    assert_eq!(out.stdout, "", "a failure leaves the data channel empty");
+    assert!(out.stderr.starts_with("error: "), "stderr: {}", out.stderr);
 }
 
 #[test]
 fn both_verbs_need_a_package_to_read() {
-    for verb in ["sheets", "names"] {
+    for (verb, _) in BOTH {
         assert_eq!(exit_code(&run(&[verb])), 2, "{verb}");
     }
 }
 
+/// Both verbs, end to end through the process: `--` demotes what follows it
+/// to an operand, and what comes back on stdout is what the library answered.
 #[test]
 fn the_double_dash_still_hands_the_path_over_as_an_operand() {
     let (_workspace, package) = feature_package("double-dash");
+    let package = package.to_str().expect("a UTF-8 path");
+    let expected = [
+        (
+            "sheets",
+            "Inputs\tvisible\nNotes\thidden\nParameters\tveryHidden\n",
+        ),
+        (
+            "names",
+            "MergedInput\tworkbook\tInputs!$B$2:$C$3\tInputs!B2\t\n",
+        ),
+    ];
 
-    let out = run(&["sheets", "--", &package]);
+    for (verb, answered) in expected {
+        let out = run(&[verb, "--", package]);
 
-    assert_eq!(exit_code(&out), 0);
-    assert_eq!(
-        stdout(&out),
-        "Inputs\tvisible\nNotes\thidden\nParameters\tveryHidden\n"
-    );
+        assert_eq!(exit_code(&out), 0, "{verb}: {}", stderr(&out));
+        assert!(
+            stdout(&out).starts_with(answered),
+            "{verb}: {}",
+            stdout(&out)
+        );
+    }
 }
 
 #[test]
 fn quiet_and_verbose_move_stderr_only() {
     let (_workspace, package) = feature_package("streams");
+    let package = package.to_str().expect("a UTF-8 path");
 
-    let plain = run(&["sheets", &package]);
-    let loud = run(&["sheets", &package, "--verbose"]);
-    let hushed = run(&["sheets", &package, "--quiet"]);
+    let plain = run(&["sheets", package]);
+    let loud = run(&["sheets", package, "--verbose"]);
+    let hushed = run(&["sheets", package, "--quiet"]);
 
     assert_eq!(stdout(&loud), stdout(&plain));
     assert_eq!(stdout(&hushed), stdout(&plain));

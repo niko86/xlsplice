@@ -1,46 +1,91 @@
-//! Contract tests for `set`: everything here observes the built binary from
-//! outside, through its argv, its two streams, its exit code, and the bytes of
-//! the packages it leaves behind.
+//! Contract tests for `set`.
+//!
+//! Most of these call the library in process, through the verbs in `support`,
+//! and then ask two questions of the package left behind: which parts differ
+//! from the fixture, answered by the comparator in `support`, and what the
+//! worksheet became, answered against bytes the test writes out by hand.
+//! Nothing here trusts the tool's own account of what it changed, and the
+//! comparator reads both containers itself, so a process never came into it.
 //!
 //! The packages are the three fixtures Excel saved. A test copies the one it
-//! needs, writes to the copy, and then asks two questions of the result: which
-//! parts differ from the fixture, answered by the comparator in `support`, and
-//! what the worksheet became, answered against bytes the test writes out by
-//! hand. Nothing here trusts the tool's own account of what it changed.
+//! needs and writes to the copy.
+//!
+//! Three still spawn, because argv is what they are about: what clap does
+//! with a `--type` outside the three, which reader each of the three names
+//! reaches, and what `--` does with a value that begins with a minus. The
+//! last two take `set` end to end, argv to the bytes on disk, so its dispatch
+//! arm does not go unexercised.
 
 mod support;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use support::{
     Workspace, assert_only_these_differ, assert_same_bytes, assert_same_parts, assert_spliced,
-    exit_code, files_in, fixture, json, part, part_text, run, stderr, stdout,
+    envelope, exit_code, files_in, fixture, in_text, part, part_text, run, stderr, under_json,
+    verb,
 };
+use xlsplice::worksheet::Written;
 
 const SHEET1: &str = "xl/worksheets/sheet1.xml";
 const SHARED_STRINGS: &str = "xl/sharedStrings.xml";
 const VBA: &str = "xl/vbaProject.bin";
 
 /// A writable copy of a fixture, and the workspace holding it alive.
-fn copy(label: &str, name: &str) -> (Workspace, String) {
+fn copy(label: &str, name: &str) -> (Workspace, PathBuf) {
     let workspace = Workspace::new(label);
     let path = workspace.copy_of(name);
-    let path = path
-        .to_str()
-        .expect("a temporary path must be UTF-8")
-        .to_owned();
     (workspace, path)
 }
 
-/// Run a `set` that must succeed, and give back its envelope.
-fn set(args: &[&str]) -> serde_json::Value {
-    // `--json` goes in front, because a test may end its arguments with `--`
-    // and an operand, and everything after `--` is an operand.
-    let mut argv = vec!["set", "--json"];
-    argv.extend_from_slice(args);
-    let out = run(&argv);
-    assert_eq!(exit_code(&out), 0, "set {args:?}: {}", stderr(&out));
-    json(&out)
+/// `--type KIND VALUE`, read the way the command line reads it.
+///
+/// `WriteType` lives in the binary's `cli` module, where nothing outside the
+/// binary can reach it, so a test calling the library in process spells the
+/// reading out again here. #20 moves the write type into the batch, and this
+/// goes when it does. Until then the binary's own reader is crossed by the
+/// spawned test below, which drives it from the same table of kinds.
+fn read(kind: &str, value: &str) -> xlsplice::Result<Written> {
+    match kind {
+        "number" => Written::number(value),
+        "text" => Ok(Written::text(value)),
+        "bool" => Written::boolean(value),
+        other => panic!("no such write type: {other}"),
+    }
+}
+
+/// The same, for a test whose value is of the type it names.
+fn written(kind: &str, value: &str) -> Written {
+    read(kind, value).unwrap_or_else(|err| panic!("{value} must be a {kind}: {err}"))
+}
+
+/// A `set` that must succeed, and the envelope it answers with.
+fn set(package: &Path, target: &str, kind: &str, value: &str) -> serde_json::Value {
+    set_with(package, target, kind, value, None, false)
+}
+
+/// The same, with the two flags a writing verb takes.
+fn set_with(
+    package: &Path,
+    target: &str,
+    kind: &str,
+    value: &str,
+    out: Option<PathBuf>,
+    dry_run: bool,
+) -> serde_json::Value {
+    let rendered = under_json(verb::set(
+        package,
+        target,
+        written(kind, value),
+        out,
+        dry_run,
+    ));
+    assert_eq!(
+        rendered.exit, 0,
+        "set {target} {value}: {}",
+        rendered.stdout
+    );
+    envelope(&rendered)
 }
 
 /// The worksheet of a fixture as Excel saved it.
@@ -70,7 +115,7 @@ fn every_type_lands_in_every_fixture_and_moves_nothing_else_in_the_package() {
         ] {
             let (_workspace, package) = copy(&format!("{kind}-{name}"), name);
 
-            let body = set(&[&package, target, value, "--type", kind]);
+            let body = set(&package, target, kind, value);
 
             assert_eq!(
                 body["operations"][0]["changed"],
@@ -78,14 +123,14 @@ fn every_type_lands_in_every_fixture_and_moves_nothing_else_in_the_package() {
                 "{name} {kind}"
             );
             assert_eq!(
-                body["parts"]["changed"],
-                serde_json::json!([SHEET1]),
-                "{name} {kind}: only the targeted worksheet may change"
+                body["parts"],
+                serde_json::json!({"changed": [SHEET1], "added": [], "removed": []}),
+                "{name} {kind}: the targeted worksheet changed and nothing else did"
             );
-            assert_only_these_differ(&fixture(name), Path::new(&package), &[SHEET1]);
+            assert_only_these_differ(&fixture(name), &package, &[SHEET1]);
             assert_spliced(
                 &fixture_sheet(name),
-                &part_text(Path::new(&package), SHEET1),
+                &part_text(&package, SHEET1),
                 CELL_A1,
                 expected,
             );
@@ -102,11 +147,11 @@ fn what_was_written_is_what_get_reads_back() {
         ("bool", "0", "b", serde_json::json!(false)),
     ] {
         let (_workspace, package) = copy(&format!("read-back-{kind}-{given}"), "plain.xlsx");
-        set(&[&package, "Sheet1!A1", given, "--type", kind]);
+        set(&package, "Sheet1!A1", kind, given);
 
-        let out = run(&["get", "--json", &package, "Sheet1!A1"]);
-        assert_eq!(exit_code(&out), 0, "{kind} {given}: {}", stderr(&out));
-        let cell = json(&out)["cells"][0].clone();
+        let out = under_json(verb::get(&package, &["Sheet1!A1"]));
+        assert_eq!(out.exit, 0, "{kind} {given}: {}", out.stderr);
+        let cell = envelope(&out)["cells"][0].clone();
 
         assert_eq!(cell["type"], serde_json::json!(expected_type), "{given}");
         assert_eq!(cell["value"], expected_value, "{given}");
@@ -117,18 +162,18 @@ fn what_was_written_is_what_get_reads_back() {
 fn text_lands_as_an_inline_string_and_the_shared_string_table_is_not_touched() {
     let (_workspace, package) = copy("text", "plain.xlsx");
 
-    let body = set(&[&package, "Sheet1!B1", "goodbye", "--type", "text"]);
+    let body = set(&package, "Sheet1!B1", "text", "goodbye");
 
     assert_eq!(body["parts"]["changed"], serde_json::json!([SHEET1]));
-    assert_only_these_differ(&fixture("plain.xlsx"), Path::new(&package), &[SHEET1]);
+    assert_only_these_differ(&fixture("plain.xlsx"), &package, &[SHEET1]);
     assert_spliced(
         &fixture_sheet("plain.xlsx"),
-        &part_text(Path::new(&package), SHEET1),
+        &part_text(&package, SHEET1),
         r#"<c r="B1" t="s"><v>0</v></c>"#,
         r#"<c r="B1" t="inlineStr"><is><t>goodbye</t></is></c>"#,
     );
     assert_eq!(
-        part_text(Path::new(&package), SHARED_STRINGS),
+        part_text(&package, SHARED_STRINGS),
         part_text(&fixture("plain.xlsx"), SHARED_STRINGS),
         "overwriting a shared-string cell must leave the table alone"
     );
@@ -138,12 +183,12 @@ fn text_lands_as_an_inline_string_and_the_shared_string_table_is_not_touched() {
 fn a_boolean_lands_as_a_boolean_cell_keeping_the_style_the_cell_carried() {
     let (_workspace, package) = copy("bool", "plain.xlsx");
 
-    set(&[&package, "Sheet1!C1", "false", "--type", "bool"]);
+    set(&package, "Sheet1!C1", "bool", "false");
 
-    assert_only_these_differ(&fixture("plain.xlsx"), Path::new(&package), &[SHEET1]);
+    assert_only_these_differ(&fixture("plain.xlsx"), &package, &[SHEET1]);
     assert_spliced(
         &fixture_sheet("plain.xlsx"),
-        &part_text(Path::new(&package), SHEET1),
+        &part_text(&package, SHEET1),
         r#"<c r="C1" s="1"><v>46276</v></c>"#,
         r#"<c r="C1" s="1" t="b"><v>0</v></c>"#,
     );
@@ -153,20 +198,24 @@ fn a_boolean_lands_as_a_boolean_cell_keeping_the_style_the_cell_carried() {
 fn a_write_through_a_defined_name_lands_in_the_anchor_of_the_range_it_names() {
     let (_workspace, package) = copy("name", "feature.xlsx");
 
-    let body = set(&[&package, "MergedInput", "  padded  ", "--type", "text"]);
+    let body = set(&package, "MergedInput", "text", "  padded  ");
 
     assert_eq!(
-        body["operations"][0]["address"],
-        serde_json::json!("Inputs!B2")
+        body["operations"],
+        serde_json::json!([{
+            "target": "MergedInput",
+            "name": "MergedInput",
+            "sheet": "Inputs",
+            "cell": "B2",
+            "address": "Inputs!B2",
+            "changed": true,
+        }]),
+        "one result per operation, with every member of it"
     );
-    assert_eq!(
-        body["operations"][0]["name"],
-        serde_json::json!("MergedInput")
-    );
-    assert_only_these_differ(&fixture("feature.xlsx"), Path::new(&package), &[SHEET1]);
+    assert_only_these_differ(&fixture("feature.xlsx"), &package, &[SHEET1]);
     assert_spliced(
         &fixture_sheet("feature.xlsx"),
-        &part_text(Path::new(&package), SHEET1),
+        &part_text(&package, SHEET1),
         r#"<c r="B2" s="4"/>"#,
         r#"<c r="B2" s="4" t="inlineStr"><is><t xml:space="preserve">  padded  </t></is></c>"#,
     );
@@ -176,20 +225,80 @@ fn a_write_through_a_defined_name_lands_in_the_anchor_of_the_range_it_names() {
 fn a_number_in_the_macro_package_leaves_the_vba_project_byte_for_byte() {
     let (_workspace, package) = copy("macros", "macros.xlsm");
 
-    // A value that starts with a minus is an operand, not a flag, and `--`
-    // is what says so.
-    set(&[&package, "Sheet1!A1", "--type", "number", "--", "-2.5"]);
+    set(&package, "Sheet1!A1", "number", "-2.5");
 
-    assert_only_these_differ(&fixture("macros.xlsm"), Path::new(&package), &[SHEET1]);
+    assert_only_these_differ(&fixture("macros.xlsm"), &package, &[SHEET1]);
     assert_eq!(
-        part(Path::new(&package), VBA),
+        part(&package, VBA),
         part(&fixture("macros.xlsm"), VBA),
         "the VBA project must pass through untouched, raw copy and all"
     );
     assert_spliced(
         &fixture_sheet("macros.xlsm"),
-        &part_text(Path::new(&package), SHEET1),
+        &part_text(&package, SHEET1),
         r#"<c r="A1"><v>1</v></c>"#,
+        r#"<c r="A1"><v>-2.5</v></c>"#,
+    );
+}
+
+/// What `--type` names is read by the binary, from a table a test in process
+/// cannot reach, so each of the three is crossed here through a real argv.
+/// Which bytes each one lands is the business of the tests above; that the
+/// name reaches the right reader at all is the business of this one.
+#[test]
+fn each_write_type_reads_its_value_the_way_the_command_line_says() {
+    for (kind, value, expected) in [
+        ("number", "42.5", r#"<c r="A1"><v>42.5</v></c>"#),
+        (
+            "text",
+            "written",
+            r#"<c r="A1" t="inlineStr"><is><t>written</t></is></c>"#,
+        ),
+        ("bool", "true", r#"<c r="A1" t="b"><v>1</v></c>"#),
+    ] {
+        let (_workspace, package) = copy(&format!("argv-{kind}"), "plain.xlsx");
+
+        let out = run(&[
+            "set",
+            package.to_str().expect("a UTF-8 path"),
+            "Sheet1!A1",
+            value,
+            "--type",
+            kind,
+        ]);
+
+        assert_eq!(exit_code(&out), 0, "{kind}: {}", stderr(&out));
+        assert_spliced(
+            &fixture_sheet("plain.xlsx"),
+            &part_text(&package, SHEET1),
+            CELL_A1,
+            expected,
+        );
+    }
+}
+
+/// A value that starts with a minus is an operand, not a flag, and `--` is
+/// what says so. Only a real argv can be wrong about that, so this one runs
+/// the binary, and takes `set` end to end while it is there.
+#[test]
+fn a_value_beginning_with_a_minus_is_an_operand_after_the_double_dash() {
+    let (_workspace, package) = copy("negative", "plain.xlsx");
+
+    let out = run(&[
+        "set",
+        package.to_str().expect("a UTF-8 path"),
+        "Sheet1!A1",
+        "--type",
+        "number",
+        "--",
+        "-2.5",
+    ]);
+
+    assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
+    assert_spliced(
+        &fixture_sheet("plain.xlsx"),
+        &part_text(&package, SHEET1),
+        CELL_A1,
         r#"<c r="A1"><v>-2.5</v></c>"#,
     );
 }
@@ -198,12 +307,9 @@ fn a_number_in_the_macro_package_leaves_the_vba_project_byte_for_byte() {
 fn the_spliced_part_keeps_the_method_and_timestamp_its_entry_carried() {
     let (_workspace, package) = copy("entry", "plain.xlsx");
 
-    set(&[&package, "Sheet1!A1", "42", "--type", "number"]);
+    set(&package, "Sheet1!A1", "number", "42");
 
-    let (was, now) = (
-        part(&fixture("plain.xlsx"), SHEET1),
-        part(Path::new(&package), SHEET1),
-    );
+    let (was, now) = (part(&fixture("plain.xlsx"), SHEET1), part(&package, SHEET1));
     assert_ne!(
         was.bytes, now.bytes,
         "the target part is the one that moved"
@@ -220,21 +326,37 @@ fn writing_to_another_path_leaves_the_input_byte_for_byte_as_it_was() {
     let (workspace, package) = copy("out", "plain.xlsx");
     let elsewhere = workspace.dir().join("written.xlsx");
 
-    let body = set(&[
+    let body = set_with(
         &package,
         "Sheet1!A2",
-        "7",
-        "--type",
         "number",
-        "--out",
-        elsewhere.to_str().expect("a UTF-8 path"),
-    ]);
+        "7",
+        Some(elsewhere.clone()),
+        false,
+    );
 
+    assert_eq!(
+        body["operations"],
+        serde_json::json!([{
+            "target": "Sheet1!A2",
+            "name": null,
+            "sheet": "Sheet1",
+            "cell": "A2",
+            "address": "Sheet1!A2",
+            "changed": true,
+        }]),
+        "an address goes through no defined name at all"
+    );
     assert_eq!(
         body["output"],
         serde_json::json!(elsewhere.display().to_string())
     );
-    assert_same_bytes(&fixture("plain.xlsx"), Path::new(&package));
+    assert_eq!(
+        body["dry_run"],
+        serde_json::json!(false),
+        "a write that landed was no dry run"
+    );
+    assert_same_bytes(&fixture("plain.xlsx"), &package);
     assert_only_these_differ(&fixture("plain.xlsx"), &elsewhere, &[SHEET1]);
 }
 
@@ -242,7 +364,7 @@ fn writing_to_another_path_leaves_the_input_byte_for_byte_as_it_was() {
 fn an_in_place_write_leaves_no_temporary_file_behind() {
     let (workspace, package) = copy("temporary", "plain.xlsx");
 
-    set(&[&package, "Sheet1!A2", "7", "--type", "number"]);
+    set(&package, "Sheet1!A2", "number", "7");
 
     assert_eq!(
         files_in(workspace.dir()),
@@ -257,11 +379,11 @@ fn writing_the_value_that_is_already_there_changes_nothing_and_says_so() {
 
     // The cell holds 2.5; 2.50 is the same number in a longer spelling, so
     // the shortest round-trip form of it is the text already in the part.
-    let body = set(&[&package, "Sheet1!A2", "2.50", "--type", "number"]);
+    let body = set(&package, "Sheet1!A2", "number", "2.50");
 
     assert_eq!(body["operations"][0]["changed"], serde_json::json!(false));
     assert_eq!(body["parts"]["changed"], serde_json::json!([]));
-    assert_same_bytes(&fixture("plain.xlsx"), Path::new(&package));
+    assert_same_bytes(&fixture("plain.xlsx"), &package);
 }
 
 #[test]
@@ -269,15 +391,14 @@ fn a_write_of_the_present_value_to_another_path_copies_the_input_byte_for_byte()
     let (workspace, package) = copy("unchanged-out", "plain.xlsx");
     let elsewhere = workspace.dir().join("copy.xlsx");
 
-    let body = set(&[
+    let body = set_with(
         &package,
         "Sheet1!D1",
-        "TRUE",
-        "--type",
         "bool",
-        "--out",
-        elsewhere.to_str().expect("a UTF-8 path"),
-    ]);
+        "TRUE",
+        Some(elsewhere.clone()),
+        false,
+    );
 
     assert_eq!(body["operations"][0]["changed"], serde_json::json!(false));
     assert_same_bytes(&fixture("plain.xlsx"), &elsewhere);
@@ -289,19 +410,19 @@ fn two_runs_over_the_same_input_produce_the_same_bytes() {
     let (_second, two) = copy("determinism-two", "feature.xlsx");
 
     for package in [&one, &two] {
-        set(&[package, "Inputs!A1", "hello", "--type", "text"]);
+        set(package, "Inputs!A1", "text", "hello");
     }
 
-    assert_same_bytes(Path::new(&one), Path::new(&two));
+    assert_same_bytes(&one, &two);
 }
 
 #[test]
 fn writing_a_second_time_over_the_same_package_changes_nothing_more() {
     let (_workspace, package) = copy("idempotent", "feature.xlsx");
 
-    set(&[&package, "Inputs!A1", "9", "--type", "number"]);
+    set(&package, "Inputs!A1", "number", "9");
     let once = std::fs::read(&package).expect("the written package must be readable");
-    let body = set(&[&package, "Inputs!A1", "9", "--type", "number"]);
+    let body = set(&package, "Inputs!A1", "number", "9");
 
     assert_eq!(body["operations"][0]["changed"], serde_json::json!(false));
     assert_eq!(
@@ -315,17 +436,17 @@ fn writing_a_second_time_over_the_same_package_changes_nothing_more() {
 fn a_dry_run_writes_nothing_and_still_reports_everything() {
     let (workspace, package) = copy("dry-run", "plain.xlsx");
 
-    let body = set(&[&package, "Sheet1!A1", "99", "--type", "number", "--dry-run"]);
+    let body = set_with(&package, "Sheet1!A1", "number", "99", None, true);
 
     assert_eq!(body["dry_run"], serde_json::json!(true));
     assert_eq!(body["operations"][0]["changed"], serde_json::json!(true));
     assert_eq!(body["parts"]["changed"], serde_json::json!([SHEET1]));
     assert_eq!(
         body["output"],
-        serde_json::json!(package),
+        serde_json::json!(package.display().to_string()),
         "a dry run still names where the result would have gone"
     );
-    assert_same_bytes(&fixture("plain.xlsx"), Path::new(&package));
+    assert_same_bytes(&fixture("plain.xlsx"), &package);
     assert_eq!(
         files_in(workspace.dir()),
         ["plain.xlsx"],
@@ -338,19 +459,17 @@ fn a_dry_run_to_another_path_writes_nothing_there_either() {
     let (workspace, package) = copy("dry-run-out", "plain.xlsx");
     let elsewhere = workspace.dir().join("never.xlsx");
 
-    set(&[
+    set_with(
         &package,
         "Sheet1!A1",
-        "99",
-        "--type",
         "number",
-        "--out",
-        elsewhere.to_str().expect("a UTF-8 path"),
-        "--dry-run",
-    ]);
+        "99",
+        Some(elsewhere.clone()),
+        true,
+    );
 
     assert!(!elsewhere.exists(), "a dry run must create no file");
-    assert_same_bytes(&fixture("plain.xlsx"), Path::new(&package));
+    assert_same_bytes(&fixture("plain.xlsx"), &package);
 }
 
 #[test]
@@ -358,23 +477,22 @@ fn a_destination_that_cannot_be_written_fails_and_leaves_the_input_alone() {
     let (workspace, package) = copy("unwritable", "plain.xlsx");
     let nowhere = workspace.dir().join("no-such-directory").join("out.xlsx");
 
-    let out = run(&[
-        "set",
+    let out = under_json(verb::set(
         &package,
         "Sheet1!A1",
-        "42",
-        "--type",
-        "number",
-        "--out",
-        nowhere.to_str().expect("a UTF-8 path"),
-        "--json",
-    ]);
+        written("number", "42"),
+        Some(nowhere.clone()),
+        false,
+    ));
 
-    assert_eq!(exit_code(&out), 1);
-    assert_eq!(json(&out)["ok"], serde_json::json!(false));
-    assert_eq!(json(&out)["error"]["code"], serde_json::json!("internal"));
+    assert_eq!(out.exit, 1);
+    assert_eq!(envelope(&out)["ok"], serde_json::json!(false));
+    assert_eq!(
+        envelope(&out)["error"]["code"],
+        serde_json::json!("internal")
+    );
     assert!(!nowhere.exists());
-    assert_same_bytes(&fixture("plain.xlsx"), Path::new(&package));
+    assert_same_bytes(&fixture("plain.xlsx"), &package);
 }
 
 #[test]
@@ -385,20 +503,16 @@ fn a_destination_that_cannot_be_replaced_leaves_no_temporary_file_behind() {
     let occupied = workspace.dir().join("occupied.xlsx");
     std::fs::create_dir(&occupied).expect("a test must be able to make a directory");
 
-    let out = run(&[
-        "set",
-        "--json",
+    let out = under_json(verb::set(
         &package,
         "Sheet1!A1",
-        "42",
-        "--type",
-        "number",
-        "--out",
-        occupied.to_str().expect("a UTF-8 path"),
-    ]);
+        written("number", "42"),
+        Some(occupied.clone()),
+        false,
+    ));
 
-    assert_eq!(exit_code(&out), 1);
-    assert_same_bytes(&fixture("plain.xlsx"), Path::new(&package));
+    assert_eq!(out.exit, 1);
+    assert_same_bytes(&fixture("plain.xlsx"), &package);
     assert_eq!(
         files_in(workspace.dir()),
         ["occupied.xlsx", "plain.xlsx"],
@@ -411,12 +525,21 @@ fn a_cell_the_sheet_does_not_hold_is_not_found_and_the_package_is_untouched() {
     let (_workspace, package) = copy("absent", "plain.xlsx");
 
     for target in ["Sheet1!Z1", "Sheet1!A9"] {
-        let out = run(&["set", &package, target, "42", "--type", "number", "--json"]);
+        let out = under_json(verb::set(
+            &package,
+            target,
+            written("number", "42"),
+            None,
+            false,
+        ));
 
-        assert_eq!(exit_code(&out), 3, "{target}");
-        assert_eq!(json(&out)["error"]["code"], serde_json::json!("not_found"));
+        assert_eq!(out.exit, 3, "{target}");
+        assert_eq!(
+            envelope(&out)["error"]["code"],
+            serde_json::json!("not_found")
+        );
     }
-    assert_same_bytes(&fixture("plain.xlsx"), Path::new(&package));
+    assert_same_bytes(&fixture("plain.xlsx"), &package);
 }
 
 #[test]
@@ -429,18 +552,27 @@ fn a_cell_holding_a_formula_is_refused_and_the_package_is_untouched() {
         ("Inputs!E2", "E2:E5"),
         ("Inputs!E3", "shared group 0"),
     ] {
-        let out = run(&["set", &package, target, "0", "--type", "number", "--json"]);
+        let out = under_json(verb::set(
+            &package,
+            target,
+            written("number", "0"),
+            None,
+            false,
+        ));
 
-        assert_eq!(exit_code(&out), 4, "{target}");
-        assert_eq!(json(&out)["error"]["code"], serde_json::json!("refused"));
-        let message = json(&out)["error"]["message"]
+        assert_eq!(out.exit, 4, "{target}");
+        assert_eq!(
+            envelope(&out)["error"]["code"],
+            serde_json::json!("refused")
+        );
+        let message = envelope(&out)["error"]["message"]
             .as_str()
             .expect("a failed envelope carries a message")
             .to_owned();
         assert!(message.contains(expected), "{target}: {message}");
     }
-    assert_same_bytes(&fixture("feature.xlsx"), Path::new(&package));
-    assert_same_parts(&fixture("feature.xlsx"), Path::new(&package));
+    assert_same_bytes(&fixture("feature.xlsx"), &package);
+    assert_same_parts(&fixture("feature.xlsx"), &package);
 }
 
 #[test]
@@ -448,22 +580,19 @@ fn a_value_that_is_not_of_the_type_asked_for_is_a_usage_error() {
     let (_workspace, package) = copy("mistyped", "plain.xlsx");
 
     for (kind, value) in [("number", "hello"), ("number", "NaN"), ("bool", "maybe")] {
-        let out = run(&[
-            "set",
-            &package,
-            "Sheet1!A1",
-            value,
-            "--type",
-            kind,
-            "--json",
-        ]);
+        let out = under_json(
+            read(kind, value)
+                .and_then(|value| verb::set(&package, "Sheet1!A1", value, None, false)),
+        );
 
-        assert_eq!(exit_code(&out), 2, "--type {kind} {value}");
-        assert_eq!(json(&out)["error"]["code"], serde_json::json!("usage"));
+        assert_eq!(out.exit, 2, "--type {kind} {value}");
+        assert_eq!(envelope(&out)["error"]["code"], serde_json::json!("usage"));
     }
-    assert_same_bytes(&fixture("plain.xlsx"), Path::new(&package));
+    assert_same_bytes(&fixture("plain.xlsx"), &package);
 }
 
+/// clap reads `--type` before a verb is reached, so a type outside the three
+/// never becomes a write at all, and only a real argv can say so.
 #[test]
 fn a_type_outside_the_three_is_rejected_before_the_package_is_opened() {
     let out = run(&[
@@ -477,19 +606,27 @@ fn a_type_outside_the_three_is_rejected_before_the_package_is_opened() {
     ]);
 
     assert_eq!(exit_code(&out), 2);
-    assert_eq!(json(&out)["error"]["code"], serde_json::json!("usage"));
+    assert_eq!(
+        support::json(&out)["error"]["code"],
+        serde_json::json!("usage")
+    );
 }
 
 #[test]
 fn the_text_output_is_one_tab_separated_row_per_operation() {
     let (_workspace, package) = copy("rows", "feature.xlsx");
 
-    let out = run(&["set", &package, "MergedInput", "x", "--type", "text"]);
+    let out = in_text(verb::set(
+        &package,
+        "MergedInput",
+        written("text", "x"),
+        None,
+        false,
+    ));
 
-    assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
+    assert_eq!(out.exit, 0, "{}", out.stderr);
     assert_eq!(
-        stdout(&out),
-        "MergedInput\tMergedInput\tInputs!B2\ttrue\n",
+        out.stdout, "MergedInput\tMergedInput\tInputs!B2\ttrue\n",
         "stdout is a pipe here, so the rows are tab-separated and headerless"
     );
 }

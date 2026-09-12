@@ -5,14 +5,14 @@
 //! verb is reached, the argv scan that decides the shape of a usage error
 //! before clap can, which stream a real run writes to at each volume, and the
 //! panic hook. The shape of what a verb answers is not here: it is asserted
-//! in process in `answers.rs`, and the layout and the exit codes with it, at
-//! the library seam.
+//! in process, beside the verb that answers it, and the layout with it.
 //!
-//! Every code in the frozen table is still reached out of a real process.
-//! Only 1 needs the stub below, and only for a crash: `set.rs` reaches it for
-//! real, along with 2, 3 and 4; a usage error here reaches 2; `get.rs`
-//! reaches 3 and 4; and any verb on a path that is not a package reaches 5,
-//! in `get.rs` and `read_verbs.rs`.
+//! Three of the frozen table's codes come out of a real process here: 0
+//! wherever a run succeeds, 1 from the panic hook below, and 2 from a usage
+//! error. The other three are raised by verbs that no longer spawn to be
+//! watched, so what holds them is `render`'s own test over the whole table,
+//! and the one line of `out.rs` that turns a rendered code into an exit
+//! status is crossed here by the three that remain.
 
 mod support;
 

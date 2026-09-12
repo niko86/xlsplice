@@ -1,445 +1,359 @@
-//! What the read verbs put on stdout, in both shapes.
+//! What a command puts on its two streams, and what it exits with.
 //!
-//! The library answers in its own types; the shape of the answer on the wire
-//! is decided here, in the binary, next to the envelope it goes into. A row of
-//! the table and a member of the payload carry the same facts, so a caller
-//! reading either sees the same package.
+//! One function decides all of it, over the one thing a verb produces: an
+//! [`Answer`] or an [`Error`]. Whether stdout carries an envelope or text,
+//! whether rows are a table or tab-separated fields, what an answer with
+//! nothing in it says, and which exit code a failure maps to are all decided
+//! here, so that no verb decides any of them and none of it needs a process to
+//! observe.
 //!
-//! The JSON shape is the stable one and may only grow: a field is never
-//! removed or retyped, and a field that does not apply is `null` rather than
-//! absent, so every member of a list has the same keys.
+//! What is left to the process is the process: probing whether stdout is a
+//! terminal, writing the two strings, and exiting.
 
-use serde::Serialize;
+use crate::answer::{Answer, Shape};
+use crate::envelope::{Envelope, JsonStyle};
+use crate::error::{EXIT_SUCCESS, Error, Result};
 
-use xlsplice::batch::{OperationReport, Report};
-use xlsplice::cells::{CellReport, Value};
-use xlsplice::workbook::{DefinedName, Resolved, Scope, Sheet, Workbook};
-
-/// The columns of `sheets`.
-pub const SHEET_HEADERS: [&str; 2] = ["NAME", "STATE"];
-
-/// The columns of `names`.
-pub const NAME_HEADERS: [&str; 5] = ["NAME", "SCOPE", "REFERS TO", "ANCHOR", "REASON"];
-
-/// The columns of `set`, and of every writing verb after it.
-pub const WRITE_HEADERS: [&str; 4] = ["TARGET", "NAME", "ADDRESS", "CHANGED"];
-
-/// The columns of `get`.
-pub const CELL_HEADERS: [&str; 11] = [
-    "TARGET", "NAME", "ADDRESS", "TYPE", "VALUE", "RAW", "STYLE", "FORMULA", "ROLE", "RANGE",
-    "GROUP",
-];
-
-/// The payload of `sheets --json`.
-#[derive(Serialize)]
-pub struct Sheets {
-    sheets: Vec<SheetEntry>,
+/// What stdout carries, and in what shape. `--json` decides which arm; stdout
+/// itself decides the style within it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputMode {
+    /// Human-readable text: an aligned table on a terminal, tab-separated
+    /// fields in a pipe.
+    Text(TextStyle),
+    /// One JSON envelope, pretty on a terminal and compact in a pipe.
+    Json(JsonStyle),
 }
 
-#[derive(Serialize)]
-struct SheetEntry {
-    /// The sheet's name, in the package's own spelling.
-    name: String,
-    /// `visible`, `hidden` or `veryHidden`.
-    state: &'static str,
-}
-
-/// The payload of `names --json`.
-#[derive(Serialize)]
-pub struct Names {
-    names: Vec<NameEntry>,
-}
-
-#[derive(Serialize)]
-struct NameEntry {
-    /// The name as the package declares it.
-    name: String,
-    /// `workbook` or `sheet`.
-    scope: &'static str,
-    /// The sheet a sheet-scoped name belongs to; `null` for a
-    /// workbook-scoped one. Kept apart from `scope` so that a sheet called
-    /// "workbook" is not mistaken for a scope.
-    scope_sheet: Option<String>,
-    /// The reference text exactly as the package holds it.
-    refers_to: String,
-    /// The one cell the name stands for, or `null`.
-    anchor: Option<AnchorEntry>,
-    /// Why there is no anchor, or `null` when there is one.
-    reason: Option<&'static str>,
-}
-
-#[derive(Serialize)]
-struct AnchorEntry {
-    /// The sheet, in the package's own spelling.
-    sheet: String,
-    /// The cell in A1 form.
-    cell: String,
-    /// Both together, quoted as a reference: what `get` would accept back.
-    address: String,
-}
-
-/// The payload of `sheets`.
-pub fn sheets(workbook: &Workbook) -> Sheets {
-    Sheets {
-        sheets: workbook
-            .sheets()
-            .iter()
-            .map(|sheet| SheetEntry {
-                name: sheet.name.clone(),
-                state: sheet.state.as_str(),
-            })
-            .collect(),
+impl OutputMode {
+    /// The mode for a run that did or did not ask for `--json`, on a stdout
+    /// that is or is not a terminal. The probe belongs to the process, so the
+    /// caller makes it once and passes the answer.
+    pub fn new(json: bool, is_terminal: bool) -> Self {
+        if json {
+            OutputMode::Json(JsonStyle::for_terminal(is_terminal))
+        } else {
+            OutputMode::Text(TextStyle::for_terminal(is_terminal))
+        }
     }
 }
 
-/// The rows of `sheets`, in workbook order.
-pub fn sheet_rows(workbook: &Workbook) -> Vec<Vec<String>> {
-    workbook.sheets().iter().map(sheet_row).collect()
-}
-
-fn sheet_row(sheet: &Sheet) -> Vec<String> {
-    vec![sheet.name.clone(), sheet.state.as_str().to_owned()]
-}
-
-/// The payload of `names`.
-pub fn names(workbook: &Workbook) -> Names {
-    Names {
-        names: workbook.defined_names().iter().map(name_entry).collect(),
-    }
-}
-
-fn name_entry(name: &DefinedName) -> NameEntry {
-    let (anchor, reason) = match &name.resolved {
-        Resolved::Anchor(address) => (
-            Some(AnchorEntry {
-                sheet: address.sheet.clone(),
-                cell: address.cell.a1(),
-                address: address.to_string(),
-            }),
-            None,
-        ),
-        Resolved::Unresolvable(why) => (None, Some(why.as_str())),
-    };
-    NameEntry {
-        name: name.name.clone(),
-        scope: scope_kind(&name.scope),
-        scope_sheet: match &name.scope {
-            Scope::Workbook => None,
-            Scope::Sheet(sheet) => Some(sheet.clone()),
-        },
-        refers_to: name.refers_to.clone(),
-        anchor,
-        reason,
-    }
-}
-
-/// The rows of `names`, in the order the package declares them.
-pub fn name_rows(workbook: &Workbook) -> Vec<Vec<String>> {
-    workbook.defined_names().iter().map(name_row).collect()
-}
-
-/// A name's row. Every row has all five fields, one of the last two always
-/// empty, so a field is always the same field to `cut`.
-fn name_row(name: &DefinedName) -> Vec<String> {
-    let (anchor, reason) = match &name.resolved {
-        Resolved::Anchor(address) => (address.to_string(), String::new()),
-        Resolved::Unresolvable(why) => (String::new(), why.as_str().to_owned()),
-    };
-    vec![
-        name.name.clone(),
-        match &name.scope {
-            Scope::Workbook => "workbook".to_owned(),
-            Scope::Sheet(sheet) => sheet.clone(),
-        },
-        name.refers_to.clone(),
-        anchor,
-        reason,
-    ]
-}
-
-/// How the envelope names a scope, apart from the sheet it names.
-fn scope_kind(scope: &Scope) -> &'static str {
-    match scope {
-        Scope::Workbook => "workbook",
-        Scope::Sheet(_) => "sheet",
-    }
-}
-
-/// The payload of `get --json`.
-#[derive(Serialize)]
-pub struct Cells {
-    cells: Vec<CellEntry>,
-}
-
-#[derive(Serialize)]
-struct CellEntry {
-    /// The operand exactly as it was given.
-    target: String,
-    /// The defined name the operand went through, in the package's own
-    /// spelling, or `null` when the operand was an address.
-    name: Option<String>,
-    /// The sheet, in the package's own spelling.
-    sheet: String,
-    /// The cell in A1 form.
-    cell: String,
-    /// Both together, quoted as a reference: what `get` would accept back.
-    address: String,
-    /// The type the value is stored as: `n`, `s`, `str`, `inlineStr`, `b`,
-    /// `e`, `d`, or `empty` for a cell that stores no value.
-    #[serde(rename = "type")]
-    kind: &'static str,
-    /// The value, typed: a number, a string, a boolean, or `null` for a cell
-    /// that stores no value.
-    value: serde_json::Value,
-    /// The exact stored text; for a shared-string cell, the string index.
-    /// `null` for a cell that stores no value.
-    raw: Option<String>,
-    /// The cell's formula, or `null`.
-    formula: Option<FormulaEntry>,
-    /// The style index, or `null` for a cell the part does not hold.
-    style: Option<u32>,
-}
-
-#[derive(Serialize)]
-struct FormulaEntry {
-    /// The formula text as stored, without a leading `=`. A shared child
-    /// stores none of its own, and carries the empty string.
-    text: String,
-    /// `plain`, `shared_master`, `shared_child`, `array` or `data_table`.
-    role: &'static str,
-    /// The range a shared master or an array formula covers, else `null`.
-    range: Option<String>,
-    /// The shared group a master or a child belongs to, else `null`.
-    group: Option<u32>,
-}
-
-/// The payload of `get`.
-pub fn cells(reports: &[CellReport]) -> Cells {
-    Cells {
-        cells: reports.iter().map(cell_entry).collect(),
-    }
-}
-
-fn cell_entry(report: &CellReport) -> CellEntry {
-    CellEntry {
-        target: report.target.clone(),
-        name: report.name.clone(),
-        sheet: report.address.sheet.clone(),
-        cell: report.address.cell.a1(),
-        address: report.address.to_string(),
-        kind: report.kind.as_str(),
-        value: match &report.value {
-            Value::Number(number) => number_json(*number),
-            Value::Text(text) => serde_json::Value::String(text.clone()),
-            Value::Bool(yes) => serde_json::Value::Bool(*yes),
-            Value::Empty => serde_json::Value::Null,
-        },
-        raw: report.raw.clone(),
-        formula: report.formula.as_ref().map(|formula| FormulaEntry {
-            text: formula.text.clone(),
-            role: formula.role.as_str(),
-            range: formula.range.clone(),
-            group: formula.group,
-        }),
-        style: report.style,
-    }
-}
-
-/// The rows of `get`, one per target, in the order the targets were given.
-pub fn cell_rows(reports: &[CellReport]) -> Vec<Vec<String>> {
-    reports.iter().map(cell_row).collect()
-}
-
-/// A cell's row. Every row has all eleven fields, whatever the cell holds, so
-/// a field is always the same field to `cut`; the formula's three trail at the
-/// end because most cells have none.
-fn cell_row(report: &CellReport) -> Vec<String> {
-    let (text, role, range, group) = match &report.formula {
-        None => (String::new(), String::new(), String::new(), String::new()),
-        Some(formula) => (
-            formula.text.clone(),
-            formula.role.as_str().to_owned(),
-            formula.range.clone().unwrap_or_default(),
-            formula.group.map(|si| si.to_string()).unwrap_or_default(),
-        ),
-    };
-    vec![
-        report.target.clone(),
-        report.name.clone().unwrap_or_default(),
-        report.address.to_string(),
-        report.kind.as_str().to_owned(),
-        value_text(&report.value),
-        report.raw.clone().unwrap_or_default(),
-        report.style.map(|s| s.to_string()).unwrap_or_default(),
-        text,
-        role,
-        range,
-        group,
-    ]
-}
-
-/// The payload of a writing verb under `--json`.
-#[derive(Serialize)]
-pub struct WriteReport {
-    /// One result per operation, in the order the operations were given.
-    operations: Vec<OperationEntry>,
-    /// Which parts of the package the batch changed, added and removed.
-    parts: PartsEntry,
-    /// Where the result was written, or would have been under a dry run.
-    output: String,
-    /// Whether nothing was written because this was a dry run.
-    dry_run: bool,
-}
-
-#[derive(Serialize)]
-struct OperationEntry {
-    /// The operand exactly as it was given.
-    target: String,
-    /// The defined name the operand went through, in the package's own
-    /// spelling, or `null` when the operand was an address.
-    name: Option<String>,
-    /// The sheet, in the package's own spelling.
-    sheet: String,
-    /// The cell in A1 form.
-    cell: String,
-    /// Both together, quoted as a reference: what `get` would accept back.
-    address: String,
-    /// Whether the operation changed a byte. A write of the value already
-    /// there did not.
-    changed: bool,
-}
-
-#[derive(Serialize)]
-struct PartsEntry {
-    /// The parts whose bytes differ from the ones read, in path order.
-    changed: Vec<String>,
-    /// The parts the batch created.
-    added: Vec<String>,
-    /// The parts the batch removed.
-    removed: Vec<String>,
-}
-
-/// The payload of a writing verb.
-pub fn written(report: &Report) -> WriteReport {
-    WriteReport {
-        operations: report.operations.iter().map(operation_entry).collect(),
-        parts: PartsEntry {
-            changed: report.parts.changed.clone(),
-            added: report.parts.added.clone(),
-            removed: report.parts.removed.clone(),
-        },
-        output: report.output.display().to_string(),
-        dry_run: report.dry_run,
-    }
-}
-
-fn operation_entry(operation: &OperationReport) -> OperationEntry {
-    OperationEntry {
-        target: operation.target.clone(),
-        name: operation.name.clone(),
-        sheet: operation.address.sheet.clone(),
-        cell: operation.address.cell.a1(),
-        address: operation.address.to_string(),
-        changed: operation.changed,
-    }
-}
-
-/// The rows of a writing verb, one per operation, in the order the operations
-/// were given. What the envelope says about the parts and the output path has
-/// no row of its own: the stable interface is `--json`.
-pub fn written_rows(report: &Report) -> Vec<Vec<String>> {
-    report
-        .operations
-        .iter()
-        .map(|operation| {
-            vec![
-                operation.target.clone(),
-                operation.name.clone().unwrap_or_default(),
-                operation.address.to_string(),
-                operation.changed.to_string(),
-            ]
-        })
-        .collect()
-}
-
-/// A number as JSON.
+/// How rows are laid out for eyes or for `cut`.
 ///
-/// An integral value is written without a decimal point, which is the form
-/// the package holds it in and the form a write puts back, so a value read
-/// out of one cell is the value written into another. Beyond the range where
-/// a double counts in whole numbers there is nothing to be gained by it, so
-/// the plain form takes over. A cell reports only finite numbers, so the last
-/// arm is a guard the type cannot carry rather than a case that arises: a
-/// renderer answers with null sooner than it panics.
-fn number_json(number: f64) -> serde_json::Value {
-    const EXACT: f64 = 9_007_199_254_740_992.0;
-    if number.fract() == 0.0 && number.abs() <= EXACT {
-        return serde_json::Value::Number((number as i64).into());
-    }
-    serde_json::Number::from_f64(number).map_or(serde_json::Value::Null, serde_json::Value::Number)
+/// A terminal gets an aligned table under a header. A pipe gets tab-separated
+/// fields and no header, so a field is always the same field and nothing is
+/// truncated or implied by layout. Human output is not the stable interface:
+/// `--json` is, and a script should use it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextStyle {
+    /// Aligned columns under a header.
+    Table,
+    /// Tab-separated fields, no header.
+    Tsv,
 }
 
-/// A value as one field of a row. A number is written in the shortest form
-/// that reads back as itself, and a boolean as the word Excel uses.
-fn value_text(value: &Value) -> String {
-    match value {
-        Value::Number(number) => number.to_string(),
-        Value::Text(text) => text.clone(),
-        Value::Bool(yes) => yes.to_string(),
-        Value::Empty => String::new(),
+impl TextStyle {
+    /// A table only on a terminal; a pipe gets tab-separated lines.
+    pub fn for_terminal(is_terminal: bool) -> Self {
+        if is_terminal {
+            TextStyle::Table
+        } else {
+            TextStyle::Tsv
+        }
     }
+}
+
+/// Everything a command has to show for itself: the bytes for each stream,
+/// ready to write as they are, and the code to exit with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rendered {
+    /// The data channel. Under `--json` it is exactly one envelope; in text it
+    /// is the answer, or nothing at all when the answer has nothing to say.
+    pub stdout: String,
+    /// The diagnostic channel: a failure in text mode, and nothing otherwise.
+    pub stderr: String,
+    /// The frozen exit code for the outcome.
+    pub exit: u8,
+}
+
+/// Render what a verb came back with.
+///
+/// The two streams stay apart: under `--json` the envelope is the whole
+/// response and stderr is silent, and in text mode a failure says nothing on
+/// stdout, so a caller reading either stream reads one thing only.
+pub fn render(outcome: Result<Answer>, mode: OutputMode) -> Rendered {
+    match outcome {
+        Ok(answer) => Rendered {
+            stdout: match mode {
+                OutputMode::Json(style) => {
+                    terminated(&Envelope::success(answer.payload()).render(style))
+                }
+                OutputMode::Text(style) => terminated(&lay_out(style, answer.shape())),
+            },
+            stderr: String::new(),
+            exit: EXIT_SUCCESS,
+        },
+        Err(error) => Rendered {
+            stdout: match mode {
+                OutputMode::Json(style) => terminated(&Envelope::failure(&error).render(style)),
+                OutputMode::Text(_) => String::new(),
+            },
+            stderr: match mode {
+                OutputMode::Json(_) => String::new(),
+                OutputMode::Text(_) => diagnostic(&error),
+            },
+            exit: error.exit_code(),
+        },
+    }
+}
+
+/// What a failure says on stderr. A crash reports here too, whatever the mode,
+/// so the prefix a reader looks for is written in one place.
+pub fn diagnostic(error: &Error) -> String {
+    format!("error: {error}\n")
+}
+
+/// What a stream carries for `text`: the text and its terminator, or nothing
+/// at all. Nothing to say is said with nothing: a verb that found no rows must
+/// not put a blank line down the pipe.
+fn terminated(text: &str) -> String {
+    match text.is_empty() {
+        true => String::new(),
+        false => format!("{text}\n"),
+    }
+}
+
+/// Lay an answer out for a person.
+///
+/// Widths are counted in characters. That is exact for the Latin names these
+/// tables carry and approximate for the rest, which costs nothing: alignment
+/// is decoration, and no consumer reads the aligned form.
+fn lay_out(style: TextStyle, shape: &Shape) -> String {
+    let (headers, rows) = match shape {
+        Shape::Line(line) => return line.clone(),
+        Shape::Rows { headers, rows } => (headers, rows),
+    };
+    let lines: Vec<String> = match style {
+        TextStyle::Tsv => rows.iter().map(|row| row.join("\t")).collect(),
+        TextStyle::Table => {
+            let mut widths: Vec<usize> = headers.iter().map(|head| head.chars().count()).collect();
+            for row in rows {
+                for (column, field) in row.iter().enumerate() {
+                    let width = field.chars().count();
+                    if let Some(current) = widths.get_mut(column)
+                        && width > *current
+                    {
+                        *current = width;
+                    }
+                }
+            }
+            let header: Vec<String> = headers.iter().map(|head| (*head).to_owned()).collect();
+            std::iter::once(&header)
+                .chain(rows.iter())
+                .map(|row| pad(row, &widths))
+                .collect()
+        }
+    };
+    lines.join("\n")
+}
+
+/// One line of a table: two spaces between columns, every field but the last
+/// padded to its column's width, and no trailing space.
+fn pad(row: &[String], widths: &[usize]) -> String {
+    let mut line = String::new();
+    for (column, field) in row.iter().enumerate() {
+        if column > 0 {
+            line.push_str("  ");
+        }
+        line.push_str(field);
+        let width = widths.get(column).copied().unwrap_or(0);
+        line.push_str(&" ".repeat(width.saturating_sub(field.chars().count())));
+    }
+    line.trim_end().to_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xlsplice::reference::{Address, Cell};
-    use xlsplice::worksheet::StoredType;
+    use crate::error::ErrorCode;
 
-    fn report(value: Value) -> CellReport {
-        CellReport {
-            target: "Inputs!A1".to_owned(),
-            name: None,
-            address: Address {
-                sheet: "Inputs".to_owned(),
-                cell: Cell::parse("A1").expect("the test asks for a cell"),
-            },
-            kind: StoredType::Number,
-            value,
-            raw: Some("1".to_owned()),
-            formula: None,
-            style: Some(0),
+    const HEADERS: [&str; 2] = ["NAME", "STATE"];
+
+    fn rows() -> Vec<Vec<String>> {
+        vec![
+            vec!["Data".to_owned(), "visible".to_owned()],
+            vec!["Parameters".to_owned(), "veryHidden".to_owned()],
+        ]
+    }
+
+    /// An answer over `headers` and `rows`, with a payload that plays no part
+    /// in what these tests are about.
+    fn answer(headers: &'static [&'static str], rows: Vec<Vec<String>>) -> Answer {
+        Answer::rows(serde_json::json!({"tested": true}), headers, rows)
+            .expect("the test's rows must fit its headers")
+    }
+
+    /// What a person sees on stdout for those rows in that style.
+    fn text(style: TextStyle, headers: &'static [&'static str], rows: Vec<Vec<String>>) -> String {
+        let rendered = render(Ok(answer(headers, rows)), OutputMode::Text(style));
+
+        assert_eq!(rendered.stderr, "", "success says nothing on stderr");
+        assert_eq!(rendered.exit, 0);
+        rendered.stdout
+    }
+
+    #[test]
+    fn a_table_pads_every_column_to_its_widest_field_under_a_header() {
+        assert_eq!(
+            text(TextStyle::Table, &HEADERS, rows()),
+            "NAME        STATE\n\
+             Data        visible\n\
+             Parameters  veryHidden\n"
+        );
+    }
+
+    #[test]
+    fn tab_separated_output_has_no_header_and_no_padding() {
+        assert_eq!(
+            text(TextStyle::Tsv, &HEADERS, rows()),
+            "Data\tvisible\nParameters\tveryHidden\n"
+        );
+    }
+
+    #[test]
+    fn an_empty_field_still_holds_its_place_in_a_tab_separated_line() {
+        const THREE: [&str; 3] = ["A", "B", "C"];
+        let row = vec![vec![
+            "Gone".to_owned(),
+            String::new(),
+            "ref_error".to_owned(),
+        ]];
+
+        assert_eq!(text(TextStyle::Tsv, &THREE, row), "Gone\t\tref_error\n");
+    }
+
+    #[test]
+    fn no_rows_leaves_the_header_alone_on_a_terminal_and_says_nothing_at_all_in_a_pipe() {
+        assert_eq!(
+            text(TextStyle::Table, &HEADERS, Vec::new()),
+            "NAME  STATE\n"
+        );
+        assert_eq!(
+            text(TextStyle::Tsv, &HEADERS, Vec::new()),
+            "",
+            "not even a newline: nothing to say is said with nothing"
+        );
+    }
+
+    #[test]
+    fn no_table_line_ends_in_a_space() {
+        for line in text(TextStyle::Table, &HEADERS, rows()).lines() {
+            assert_eq!(line, line.trim_end(), "{line:?}");
         }
     }
 
     #[test]
-    fn an_integral_number_carries_no_decimal_point_and_a_fractional_one_does() {
-        assert_eq!(number_json(1.0).to_string(), "1");
-        assert_eq!(number_json(-3.0).to_string(), "-3");
-        assert_eq!(number_json(2.5).to_string(), "2.5");
-    }
+    fn an_answer_that_is_a_sentence_is_the_same_sentence_in_both_styles() {
+        let sentence = || {
+            Answer::line(serde_json::json!({"version": "0.1.0"}), "xlsplice 0.1.0")
+                .expect("a line is an answer")
+        };
 
-    #[test]
-    fn a_number_too_large_to_count_in_whole_numbers_stays_a_double() {
-        let huge = number_json(1e300);
-
-        assert!(huge.is_f64(), "{huge} must stay a double");
-        assert_eq!(huge.as_f64(), Some(1e300));
-    }
-
-    #[test]
-    fn a_value_in_a_row_is_written_the_way_a_person_would_read_it() {
-        assert_eq!(value_text(&Value::Number(1.0)), "1");
-        assert_eq!(value_text(&Value::Number(2.5)), "2.5");
-        assert_eq!(value_text(&Value::Bool(true)), "true");
-        assert_eq!(value_text(&Value::Text("hello".to_owned())), "hello");
-        assert_eq!(value_text(&Value::Empty), "");
-    }
-
-    #[test]
-    fn every_row_has_one_field_per_column_whatever_the_cell_holds() {
-        for value in [Value::Number(1.0), Value::Empty] {
-            assert_eq!(cell_row(&report(value)).len(), CELL_HEADERS.len());
+        for style in [TextStyle::Table, TextStyle::Tsv] {
+            let rendered = render(Ok(sentence()), OutputMode::Text(style));
+            assert_eq!(rendered.stdout, "xlsplice 0.1.0\n", "{style:?}");
         }
+    }
+
+    #[test]
+    fn the_envelope_is_the_whole_response_and_stderr_stays_clean() {
+        let rendered = render(
+            Ok(answer(&HEADERS, rows())),
+            OutputMode::Json(JsonStyle::Compact),
+        );
+
+        assert_eq!(
+            rendered.stdout,
+            "{\"ok\":true,\"schema_version\":1,\"tested\":true}\n"
+        );
+        assert_eq!(rendered.stderr, "");
+        assert_eq!(rendered.exit, 0);
+    }
+
+    #[test]
+    fn a_failure_in_text_leaves_the_data_channel_empty_and_says_so_on_stderr() {
+        let rendered = render(
+            Err(Error::not_found("no sheet named 'Inputs'")),
+            OutputMode::Text(TextStyle::Tsv),
+        );
+
+        assert_eq!(rendered.stdout, "");
+        assert_eq!(rendered.stderr, "error: no sheet named 'Inputs'\n");
+    }
+
+    #[test]
+    fn a_failure_under_json_is_the_envelope_and_stderr_stays_clean() {
+        let rendered = render(
+            Err(Error::not_found("no sheet named 'Inputs'")),
+            OutputMode::Json(JsonStyle::Compact),
+        );
+
+        assert_eq!(
+            rendered.stdout,
+            "{\"ok\":false,\"schema_version\":1,\
+             \"error\":{\"code\":\"not_found\",\"message\":\"no sheet named 'Inputs'\"}}\n"
+        );
+        assert_eq!(rendered.stderr, "");
+    }
+
+    /// The frozen table, from the outcome a caller hands over to the code the
+    /// process exits with, in both modes.
+    #[test]
+    fn every_error_code_maps_to_its_frozen_exit_code_in_either_mode() {
+        for code in ErrorCode::ALL {
+            for mode in [
+                OutputMode::Text(TextStyle::Tsv),
+                OutputMode::Json(JsonStyle::Compact),
+            ] {
+                let rendered = render(Err(Error::new(code, "no")), mode);
+                assert_eq!(rendered.exit, code.exit_code(), "{code} in {mode:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_answer_exits_zero_whatever_the_mode() {
+        for mode in [
+            OutputMode::Text(TextStyle::Table),
+            OutputMode::Json(JsonStyle::Pretty),
+        ] {
+            assert_eq!(render(Ok(answer(&HEADERS, rows())), mode).exit, 0);
+        }
+    }
+
+    #[test]
+    fn a_terminal_gets_a_table_and_a_pipe_gets_tab_separated_lines() {
+        assert_eq!(TextStyle::for_terminal(true), TextStyle::Table);
+        assert_eq!(TextStyle::for_terminal(false), TextStyle::Tsv);
+    }
+
+    #[test]
+    fn json_is_asked_for_and_the_terminal_decides_the_style_within_it() {
+        assert_eq!(
+            OutputMode::new(true, false),
+            OutputMode::Json(JsonStyle::Compact)
+        );
+        assert_eq!(
+            OutputMode::new(true, true),
+            OutputMode::Json(JsonStyle::Pretty)
+        );
+        assert_eq!(
+            OutputMode::new(false, false),
+            OutputMode::Text(TextStyle::Tsv)
+        );
+        assert_eq!(
+            OutputMode::new(false, true),
+            OutputMode::Text(TextStyle::Table)
+        );
     }
 }

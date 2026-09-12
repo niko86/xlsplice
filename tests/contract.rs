@@ -1,44 +1,22 @@
 //! Contract tests: everything here observes the built binary from outside,
 //! through its argv, its two streams and its exit code, and nothing else.
+//!
+//! What is here is what needs a process to observe: what clap does before a
+//! verb is reached, the argv scan that decides the shape of a usage error
+//! before clap can, which stream a real run writes to at each volume, and the
+//! panic hook. The shape of what a verb answers is not here: it is asserted
+//! in process in `answers.rs`, and the layout and the exit codes with it, at
+//! the library seam.
+//!
+//! Every code in the frozen table is still reached out of a real process.
+//! Only 1 needs the stub below, and only for a crash: `set.rs` reaches it for
+//! real, along with 2, 3 and 4; a usage error here reaches 2; `get.rs`
+//! reaches 3 and 4; and any verb on a path that is not a package reaches 5,
+//! in `get.rs` and `read_verbs.rs`.
 
 mod support;
 
 use support::{exit_code, json, run, stderr, stdout};
-
-/// The version declared in `Cargo.toml`, read from the manifest rather than
-/// from the binary's own constant, so a hardcoded version would be caught.
-fn manifest_version() -> String {
-    let manifest = include_str!("../Cargo.toml");
-    manifest
-        .lines()
-        .take_while(|line| !line.starts_with("[dependencies]"))
-        .find_map(|line| line.strip_prefix("version = "))
-        .expect("Cargo.toml must declare a package version")
-        .trim_matches('"')
-        .to_owned()
-}
-
-#[test]
-fn version_prints_the_crate_version_as_text() {
-    let out = run(&["version"]);
-
-    assert_eq!(exit_code(&out), 0);
-    assert_eq!(stdout(&out), format!("xlsplice {}\n", manifest_version()));
-    assert_eq!(stderr(&out), "");
-}
-
-#[test]
-fn version_json_prints_the_envelope() {
-    let out = run(&["version", "--json"]);
-
-    assert_eq!(exit_code(&out), 0);
-    assert_eq!(stderr(&out), "");
-    let body = json(&out);
-    assert_eq!(body["ok"], serde_json::json!(true));
-    assert_eq!(body["schema_version"], serde_json::json!(1));
-    assert_eq!(body["version"], serde_json::json!(manifest_version()));
-    assert_eq!(body.get("error"), None);
-}
 
 #[test]
 fn an_unknown_flag_is_a_usage_error_in_text_on_stderr() {
@@ -205,71 +183,12 @@ fn quiet_and_verbose_cannot_both_be_asked_for() {
     assert_eq!(exit_code(&run(&["version", "--quiet", "--verbose"])), 2);
 }
 
-/// The rest of the table needs verbs that do not exist yet, so it is reached
-/// through the `selftest` stub, which is compiled only into a debug build.
-/// A release build has no stub, and so skips these.
+/// The panic hook is the one thing left that no verb can reach, so a stub
+/// reaches it. The stub is compiled only into a debug build; a release build
+/// has none, and so skips these.
 #[cfg(debug_assertions)]
 mod through_the_stub {
     use super::*;
-
-    /// The frozen table, transcribed from the spec.
-    const TABLE: [(&str, &str, i32); 5] = [
-        ("internal", "internal", 1),
-        ("usage", "usage", 2),
-        ("not-found", "not_found", 3),
-        ("refused", "refused", 4),
-        ("unreadable", "unreadable", 5),
-    ];
-
-    #[test]
-    fn a_command_that_succeeds_exits_zero() {
-        let out = run(&["selftest"]);
-
-        assert_eq!(exit_code(&out), 0);
-        assert_eq!(stderr(&out), "");
-    }
-
-    #[test]
-    fn every_code_in_the_table_has_a_case_that_produces_it_with_the_envelope() {
-        for (kind, code, expected_exit) in TABLE {
-            let out = run(&["selftest", "--fail", kind, "--json"]);
-
-            assert_eq!(exit_code(&out), expected_exit, "{kind}");
-            let body = json(&out);
-            assert_eq!(body["ok"], serde_json::json!(false), "{kind}");
-            assert_eq!(body["schema_version"], serde_json::json!(1), "{kind}");
-            assert_eq!(body["error"]["code"], serde_json::json!(code), "{kind}");
-            assert!(
-                !body["error"]["message"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .is_empty(),
-                "{kind} must carry a message"
-            );
-        }
-    }
-
-    #[test]
-    fn every_code_in_the_table_reports_on_stderr_without_json() {
-        for (kind, _, expected_exit) in TABLE {
-            let out = run(&["selftest", "--fail", kind]);
-
-            assert_eq!(exit_code(&out), expected_exit, "{kind}");
-            assert_eq!(stdout(&out), "", "{kind} must leave the data channel empty");
-            assert!(
-                stderr(&out).starts_with("error: "),
-                "{kind}: {}",
-                stderr(&out)
-            );
-        }
-    }
-
-    /// The stub names codes the way the envelope does, so a code the library
-    /// does not publish is a usage error rather than a silent pass.
-    #[test]
-    fn the_stub_refuses_a_code_that_is_not_in_the_table() {
-        assert_eq!(exit_code(&run(&["selftest", "--fail", "wat"])), 2);
-    }
 
     #[test]
     fn a_panic_becomes_the_internal_envelope_and_exit_one() {

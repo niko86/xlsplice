@@ -122,6 +122,13 @@ _Avoid_: preview, simulation, check
 
 ### The contract
 
+**Answer**:
+What a verb comes back with: one result in both shapes at once, the payload the
+JSON envelope carries and the same facts as rows under column headers. Every
+row is as wide as the headers. Rendering an answer, or the error in its place,
+is what produces the two streams and the exit code.
+_Avoid_: response, output, result
+
 **JSON envelope**:
 The single JSON document a `--json` command writes to stdout: `ok`,
 `schema_version`, the verb's payload, and, on failure, `error` with a stable

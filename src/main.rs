@@ -1,43 +1,45 @@
-//! The binary: parse the command line, call the library, render the result.
+//! The binary: parse the command line, call the library, write what it says.
 //!
-//! Nothing here knows how a package is spliced. Its whole job is the machine
-//! contract: one envelope on stdout under `--json`, diagnostics on stderr, and
-//! an exit code from the frozen table in [`xlsplice::error`].
+//! Nothing here knows how a package is spliced, and nothing here decides what
+//! the machine contract looks like: a verb comes back with an [`Answer`] or an
+//! [`Error`], the library renders it, and this is what puts the two streams
+//! where they go and exits.
 
 mod cli;
 mod out;
-mod render;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
 
-use xlsplice::batch::{self, Batch, Destination, Operation, Report};
-use xlsplice::cells::{self, CellReport};
+use xlsplice::answer::{self, Answer};
+use xlsplice::batch::{self, Batch, Destination, Operation};
+use xlsplice::cells;
 use xlsplice::error::Error;
 use xlsplice::package::Package;
+use xlsplice::render::OutputMode;
 use xlsplice::workbook::Workbook;
 
 use crate::cli::{Cli, Command};
-use crate::out::{Out, OutputMode, Verbosity};
+use crate::out::{Out, Verbosity};
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().collect();
     // clap may never finish parsing, so the argv scan is what decides the
     // shape of a usage error.
-    out::install_panic_hook(OutputMode::resolve(cli::json_requested(&argv)));
+    out::install_panic_hook(out::mode(cli::json_requested(&argv)));
 
     match Cli::try_parse_from(&argv) {
         Ok(parsed) => {
             let out = Out::new(
-                OutputMode::resolve(parsed.global.json),
+                out::mode(parsed.global.json),
                 Verbosity::from_flags(parsed.global.quiet, parsed.global.verbose),
             );
             run(parsed.command, &out)
         }
         // clap never finished, so the argv scan is what decides the shape.
-        Err(err) => parse_failure(err, OutputMode::resolve(cli::json_requested(&argv))),
+        Err(err) => parse_failure(err, out::mode(cli::json_requested(&argv))),
     }
 }
 
@@ -48,34 +50,10 @@ fn run(command: Command, out: &Out) -> ExitCode {
         command.name()
     ));
 
-    match command {
-        Command::Sheets { file } => match open(&file, out) {
-            Ok((_, workbook)) => out.rows(
-                render::sheets(&workbook),
-                &render::SHEET_HEADERS,
-                &render::sheet_rows(&workbook),
-            ),
-            Err(err) => out.failure(&err),
-        },
-
-        Command::Names { file } => match open(&file, out) {
-            Ok((_, workbook)) => out.rows(
-                render::names(&workbook),
-                &render::NAME_HEADERS,
-                &render::name_rows(&workbook),
-            ),
-            Err(err) => out.failure(&err),
-        },
-
-        Command::Get { file, targets } => match get(&file, &targets, out) {
-            Ok(reports) => out.rows(
-                render::cells(&reports),
-                &render::CELL_HEADERS,
-                &render::cell_rows(&reports),
-            ),
-            Err(err) => out.failure(&err),
-        },
-
+    out.emit(match command {
+        Command::Sheets { file } => sheets(&file, out),
+        Command::Names { file } => names(&file, out),
+        Command::Get { file, targets } => get(&file, &targets, out),
         Command::Set {
             file,
             target,
@@ -83,34 +61,11 @@ fn run(command: Command, out: &Out) -> ExitCode {
             kind,
             out: destination,
             dry_run,
-        } => match set(&file, &target, &value, kind, destination, dry_run, out) {
-            Ok(report) => out.rows(
-                render::written(&report),
-                &render::WRITE_HEADERS,
-                &render::written_rows(&report),
-            ),
-            Err(err) => out.failure(&err),
-        },
-
-        Command::Version => {
-            let version = env!("CARGO_PKG_VERSION");
-            out.success(Version { version }, &format!("xlsplice {version}"))
-        }
-
+        } => set(&file, &target, &value, kind, destination, dry_run, out),
+        Command::Version => answer::version(),
         #[cfg(debug_assertions)]
-        Command::Selftest { fail, panic } => {
-            if panic {
-                panic!("selftest was asked to panic");
-            }
-            match fail {
-                Some(code) => out.failure(&Error::new(
-                    code,
-                    format!("selftest stub for the {code} code"),
-                )),
-                None => out.success(Selftest { selftest: "ok" }, "ok"),
-            }
-        }
-    }
+        Command::Selftest { .. } => panic!("selftest was asked to panic"),
+    })
 }
 
 /// Open a package and read its workbook: what every read verb starts with.
@@ -128,11 +83,23 @@ fn open(path: &Path, out: &Out) -> xlsplice::Result<(Package, Workbook)> {
     Ok((package, workbook))
 }
 
+/// List the package's sheets.
+fn sheets(path: &Path, out: &Out) -> xlsplice::Result<Answer> {
+    let (_, workbook) = open(path, out)?;
+    answer::sheets(&workbook)
+}
+
+/// List the package's defined names.
+fn names(path: &Path, out: &Out) -> xlsplice::Result<Answer> {
+    let (_, workbook) = open(path, out)?;
+    answer::names(&workbook)
+}
+
 /// Read the cells `targets` name.
-fn get(path: &Path, targets: &[String], out: &Out) -> xlsplice::Result<Vec<CellReport>> {
+fn get(path: &Path, targets: &[String], out: &Out) -> xlsplice::Result<Answer> {
     let (mut package, workbook) = open(path, out)?;
     out.trace(&format!("reading {} target(s)", targets.len()));
-    cells::read(&mut package, &workbook, targets)
+    answer::cells(&cells::read(&mut package, &workbook, targets)?)
 }
 
 /// Write one value into one cell, as a batch of one operation.
@@ -144,7 +111,7 @@ fn set(
     destination: Option<PathBuf>,
     dry_run: bool,
     out: &Out,
-) -> xlsplice::Result<Report> {
+) -> xlsplice::Result<Answer> {
     let batch = Batch::of(Operation::Set {
         target: target.to_owned(),
         value: kind.read(value)?,
@@ -164,20 +131,7 @@ fn set(
             false => report.parts.changed.join(", "),
         }
     ));
-    Ok(report)
-}
-
-/// The payload of a `selftest` that was asked for nothing.
-#[cfg(debug_assertions)]
-#[derive(serde::Serialize)]
-struct Selftest {
-    selftest: &'static str,
-}
-
-/// The payload of `version --json`.
-#[derive(serde::Serialize)]
-struct Version {
-    version: &'static str,
+    answer::written(&report)
 }
 
 /// Render what clap gave back instead of a command.
@@ -191,7 +145,7 @@ fn parse_failure(err: clap::Error, mode: OutputMode) -> ExitCode {
         let _ = err.print();
         return ExitCode::from(xlsplice::error::EXIT_SUCCESS);
     }
-    Out::new(mode, Verbosity::Normal).failure(&Error::usage(usage_message(&err)))
+    Out::new(mode, Verbosity::Normal).emit(Err(Error::usage(usage_message(&err))))
 }
 
 /// clap's rendered error, minus its `error: ` prefix: the code in the envelope

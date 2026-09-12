@@ -7,9 +7,6 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use xlsplice::worksheet::Written;
 
-#[cfg(debug_assertions)]
-use xlsplice::error::ErrorCode;
-
 /// Surgical edits to Excel packages.
 #[derive(Debug, Parser)]
 #[command(name = "xlsplice", version, about, long_about = None)]
@@ -107,18 +104,16 @@ pub enum Command {
     /// Print the version of xlsplice.
     Version,
 
-    /// Produce a chosen failure, so the contract tests can reach every exit
-    /// code before the verbs that raise them exist. Debug builds only, hidden,
-    /// and no part of the published contract.
+    /// Crash, so the contract tests can reach the panic hook. Every other
+    /// code in the frozen table is reachable from a real verb, so panicking is
+    /// all this does. Debug builds only, hidden, and no part of the published
+    /// contract.
     #[cfg(debug_assertions)]
     #[command(hide = true)]
     Selftest {
-        /// The error code to fail with, named as it appears in the envelope.
-        #[arg(long, value_name = "CODE", value_parser = code_named, conflicts_with = "panic")]
-        fail: Option<ErrorCode>,
-
-        /// Panic, to exercise the panic hook.
-        #[arg(long)]
+        /// Panic, to exercise the panic hook. Required, because there is
+        /// nothing else here to ask for.
+        #[arg(long, required = true)]
         panic: bool,
     },
 }
@@ -143,22 +138,6 @@ impl WriteType {
             WriteType::Bool => Written::boolean(value),
         }
     }
-}
-
-/// Look a code up by the name it carries in the envelope, so the stub has no
-/// table of its own to drift from the library's. Hyphens are accepted for the
-/// one code whose name has an underscore.
-#[cfg(debug_assertions)]
-fn code_named(name: &str) -> Result<ErrorCode, String> {
-    ErrorCode::ALL
-        .into_iter()
-        .find(|code| code.as_str() == name || code.as_str().replace('_', "-") == name)
-        .ok_or_else(|| {
-            format!(
-                "expected one of: {}",
-                ErrorCode::ALL.map(ErrorCode::as_str).join(", ")
-            )
-        })
 }
 
 impl Command {

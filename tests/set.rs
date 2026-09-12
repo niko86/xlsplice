@@ -11,10 +11,10 @@
 //! needs and writes to the copy.
 //!
 //! Three still spawn, because argv is what they are about: what clap does
-//! with a `--type` outside the three, which reader each of the three names
-//! reaches, and what `--` does with a value that begins with a minus. The
-//! last two take `set` end to end, argv to the bytes on disk, so its dispatch
-//! arm does not go unexercised.
+//! with a `--type` outside the three, which write type each of the three
+//! names reaches, and what `--` does with a value that begins with a minus.
+//! The last two take `set` end to end, argv to the bytes on disk, so its
+//! dispatch arm does not go unexercised.
 
 mod support;
 
@@ -25,7 +25,7 @@ use support::{
     envelope, exit_code, files_in, fixture, in_text, part, part_text, run, stderr, under_json,
     verb,
 };
-use xlsplice::worksheet::Written;
+use xlsplice::batch::WriteType;
 
 const SHEET1: &str = "xl/worksheets/sheet1.xml";
 const SHARED_STRINGS: &str = "xl/sharedStrings.xml";
@@ -38,29 +38,8 @@ fn copy(label: &str, name: &str) -> (Workspace, PathBuf) {
     (workspace, path)
 }
 
-/// `--type KIND VALUE`, read the way the command line reads it.
-///
-/// `WriteType` lives in the binary's `cli` module, where nothing outside the
-/// binary can reach it, so a test calling the library in process spells the
-/// reading out again here. #20 moves the write type into the batch, and this
-/// goes when it does. Until then the binary's own reader is crossed by the
-/// spawned test below, which drives it from the same table of kinds.
-fn read(kind: &str, value: &str) -> xlsplice::Result<Written> {
-    match kind {
-        "number" => Written::number(value),
-        "text" => Ok(Written::text(value)),
-        "bool" => Written::boolean(value),
-        other => panic!("no such write type: {other}"),
-    }
-}
-
-/// The same, for a test whose value is of the type it names.
-fn written(kind: &str, value: &str) -> Written {
-    read(kind, value).unwrap_or_else(|err| panic!("{value} must be a {kind}: {err}"))
-}
-
 /// A `set` that must succeed, and the envelope it answers with.
-fn set(package: &Path, target: &str, kind: &str, value: &str) -> serde_json::Value {
+fn set(package: &Path, target: &str, kind: WriteType, value: &str) -> serde_json::Value {
     set_with(package, target, kind, value, None, false)
 }
 
@@ -68,18 +47,12 @@ fn set(package: &Path, target: &str, kind: &str, value: &str) -> serde_json::Val
 fn set_with(
     package: &Path,
     target: &str,
-    kind: &str,
+    kind: WriteType,
     value: &str,
     out: Option<PathBuf>,
     dry_run: bool,
 ) -> serde_json::Value {
-    let rendered = under_json(verb::set(
-        package,
-        target,
-        written(kind, value),
-        out,
-        dry_run,
-    ));
+    let rendered = under_json(verb::set(package, target, kind, value, out, dry_run));
     assert_eq!(
         rendered.exit, 0,
         "set {target} {value}: {}",
@@ -105,27 +78,28 @@ fn every_type_lands_in_every_fixture_and_moves_nothing_else_in_the_package() {
         ("feature.xlsx", "Inputs!A1"),
     ] {
         for (kind, value, expected) in [
-            ("number", "42.5", r#"<c r="A1"><v>42.5</v></c>"#),
+            (WriteType::Number, "42.5", r#"<c r="A1"><v>42.5</v></c>"#),
             (
-                "text",
+                WriteType::Text,
                 "written",
                 r#"<c r="A1" t="inlineStr"><is><t>written</t></is></c>"#,
             ),
-            ("bool", "true", r#"<c r="A1" t="b"><v>1</v></c>"#),
+            (WriteType::Bool, "true", r#"<c r="A1" t="b"><v>1</v></c>"#),
         ] {
-            let (_workspace, package) = copy(&format!("{kind}-{name}"), name);
+            let kind_name = kind.as_str();
+            let (_workspace, package) = copy(&format!("{kind_name}-{name}"), name);
 
             let body = set(&package, target, kind, value);
 
             assert_eq!(
                 body["operations"][0]["changed"],
                 serde_json::json!(true),
-                "{name} {kind}"
+                "{name} {kind_name}"
             );
             assert_eq!(
                 body["parts"],
                 serde_json::json!({"changed": [SHEET1], "added": [], "removed": []}),
-                "{name} {kind}: the targeted worksheet changed and nothing else did"
+                "{name} {kind_name}: the targeted worksheet changed and nothing else did"
             );
             assert_only_these_differ(&fixture(name), &package, &[SHEET1]);
             assert_spliced(
@@ -141,16 +115,27 @@ fn every_type_lands_in_every_fixture_and_moves_nothing_else_in_the_package() {
 #[test]
 fn what_was_written_is_what_get_reads_back() {
     for (kind, given, expected_type, expected_value) in [
-        ("number", "42.5", "n", serde_json::json!(42.5)),
-        ("text", " kept ", "inlineStr", serde_json::json!(" kept ")),
-        ("text", "a<b&c", "inlineStr", serde_json::json!("a<b&c")),
-        ("bool", "0", "b", serde_json::json!(false)),
+        (WriteType::Number, "42.5", "n", serde_json::json!(42.5)),
+        (
+            WriteType::Text,
+            " kept ",
+            "inlineStr",
+            serde_json::json!(" kept "),
+        ),
+        (
+            WriteType::Text,
+            "a<b&c",
+            "inlineStr",
+            serde_json::json!("a<b&c"),
+        ),
+        (WriteType::Bool, "0", "b", serde_json::json!(false)),
     ] {
-        let (_workspace, package) = copy(&format!("read-back-{kind}-{given}"), "plain.xlsx");
+        let kind_name = kind.as_str();
+        let (_workspace, package) = copy(&format!("read-back-{kind_name}-{given}"), "plain.xlsx");
         set(&package, "Sheet1!A1", kind, given);
 
         let out = under_json(verb::get(&package, &["Sheet1!A1"]));
-        assert_eq!(out.exit, 0, "{kind} {given}: {}", out.stderr);
+        assert_eq!(out.exit, 0, "{kind_name} {given}: {}", out.stderr);
         let cell = envelope(&out)["cells"][0].clone();
 
         assert_eq!(cell["type"], serde_json::json!(expected_type), "{given}");
@@ -162,7 +147,7 @@ fn what_was_written_is_what_get_reads_back() {
 fn text_lands_as_an_inline_string_and_the_shared_string_table_is_not_touched() {
     let (_workspace, package) = copy("text", "plain.xlsx");
 
-    let body = set(&package, "Sheet1!B1", "text", "goodbye");
+    let body = set(&package, "Sheet1!B1", WriteType::Text, "goodbye");
 
     assert_eq!(body["parts"]["changed"], serde_json::json!([SHEET1]));
     assert_only_these_differ(&fixture("plain.xlsx"), &package, &[SHEET1]);
@@ -183,7 +168,7 @@ fn text_lands_as_an_inline_string_and_the_shared_string_table_is_not_touched() {
 fn a_boolean_lands_as_a_boolean_cell_keeping_the_style_the_cell_carried() {
     let (_workspace, package) = copy("bool", "plain.xlsx");
 
-    set(&package, "Sheet1!C1", "bool", "false");
+    set(&package, "Sheet1!C1", WriteType::Bool, "false");
 
     assert_only_these_differ(&fixture("plain.xlsx"), &package, &[SHEET1]);
     assert_spliced(
@@ -198,7 +183,7 @@ fn a_boolean_lands_as_a_boolean_cell_keeping_the_style_the_cell_carried() {
 fn a_write_through_a_defined_name_lands_in_the_anchor_of_the_range_it_names() {
     let (_workspace, package) = copy("name", "feature.xlsx");
 
-    let body = set(&package, "MergedInput", "text", "  padded  ");
+    let body = set(&package, "MergedInput", WriteType::Text, "  padded  ");
 
     assert_eq!(
         body["operations"],
@@ -225,7 +210,7 @@ fn a_write_through_a_defined_name_lands_in_the_anchor_of_the_range_it_names() {
 fn a_number_in_the_macro_package_leaves_the_vba_project_byte_for_byte() {
     let (_workspace, package) = copy("macros", "macros.xlsm");
 
-    set(&package, "Sheet1!A1", "number", "-2.5");
+    set(&package, "Sheet1!A1", WriteType::Number, "-2.5");
 
     assert_only_these_differ(&fixture("macros.xlsm"), &package, &[SHEET1]);
     assert_eq!(
@@ -241,21 +226,22 @@ fn a_number_in_the_macro_package_leaves_the_vba_project_byte_for_byte() {
     );
 }
 
-/// What `--type` names is read by the binary, from a table a test in process
-/// cannot reach, so each of the three is crossed here through a real argv.
-/// Which bytes each one lands is the business of the tests above; that the
-/// name reaches the right reader at all is the business of this one.
+/// Which write type a `--type` name reaches is clap's to decide, and only a
+/// real argv crosses that. Which bytes each type lands is the business of the
+/// tests above; that the name arrives as the right one is the business of
+/// this one, so every name the library offers is driven from its own list.
 #[test]
 fn each_write_type_reads_its_value_the_way_the_command_line_says() {
     for (kind, value, expected) in [
-        ("number", "42.5", r#"<c r="A1"><v>42.5</v></c>"#),
+        (WriteType::Number, "42.5", r#"<c r="A1"><v>42.5</v></c>"#),
         (
-            "text",
+            WriteType::Text,
             "written",
             r#"<c r="A1" t="inlineStr"><is><t>written</t></is></c>"#,
         ),
-        ("bool", "true", r#"<c r="A1" t="b"><v>1</v></c>"#),
+        (WriteType::Bool, "true", r#"<c r="A1" t="b"><v>1</v></c>"#),
     ] {
+        let kind = kind.as_str();
         let (_workspace, package) = copy(&format!("argv-{kind}"), "plain.xlsx");
 
         let out = run(&[
@@ -307,7 +293,7 @@ fn a_value_beginning_with_a_minus_is_an_operand_after_the_double_dash() {
 fn the_spliced_part_keeps_the_method_and_timestamp_its_entry_carried() {
     let (_workspace, package) = copy("entry", "plain.xlsx");
 
-    set(&package, "Sheet1!A1", "number", "42");
+    set(&package, "Sheet1!A1", WriteType::Number, "42");
 
     let (was, now) = (part(&fixture("plain.xlsx"), SHEET1), part(&package, SHEET1));
     assert_ne!(
@@ -329,7 +315,7 @@ fn writing_to_another_path_leaves_the_input_byte_for_byte_as_it_was() {
     let body = set_with(
         &package,
         "Sheet1!A2",
-        "number",
+        WriteType::Number,
         "7",
         Some(elsewhere.clone()),
         false,
@@ -364,7 +350,7 @@ fn writing_to_another_path_leaves_the_input_byte_for_byte_as_it_was() {
 fn an_in_place_write_leaves_no_temporary_file_behind() {
     let (workspace, package) = copy("temporary", "plain.xlsx");
 
-    set(&package, "Sheet1!A2", "number", "7");
+    set(&package, "Sheet1!A2", WriteType::Number, "7");
 
     assert_eq!(
         files_in(workspace.dir()),
@@ -379,7 +365,7 @@ fn writing_the_value_that_is_already_there_changes_nothing_and_says_so() {
 
     // The cell holds 2.5; 2.50 is the same number in a longer spelling, so
     // the shortest round-trip form of it is the text already in the part.
-    let body = set(&package, "Sheet1!A2", "number", "2.50");
+    let body = set(&package, "Sheet1!A2", WriteType::Number, "2.50");
 
     assert_eq!(body["operations"][0]["changed"], serde_json::json!(false));
     assert_eq!(body["parts"]["changed"], serde_json::json!([]));
@@ -394,7 +380,7 @@ fn a_write_of_the_present_value_to_another_path_copies_the_input_byte_for_byte()
     let body = set_with(
         &package,
         "Sheet1!D1",
-        "bool",
+        WriteType::Bool,
         "TRUE",
         Some(elsewhere.clone()),
         false,
@@ -410,7 +396,7 @@ fn two_runs_over_the_same_input_produce_the_same_bytes() {
     let (_second, two) = copy("determinism-two", "feature.xlsx");
 
     for package in [&one, &two] {
-        set(package, "Inputs!A1", "text", "hello");
+        set(package, "Inputs!A1", WriteType::Text, "hello");
     }
 
     assert_same_bytes(&one, &two);
@@ -420,9 +406,9 @@ fn two_runs_over_the_same_input_produce_the_same_bytes() {
 fn writing_a_second_time_over_the_same_package_changes_nothing_more() {
     let (_workspace, package) = copy("idempotent", "feature.xlsx");
 
-    set(&package, "Inputs!A1", "number", "9");
+    set(&package, "Inputs!A1", WriteType::Number, "9");
     let once = std::fs::read(&package).expect("the written package must be readable");
-    let body = set(&package, "Inputs!A1", "number", "9");
+    let body = set(&package, "Inputs!A1", WriteType::Number, "9");
 
     assert_eq!(body["operations"][0]["changed"], serde_json::json!(false));
     assert_eq!(
@@ -436,7 +422,7 @@ fn writing_a_second_time_over_the_same_package_changes_nothing_more() {
 fn a_dry_run_writes_nothing_and_still_reports_everything() {
     let (workspace, package) = copy("dry-run", "plain.xlsx");
 
-    let body = set_with(&package, "Sheet1!A1", "number", "99", None, true);
+    let body = set_with(&package, "Sheet1!A1", WriteType::Number, "99", None, true);
 
     assert_eq!(body["dry_run"], serde_json::json!(true));
     assert_eq!(body["operations"][0]["changed"], serde_json::json!(true));
@@ -462,7 +448,7 @@ fn a_dry_run_to_another_path_writes_nothing_there_either() {
     set_with(
         &package,
         "Sheet1!A1",
-        "number",
+        WriteType::Number,
         "99",
         Some(elsewhere.clone()),
         true,
@@ -480,7 +466,8 @@ fn a_destination_that_cannot_be_written_fails_and_leaves_the_input_alone() {
     let out = under_json(verb::set(
         &package,
         "Sheet1!A1",
-        written("number", "42"),
+        WriteType::Number,
+        "42",
         Some(nowhere.clone()),
         false,
     ));
@@ -506,7 +493,8 @@ fn a_destination_that_cannot_be_replaced_leaves_no_temporary_file_behind() {
     let out = under_json(verb::set(
         &package,
         "Sheet1!A1",
-        written("number", "42"),
+        WriteType::Number,
+        "42",
         Some(occupied.clone()),
         false,
     ));
@@ -528,7 +516,8 @@ fn a_cell_the_sheet_does_not_hold_is_not_found_and_the_package_is_untouched() {
         let out = under_json(verb::set(
             &package,
             target,
-            written("number", "42"),
+            WriteType::Number,
+            "42",
             None,
             false,
         ));
@@ -555,7 +544,8 @@ fn a_cell_holding_a_formula_is_refused_and_the_package_is_untouched() {
         let out = under_json(verb::set(
             &package,
             target,
-            written("number", "0"),
+            WriteType::Number,
+            "0",
             None,
             false,
         ));
@@ -575,18 +565,30 @@ fn a_cell_holding_a_formula_is_refused_and_the_package_is_untouched() {
     assert_same_parts(&fixture("feature.xlsx"), &package);
 }
 
+/// The value is read inside the batch now, so a value that is not of its type
+/// is a failure of the run rather than of the command line that built it: the
+/// package is opened and nothing in it is touched.
 #[test]
 fn a_value_that_is_not_of_the_type_asked_for_is_a_usage_error() {
     let (_workspace, package) = copy("mistyped", "plain.xlsx");
 
-    for (kind, value) in [("number", "hello"), ("number", "NaN"), ("bool", "maybe")] {
-        let out = under_json(
-            read(kind, value)
-                .and_then(|value| verb::set(&package, "Sheet1!A1", value, None, false)),
-        );
+    for (kind, value) in [
+        (WriteType::Number, "hello"),
+        (WriteType::Number, "NaN"),
+        (WriteType::Bool, "maybe"),
+    ] {
+        let out = under_json(verb::set(&package, "Sheet1!A1", kind, value, None, false));
 
-        assert_eq!(out.exit, 2, "--type {kind} {value}");
+        assert_eq!(out.exit, 2, "--type {} {value}", kind.as_str());
         assert_eq!(envelope(&out)["error"]["code"], serde_json::json!("usage"));
+        let message = envelope(&out)["error"]["message"]
+            .as_str()
+            .expect("a failed envelope carries a message")
+            .to_owned();
+        assert!(
+            message.starts_with("operation at index 0 (set Sheet1!A1): "),
+            "the failure must name the operation it came from: {message}"
+        );
     }
     assert_same_bytes(&fixture("plain.xlsx"), &package);
 }
@@ -619,7 +621,8 @@ fn the_text_output_is_one_tab_separated_row_per_operation() {
     let out = in_text(verb::set(
         &package,
         "MergedInput",
-        written("text", "x"),
+        WriteType::Text,
+        "x",
         None,
         false,
     ));

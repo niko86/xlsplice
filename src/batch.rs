@@ -6,6 +6,12 @@
 //! operation leaves the package as it was. Nothing here reaches the disk until
 //! every operation has been located and every splice computed.
 //!
+//! An operation carries what a caller gave and nothing derived from it: a
+//! target, and a value as the text it was written as under the write type it
+//! names. Reading that text into the value it becomes is done here, with the
+//! workbook open and before any part is read, so a batch is a document a
+//! caller can write as readily as the command line can build one.
+//!
 //! One operation exists so far, `set`, and it writes a value into a cell that
 //! is already there. A cell the sheet does not hold is
 //! [`not_found`](crate::error::ErrorCode::NotFound) until the insertion
@@ -23,6 +29,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use roxmltree::{Document, Node};
+use serde::{Deserialize, Serialize};
 
 use crate::atomic;
 use crate::cells::{Resolution, parts_of, resolve};
@@ -35,14 +42,22 @@ use crate::workbook::Workbook;
 use crate::worksheet::{FormulaRole, Located, Worksheet, Written, formula_of, value_splices};
 
 /// One thing to do to a package.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// An operation is named by what it does, and carries what the caller gave and
+/// nothing derived from it: a target, and a value as the text it was spelled
+/// with under the [`WriteType`] it says that text is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
 pub enum Operation {
     /// Write a value into the cell a target names.
     Set {
         /// The cell, by address or by defined name.
         target: String,
-        /// What to put in it.
-        value: Written,
+        /// What the value is to become in the cell.
+        #[serde(rename = "type")]
+        write_type: WriteType,
+        /// The value, exactly as the caller spelled it.
+        value: String,
     },
 }
 
@@ -53,10 +68,123 @@ impl Operation {
             Operation::Set { target, .. } => target,
         }
     }
+
+    /// The value this operation writes, read the way its write type says to.
+    ///
+    /// A failure names the operation by its index in the batch, as well as by
+    /// what it asked of which target: a batch may ask twice of one cell, so
+    /// the target alone does not say which operation was wrong. The index is
+    /// the one the report counts by, so a caller reading a failure and a
+    /// caller reading a report are counting the same way.
+    fn written(&self, index: usize) -> Result<Written> {
+        let Operation::Set {
+            target,
+            write_type,
+            value,
+        } = self;
+        write_type
+            .read(value)
+            .map_err(|err| err.within(format!("operation at index {index} (set {target})")))
+    }
+}
+
+/// What a write says a value is to become in the cell.
+///
+/// Not a stored type, which is how the cell then spells it: a write type of
+/// `text` is stored as an inline string, and one of `number` declares no type
+/// at all. `date` joins these once there is a workbook date system to read one
+/// against, which is the reason this lives here and not on the command line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WriteType {
+    /// A finite decimal number, stored without a type attribute.
+    Number,
+    /// Text, stored in the cell as an inline string.
+    Text,
+    /// `true` or `false`, or `1` or `0`, stored as a boolean cell.
+    Bool,
+}
+
+impl WriteType {
+    /// Every write type, in the order a caller is offered them.
+    pub const ALL: [WriteType; 3] = [WriteType::Number, WriteType::Text, WriteType::Bool];
+
+    /// The type as a caller spells it, in a batch and after `--type`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WriteType::Number => "number",
+            WriteType::Text => "text",
+            WriteType::Bool => "bool",
+        }
+    }
+
+    /// The write type `name` spells, or `None` where it spells none of them.
+    pub fn named(name: &str) -> Option<Self> {
+        WriteType::ALL
+            .into_iter()
+            .find(|write_type| write_type.as_str() == name)
+    }
+
+    /// One line saying what this type asks for, for a caller choosing between
+    /// them.
+    pub fn description(self) -> &'static str {
+        match self {
+            WriteType::Number => "A finite decimal number, stored without a type attribute",
+            WriteType::Text => "Text, stored in the cell as an inline string",
+            WriteType::Bool => "`true` or `false`, or `1` or `0`, stored as a boolean cell",
+        }
+    }
+
+    /// Read `text` the way this type says to, or say why it is not of this
+    /// type.
+    pub fn read(self, text: &str) -> Result<Written> {
+        match self {
+            WriteType::Number => read_number(text),
+            WriteType::Text => Ok(Written::text(text)),
+            WriteType::Bool => read_boolean(text),
+        }
+    }
+}
+
+/// Read a number.
+///
+/// Only a finite number is a number: Excel has no cell that holds an infinity
+/// or a not-a-number, so asking for one is a usage error rather than something
+/// to store.
+fn read_number(text: &str) -> Result<Written> {
+    text.parse::<f64>()
+        .ok()
+        .filter(|number| number.is_finite())
+        .map(Written::Number)
+        .ok_or_else(|| {
+            Error::usage(format!(
+                "'{text}' is not a number; write type number takes a finite \
+                 decimal number such as 42, -2.5 or 1e6"
+            ))
+        })
+}
+
+/// Read a boolean, in either the spelling the schema uses or the one Excel
+/// shows, and in any case.
+fn read_boolean(text: &str) -> Result<Written> {
+    match text.to_ascii_lowercase().as_str() {
+        "true" | "1" => Ok(Written::Bool(true)),
+        "false" | "0" => Ok(Written::Bool(false)),
+        _ => Err(Error::usage(format!(
+            "'{text}' is not a boolean; write type bool takes true or false, \
+             or 1 or 0"
+        ))),
+    }
 }
 
 /// Everything one invocation asks of one package.
-#[derive(Debug, Clone, PartialEq, Default)]
+///
+/// A batch is one document: a JSON array of operations, which is what the
+/// command line builds one of and what `apply` will read. The array is the
+/// whole of it, so the batch is transparent to its operations rather than an
+/// object wrapping them.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Batch {
     /// The operations, in the order they were given.
     pub operations: Vec<Operation>,
@@ -151,14 +279,26 @@ pub fn run(path: &Path, batch: &Batch, destination: &Destination, dry_run: bool)
     let workbook = Workbook::read(&mut package)?;
     let rels = Relationships::read(&mut package, workbook.part())?;
 
+    // Every value is read once the workbook model is in hand, because a date
+    // is a number only once the workbook's date system has had its say, and
+    // before any target is looked up, because a batch whose own text is not of
+    // the type it names has nothing worth looking up.
+    let written: Vec<Written> = batch
+        .operations
+        .iter()
+        .enumerate()
+        .map(|(index, operation)| operation.written(index))
+        .collect::<Result<_>>()?;
+
     // Every target is resolved before any part is read, so a batch naming a
     // sheet the package does not have fails before a splice is computed.
     let resolved: Vec<ResolvedOperation> = batch
         .operations
         .iter()
-        .map(|operation| {
+        .zip(written)
+        .map(|(operation, written)| {
             Ok(ResolvedOperation {
-                operation,
+                written,
                 at: resolve(&package, &rels, &workbook, operation.target())?,
             })
         })
@@ -199,11 +339,13 @@ pub fn run(path: &Path, batch: &Batch, destination: &Destination, dry_run: bool)
     })
 }
 
-/// One operation with the cell and part it turned out to name. The two travel
-/// together from the moment the target is resolved, so nothing has to keep two
-/// lists in step.
-struct ResolvedOperation<'a> {
-    operation: &'a Operation,
+/// One operation's value, read, with the cell and part its target turned out
+/// to name. The two travel together from the moment the target is resolved, so
+/// nothing has to keep two lists in step.
+struct ResolvedOperation {
+    /// The value, read the way the operation's write type said to.
+    written: Written,
+    /// The cell and part the operation's target named.
     at: Resolution,
 }
 
@@ -248,8 +390,7 @@ fn splice_part(
         };
         refuse_a_formula(node, at)?;
 
-        let Operation::Set { value, .. } = &resolved.operation;
-        let here = value_splices(node, xml, value)?;
+        let here = value_splices(node, xml, &resolved.written)?;
         changed[index] = here.iter().any(|splice| splice.changes(xml));
         splices.extend(here);
     }
@@ -323,6 +464,8 @@ fn land(
 mod tests {
     use super::*;
 
+    use crate::error::ErrorCode;
+
     #[test]
     fn a_destination_is_the_input_in_place_and_the_given_path_otherwise() {
         let input = Path::new("book.xlsx");
@@ -334,11 +477,136 @@ mod tests {
         );
     }
 
+    /// The names, transcribed rather than derived from the code, so a renaming
+    /// fails the test. A caller spells a write type one way whatever is
+    /// reading it: `--type`, a JSON batch, and whatever a batch is written
+    /// back out as.
+    const NAMES: [(WriteType, &str); 3] = [
+        (WriteType::Number, "number"),
+        (WriteType::Text, "text"),
+        (WriteType::Bool, "bool"),
+    ];
+
+    #[test]
+    fn a_write_type_is_spelled_the_same_way_wherever_it_is_read() {
+        assert_eq!(WriteType::ALL.len(), NAMES.len(), "a type with no name");
+        for (write_type, name) in NAMES {
+            assert_eq!(write_type.as_str(), name);
+            assert_eq!(WriteType::named(name), Some(write_type));
+            assert_eq!(
+                serde_json::to_value(write_type).expect("a type serialises"),
+                name
+            );
+        }
+        assert_eq!(WriteType::named("date"), None, "date is #9's to add");
+    }
+
+    #[test]
+    fn a_value_that_is_not_of_the_type_it_names_is_a_usage_error() {
+        for text in ["", "hello", "1,5", "inf", "NaN", "2 "] {
+            let err = WriteType::Number.read(text).expect_err(text);
+            assert_eq!(err.code(), ErrorCode::Usage, "{text}");
+        }
+        for text in ["TRUE", "False", "1", "0"] {
+            WriteType::Bool.read(text).expect(text);
+        }
+        for text in ["", "yes", "2"] {
+            let err = WriteType::Bool.read(text).expect_err(text);
+            assert_eq!(err.code(), ErrorCode::Usage, "{text}");
+        }
+        for text in ["", "hello", "42", "true"] {
+            assert_eq!(
+                WriteType::Text.read(text).expect(text),
+                Written::text(text),
+                "any text is text"
+            );
+        }
+    }
+
+    /// A batch may ask twice of one cell, so a failure says which operation it
+    /// was, by the index the report counts by, as well as what it asked.
+    #[test]
+    fn a_value_that_is_not_of_its_type_names_the_operation_it_came_from() {
+        let operation = Operation::Set {
+            target: "Inputs!A1".to_owned(),
+            write_type: WriteType::Number,
+            value: "hello".to_owned(),
+        };
+
+        let err = operation.written(1).expect_err("hello is not a number");
+
+        assert_eq!(err.code(), ErrorCode::Usage);
+        assert!(
+            err.message()
+                .starts_with("operation at index 1 (set Inputs!A1): 'hello' is not a number;"),
+            "{err}"
+        );
+    }
+
+    /// The document `apply` parses a batch from, spelled out here rather than
+    /// derived from the code: a change to any of this is a change to what a
+    /// caller writes. An array of operations is the shape #8 asks for; a
+    /// value is text under the type that says how to read it, which is what
+    /// #20 asks for.
+    #[test]
+    fn a_batch_round_trips_through_json() {
+        let batch = Batch {
+            operations: vec![
+                Operation::Set {
+                    target: "Inputs!A1".to_owned(),
+                    write_type: WriteType::Number,
+                    value: "42.5".to_owned(),
+                },
+                Operation::Set {
+                    target: "Total".to_owned(),
+                    write_type: WriteType::Text,
+                    value: " kept ".to_owned(),
+                },
+            ],
+        };
+
+        let json = serde_json::to_value(&batch).expect("a batch serialises");
+
+        assert_eq!(
+            json,
+            serde_json::json!([
+                {"op": "set", "target": "Inputs!A1", "type": "number", "value": "42.5"},
+                {"op": "set", "target": "Total", "type": "text", "value": " kept "}
+            ])
+        );
+        assert_eq!(
+            serde_json::from_value::<Batch>(json).expect("a batch deserialises"),
+            batch
+        );
+    }
+
+    /// A field an operation does not know is ignored, so a batch written for a
+    /// later ticket's flag still reads here.
+    #[test]
+    fn a_field_an_operation_does_not_know_is_ignored() {
+        let json = serde_json::json!([
+            {"op": "set", "target": "Inputs!A1", "type": "bool", "value": "1",
+             "replace_formula": false}
+        ]);
+
+        let batch = serde_json::from_value::<Batch>(json).expect("a batch deserialises");
+
+        assert_eq!(
+            batch.operations,
+            [Operation::Set {
+                target: "Inputs!A1".to_owned(),
+                write_type: WriteType::Bool,
+                value: "1".to_owned(),
+            }]
+        );
+    }
+
     #[test]
     fn a_batch_of_one_holds_that_one_operation() {
         let operation = Operation::Set {
             target: "Inputs!A1".to_owned(),
-            value: Written::Number(1.0),
+            write_type: WriteType::Number,
+            value: "1".to_owned(),
         };
 
         assert_eq!(Batch::of(operation.clone()).operations, [operation]);

@@ -3,9 +3,10 @@
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
+use clap::{Parser, Subcommand};
 
-use xlsplice::worksheet::Written;
+use xlsplice::batch::WriteType;
 
 /// Surgical edits to Excel packages.
 #[derive(Debug, Parser)]
@@ -87,7 +88,7 @@ pub enum Command {
 
         /// How to read VALUE and store it: a number, text written as an
         /// inline string, or a boolean.
-        #[arg(long = "type", value_name = "TYPE")]
+        #[arg(long = "type", value_name = "TYPE", value_parser = write_type())]
         kind: WriteType,
 
         /// Write the result here instead, leaving FILE untouched. An existing
@@ -118,26 +119,16 @@ pub enum Command {
     },
 }
 
-/// How `--type` says a value is to be read and stored.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum WriteType {
-    /// A finite decimal number, stored without a type attribute.
-    Number,
-    /// Text, stored in the cell as an inline string.
-    Text,
-    /// `true` or `false`, or `1` or `0`, stored as a boolean cell.
-    Bool,
-}
-
-impl WriteType {
-    /// Read `value` the way this type says to.
-    pub fn read(self, value: &str) -> xlsplice::Result<Written> {
-        match self {
-            WriteType::Number => Written::number(value),
-            WriteType::Text => Ok(Written::text(value)),
-            WriteType::Bool => Written::boolean(value),
-        }
-    }
+/// What `--type` accepts: the write types the library offers, under the names
+/// and descriptions it gives them, so a type outside them is clap's to refuse
+/// and the help lists them without this module keeping its own copy of them.
+fn write_type() -> impl TypedValueParser<Value = WriteType> {
+    PossibleValuesParser::new(
+        WriteType::ALL.map(|write_type| {
+            PossibleValue::new(write_type.as_str()).help(write_type.description())
+        }),
+    )
+    .map(|name| WriteType::named(&name).expect("clap offers only the names it was given"))
 }
 
 impl Command {

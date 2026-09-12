@@ -485,11 +485,10 @@ pub mod verb {
 
     use xlsplice::Result;
     use xlsplice::answer::{self, Answer};
-    use xlsplice::batch::{self, Batch, Destination, Operation};
+    use xlsplice::batch::{self, Batch, Destination, Operation, WriteType};
     use xlsplice::cells;
     use xlsplice::package::Package;
     use xlsplice::workbook::Workbook;
-    use xlsplice::worksheet::Written;
 
     /// Open a package and read its workbook: what every read verb starts
     /// with. The package comes back too, because a verb that reads cells goes
@@ -521,13 +520,15 @@ pub mod verb {
     pub fn set(
         path: &Path,
         target: &str,
-        value: Written,
+        write_type: WriteType,
+        value: &str,
         out: Option<PathBuf>,
         dry_run: bool,
     ) -> Result<Answer> {
         let batch = Batch::of(Operation::Set {
             target: target.to_owned(),
-            value,
+            write_type,
+            value: value.to_owned(),
         });
         answer::written(&batch::run(path, &batch, &Destination::from(out), dry_run)?)
     }

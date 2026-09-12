@@ -14,7 +14,7 @@ use std::process::ExitCode;
 use clap::Parser;
 
 use xlsplice::answer::{self, Answer};
-use xlsplice::batch::{self, Batch, Destination, Operation};
+use xlsplice::batch::{self, Batch, Destination, Operation, WriteType};
 use xlsplice::cells;
 use xlsplice::error::Error;
 use xlsplice::package::Package;
@@ -107,14 +107,15 @@ fn set(
     path: &Path,
     target: &str,
     value: &str,
-    kind: cli::WriteType,
+    write_type: WriteType,
     destination: Option<PathBuf>,
     dry_run: bool,
     out: &Out,
 ) -> xlsplice::Result<Answer> {
     let batch = Batch::of(Operation::Set {
         target: target.to_owned(),
-        value: kind.read(value)?,
+        write_type,
+        value: value.to_owned(),
     });
     let destination = Destination::from(destination);
     out.trace(&format!(

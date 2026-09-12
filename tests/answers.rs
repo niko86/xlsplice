@@ -15,7 +15,7 @@ mod support;
 use serde_json::json;
 use support::{Workspace, envelope, in_text, under_json, verb};
 use xlsplice::answer;
-use xlsplice::worksheet::Written;
+use xlsplice::batch::WriteType;
 
 /// The version declared in `Cargo.toml`, read from the manifest rather than
 /// from the crate's own constant, so a hardcoded version would be caught.
@@ -42,13 +42,7 @@ fn every_verb_leads_with_ok_and_the_schema_version_and_carries_no_error() {
         ("version", answer::version()),
         (
             "set",
-            verb::set(
-                &writable,
-                "Inputs!A1",
-                Written::number("42").expect("42 is a number"),
-                None,
-                false,
-            ),
+            verb::set(&writable, "Inputs!A1", WriteType::Number, "42", None, false),
         ),
     ];
 

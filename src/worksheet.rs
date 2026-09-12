@@ -322,11 +322,14 @@ fn stored(node: Node, at: Cell) -> Result<Stored> {
     })
 }
 
-/// A value on its way into a cell, typed by what it is to become there.
+/// A value on its way into a cell, in the form it will be stored in.
 ///
-/// The three the write path knows are the three `set` offers. A date is a
-/// number once the workbook's date system has had its say, and clearing a
-/// cell is not writing a value at all, so neither is a variant here.
+/// The three the write path knows are the three write types a caller may ask
+/// for. Reading a caller's text into one belongs to
+/// [`WriteType`](crate::batch::WriteType), in the batch, with the workbook
+/// open: whether a caller's text is a number is no part of a worksheet's
+/// business, and a date is a number only once the workbook's date system has
+/// had its say.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Written {
     /// A number, stored without a type attribute: what a cell with no `t`
@@ -340,38 +343,7 @@ pub enum Written {
 }
 
 impl Written {
-    /// Read a number from the command line or a batch.
-    ///
-    /// Only a finite number is a number: Excel has no cell that holds an
-    /// infinity or a not-a-number, so asking for one is a usage error rather
-    /// than something to store.
-    pub fn number(text: &str) -> Result<Self> {
-        text.parse::<f64>()
-            .ok()
-            .filter(|number| number.is_finite())
-            .map(Written::Number)
-            .ok_or_else(|| {
-                Error::usage(format!(
-                    "'{text}' is not a number; --type number takes a finite \
-                     decimal number such as 42, -2.5 or 1e6"
-                ))
-            })
-    }
-
-    /// Read a boolean, in either the spelling the schema uses or the one
-    /// Excel shows, and in any case.
-    pub fn boolean(text: &str) -> Result<Self> {
-        match text.to_ascii_lowercase().as_str() {
-            "true" | "1" => Ok(Written::Bool(true)),
-            "false" | "0" => Ok(Written::Bool(false)),
-            _ => Err(Error::usage(format!(
-                "'{text}' is not a boolean; --type bool takes true or false, \
-                 or 1 or 0"
-            ))),
-        }
-    }
-
-    /// Read text, which is whatever was given, whitespace and all.
+    /// Text, which is whatever was given, whitespace and all.
     pub fn text(text: &str) -> Self {
         Written::Text(text.to_owned())
     }
@@ -864,21 +836,6 @@ mod tests {
                 number,
                 "{number}"
             );
-        }
-    }
-
-    #[test]
-    fn a_number_that_is_not_one_is_a_usage_error_and_so_is_a_boolean_that_is_not() {
-        for text in ["", "hello", "1,5", "inf", "NaN", "2 "] {
-            let err = Written::number(text).expect_err(text);
-            assert_eq!(err.code(), ErrorCode::Usage, "{text}");
-        }
-        for text in ["TRUE", "False", "1", "0"] {
-            Written::boolean(text).expect(text);
-        }
-        for text in ["", "yes", "2"] {
-            let err = Written::boolean(text).expect_err(text);
-            assert_eq!(err.code(), ErrorCode::Usage, "{text}");
         }
     }
 

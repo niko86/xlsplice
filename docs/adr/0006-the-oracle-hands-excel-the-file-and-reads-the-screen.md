@@ -55,8 +55,14 @@ nothing on screen.
   grant the list shows as enabled can still deny — an operating system update
   on 2026-09-13 left one looking on and refusing every request, through a
   reboot and a re-grant — so the probe is what says whether the oracle can
-  answer, never the checkbox. Another terminal, with no entry of its own to go
-  stale, is the way back.
+  answer, never the checkbox, and `UI elements enabled` is no better than the
+  checkbox: on 2026-09-14 it answered `true` while every call denied. What is
+  refused is narrow, which is worth knowing when diagnosing one: Apple Events
+  are not blocked at all, and System Events will answer how many processes
+  there are while refusing to say how many windows they have. What has gone
+  stale is a row in the permission database, and the list edits that row
+  rather than removing it; `tccutil reset Accessibility <bundle id>` removes
+  it, so the next call asks again rather than reading what is there.
 - A Windows backend (#15) answers the same question and will not answer it this
   way: nothing here about sandboxes, LaunchServices or System Events crosses
   over, which is why the interface is one operation returning clean, repair or

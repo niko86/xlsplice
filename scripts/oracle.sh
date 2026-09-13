@@ -39,9 +39,20 @@ esac
 # first, plainly, rather than left to be discovered case by case.
 if ! /usr/bin/osascript -e 'tell application "System Events" to return (count of windows of every process whose visible is true) as text' >/dev/null 2>&1; then
 	echo "This terminal cannot read the screen, so the oracle has no verdict to give." >&2
-	echo "Grant Accessibility to it in System Settings, Privacy & Security," >&2
-	echo "Accessibility — and if it is listed and enabled already, the entry has gone" >&2
-	echo "stale: try another terminal application, which is what worked on 2026-09-13." >&2
+	echo >&2
+	echo "What is refused is narrow: Apple Events work, and System Events will say" >&2
+	echo "how many processes there are and refuse to say how many windows they have." >&2
+	echo "That is the Accessibility permission, and it belongs to this terminal." >&2
+	echo >&2
+	echo "Grant it in System Settings, Privacy & Security, Accessibility. If it is" >&2
+	echo "listed and enabled already the entry has gone stale, and the checkbox does" >&2
+	echo "not clear a stale entry — it edits it. Remove it instead, quit the terminal," >&2
+	echo "and start it again, which makes the next call ask:" >&2
+	echo >&2
+	echo "  tccutil reset Accessibility <this terminal's bundle id>" >&2
+	echo >&2
+	echo "Note that \`UI elements enabled\` answers true while the calls deny, so it is" >&2
+	echo "no use as a check. The probe above is the one that tells the truth." >&2
 	exit 1
 fi
 

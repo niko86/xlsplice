@@ -164,6 +164,27 @@ pub enum Command {
         landing: Landing,
     },
 
+    /// Report whether the workbook recalculates fully when it is opened, or
+    /// say that it should.
+    ///
+    /// With no flag this reads and writes nothing. With
+    /// `--full-calc-on-load` it sets the flag, so that Excel works the
+    /// workbook's values out again on the way in rather than trusting what
+    /// the cache says.
+    Calc {
+        /// The package. Read unless the flag is given; then written in place
+        /// unless `--out` is.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+
+        /// Flag the workbook to recalculate fully when it is next opened.
+        #[arg(long)]
+        full_calc_on_load: bool,
+
+        #[command(flatten)]
+        landing: Landing,
+    },
+
     /// Apply a batch of operations to a package, all of them or none.
     ///
     /// The batch is a JSON array of operations. It is validated whole before
@@ -222,6 +243,7 @@ impl Command {
             Command::Get { .. } => "get",
             Command::Set { .. } => "set",
             Command::Clear { .. } => "clear",
+            Command::Calc { .. } => "calc",
             Command::Apply { .. } => "apply",
             Command::Version => "version",
             #[cfg(debug_assertions)]

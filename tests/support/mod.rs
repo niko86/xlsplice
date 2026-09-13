@@ -605,6 +605,11 @@ pub mod verb {
         answer::written(&batch::run(path, &batch, &Destination::from(out), dry_run)?)
     }
 
+    /// One `calc` operation, for a batch built by [`batch`].
+    pub fn calculating(full_calc_on_load: bool) -> Operation {
+        Operation::Calc { full_calc_on_load }
+    }
+
     /// One `clear` operation, for a batch built by [`batch`].
     pub fn clearing(target: &str) -> Operation {
         Operation::Clear {
@@ -631,6 +636,7 @@ pub mod verb {
                 target,
                 replace_formula: true,
             },
+            other => other,
         }
     }
 

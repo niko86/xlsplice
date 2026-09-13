@@ -87,6 +87,11 @@ fn run(command: Command, out: &Out) -> ExitCode {
             &landing,
             out,
         ),
+        Command::Calc {
+            file,
+            full_calc_on_load,
+            landing,
+        } => write::calc(&file, full_calc_on_load, &landing, out),
         Command::Apply {
             file,
             batch,

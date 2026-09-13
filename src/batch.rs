@@ -44,6 +44,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::atomic;
 use crate::calc_chain;
+use crate::calculation;
 use crate::date;
 use crate::declared;
 use crate::error::{Error, Result};
@@ -87,9 +88,15 @@ pub enum Operation {
         /// The cell, by address or by defined name.
         target: String,
         /// Whether the caller says a formula in the cell may be replaced.
-        /// Carried, not yet honoured: see [`Operation::Set`].
         #[serde(default)]
         replace_formula: bool,
+    },
+    /// Say whether the workbook recalculates fully when it is opened. The
+    /// first operation that names no cell.
+    Calc {
+        /// What the flag is to say. Setting it to what it already says
+        /// changes nothing and writes nothing.
+        full_calc_on_load: bool,
     },
 }
 
@@ -101,13 +108,14 @@ impl Operation {
     /// tickets land. A batch naming a kind that is not here is refused with
     /// this list, so a caller writing one against a later version and running
     /// it against this one is told what this one knows.
-    pub const KINDS: [&'static str; 2] = ["set", "clear"];
+    pub const KINDS: [&'static str; 3] = ["set", "clear", "calc"];
 
     /// The kind this operation is, as a batch spells it.
     pub fn kind(&self) -> &'static str {
         match self {
             Operation::Set { .. } => "set",
             Operation::Clear { .. } => "clear",
+            Operation::Calc { .. } => "calc",
         }
     }
 
@@ -121,13 +129,17 @@ impl Operation {
             | Operation::Clear {
                 replace_formula, ..
             } => *replace_formula,
+            Operation::Calc { .. } => false,
         }
     }
 
-    /// The target the operation names, for resolving and for reporting.
-    pub fn target(&self) -> &str {
+    /// The target the operation names, or `None` for an operation that names
+    /// none. A target is a cell, and not everything a batch does is done to
+    /// one: the calculation flag is the workbook's.
+    pub fn target(&self) -> Option<&str> {
         match self {
-            Operation::Set { target, .. } | Operation::Clear { target, .. } => target,
+            Operation::Set { target, .. } | Operation::Clear { target, .. } => Some(target),
+            Operation::Calc { .. } => None,
         }
     }
 
@@ -140,11 +152,10 @@ impl Operation {
     /// counts by, so a caller reading a failure and a caller reading a report
     /// are counting the same way.
     fn within(&self, index: usize) -> String {
-        format!(
-            "operation at index {index} ({} {})",
-            self.kind(),
-            self.target()
-        )
+        match self.target() {
+            Some(target) => format!("operation at index {index} ({} {target})", self.kind()),
+            None => format!("operation at index {index} ({})", self.kind()),
+        }
     }
 
     /// The cell this operation names, resolved, or `None` where it names no
@@ -156,10 +167,9 @@ impl Operation {
     /// before a single part comes out of the container, which is what lets
     /// two operations on one cell be refused rather than spliced.
     pub fn at(&self, opened: &Opened) -> Result<Option<Resolution>> {
-        match self {
-            Operation::Set { target, .. } | Operation::Clear { target, .. } => {
-                opened.resolve(target).map(Some)
-            }
+        match self.target() {
+            Some(target) => opened.resolve(target).map(Some),
+            None => Ok(None),
         }
     }
 
@@ -171,6 +181,15 @@ impl Operation {
     /// memoises them, and answers without changing anything: a batch is
     /// applied only once every operation has answered.
     pub fn edits(&self, at: Option<Resolution>, opened: &mut Opened) -> Result<Asked> {
+        match self {
+            Operation::Calc { full_calc_on_load } => calculated(*full_calc_on_load, opened),
+            Operation::Set { .. } | Operation::Clear { .. } => self.written_into(at, opened),
+        }
+    }
+
+    /// The edits that put this operation's value into the cell `at`, and take
+    /// a formula it replaced out of the calc chain.
+    fn written_into(&self, at: Option<Resolution>, opened: &mut Opened) -> Result<Asked> {
         match at {
             Some(at) => {
                 let written = self.written(opened.dates())?;
@@ -190,9 +209,7 @@ impl Operation {
                 })
             }
             None => Err(Error::internal(format!(
-                "the {} of {} was handed no cell, and every {} names one",
-                self.kind(),
-                self.target(),
+                "a {} names a cell, and this one was handed none",
                 self.kind()
             ))),
         }
@@ -209,6 +226,11 @@ impl Operation {
                 write_type, value, ..
             } => write_type.read(value, dates),
             Operation::Clear { .. } => Ok(Written::Nothing),
+            // Only a cell-writing operation asks what it writes, and the
+            // calculation flag is the workbook's, not a cell's.
+            Operation::Calc { .. } => Err(Error::internal(
+                "the calculation flag was asked what it writes into a cell".to_owned(),
+            )),
         }
     }
 }
@@ -573,8 +595,9 @@ impl Destination {
 /// What one operation did.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OperationReport {
-    /// The target exactly as it was given.
-    pub target: String,
+    /// The target exactly as it was given, or `None` for an operation that
+    /// names none.
+    pub target: Option<String>,
     /// The defined name it went through, or `None` for an address.
     pub name: Option<String>,
     /// The cell it resolved to, in the package's own spelling, or `None` for
@@ -711,7 +734,7 @@ fn reports(operations: &[Operation], asked: &[Asked], changed: &[bool]) -> Vec<O
         .zip(asked)
         .zip(changed)
         .map(|((operation, edits), changed)| OperationReport {
-            target: operation.target().to_owned(),
+            target: operation.target().map(str::to_owned),
             name: edits.at.as_ref().and_then(|at| at.name.clone()),
             address: edits.at.as_ref().map(|at| at.address.clone()),
             changed: *changed,
@@ -925,6 +948,22 @@ fn splices_of(
     };
     let replaced = formula_to_replace(node, at, licensed)?;
     Ok((value_splices(node, xml, written)?, replaced))
+}
+
+/// The edit that makes the workbook say whether it recalculates fully on
+/// load.
+///
+/// The flag is the workbook part's, so this is the one operation that names
+/// its part rather than being handed it, and the one that reads no cell.
+fn calculated(full_calc_on_load: bool, opened: &mut Opened) -> Result<Asked> {
+    let part = opened.workbook_part().to_owned();
+    let xml = opened.text(&part)?;
+    let splices = calculation::set_full_calc_on_load(xml, full_calc_on_load)
+        .map_err(|err| err.within(&part))?;
+    Ok(Asked {
+        at: None,
+        parts: vec![(part, PartEdit::Splice(splices))],
+    })
 }
 
 /// The edit that takes the cell `at` names out of the calc chain, where the
@@ -1175,14 +1214,18 @@ mod tests {
     #[test]
     fn every_operation_kind_is_listed_under_the_name_a_batch_spells_it_with() {
         for kind in Operation::KINDS {
-            let json =
-                format!(r#"[{{"op": "{kind}", "target": "A1", "type": "text", "value": ""}}]"#);
+            // Every field any kind takes, so that one document serves them
+            // all: a field an operation does not know is ignored.
+            let json = format!(
+                r#"[{{"op": "{kind}", "target": "A1", "type": "text", "value": "",
+                      "full_calc_on_load": true}}]"#
+            );
             let batch = Batch::parse(&json).unwrap_or_else(|err| panic!("{kind}: {err}"));
             assert_eq!(batch.operations[0].kind(), kind);
         }
         assert_eq!(
             Operation::KINDS,
-            ["set", "clear"],
+            ["set", "clear", "calc"],
             "a kind with no list entry"
         );
     }
@@ -1314,13 +1357,15 @@ mod tests {
     }
 
     /// An operation that names no cell reports none, and the batch resolves
-    /// nothing on its behalf. Nothing builds such an operation yet: #10, #11
-    /// and #12 do, and this is the shape their reports take.
+    /// nothing on its behalf. `calc` is the first such operation, and #12's
+    /// properties are the next.
     #[test]
     fn an_operation_that_names_no_cell_is_reported_with_no_address() {
         let operations = [
             writing("Inputs!A1", WriteType::Number, "1"),
-            writing("the flag", WriteType::Bool, "true"),
+            Operation::Calc {
+                full_calc_on_load: true,
+            },
         ];
         let asked = [
             Asked {
@@ -1351,10 +1396,7 @@ mod tests {
             Some("Inputs!A1".to_owned())
         );
         assert_eq!(reports[1].address, None, "no cell, no address");
-        assert_eq!(
-            reports[1].target, "the flag",
-            "the target is still reported"
-        );
+        assert_eq!(reports[1].target, None, "and no target either");
     }
 
     #[test]

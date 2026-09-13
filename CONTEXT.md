@@ -61,6 +61,14 @@ for a cell that no longer holds a formula is an inconsistency, so a formula
 replaced takes its entry with it.
 _Avoid_: dependency graph, formula cache
 
+**Full calc on load**:
+Excel's standing instruction to work every formula out again on the way in
+rather than trusting the _cached values_, carried as `fullCalcOnLoad` on the
+workbook's calculation element. Set after a write whose consequences the
+_calc chain_ and the caches no longer describe. Off is the absence of the
+attribute, which is how Excel spells a workbook that does not ask for it.
+_Avoid_: recalc flag, dirty flag
+
 ### Cells
 
 **Address**:

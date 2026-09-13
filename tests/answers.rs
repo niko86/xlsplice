@@ -104,16 +104,16 @@ fn every_member_of_a_list_carries_the_keys_the_others_carry() {
     assert_eq!(keys(&body["cells"][1]), keys(&body["cells"][2]));
 }
 
-/// An operation that names no cell answers with a null address, and one that
-/// names a cell answers as it always did. No operation names no cell yet, so
-/// the report is written out here: #10, #11 and #12 are the ones that will,
-/// and this is the shape their envelope takes when they do.
+/// An operation that names no cell answers with a null target and a null
+/// address, and one that names a cell answers as it always did. `calc` is the
+/// first operation that names none; the report is still written out here, so
+/// that the shape is asserted whatever verbs happen to exist.
 #[test]
 fn an_operation_naming_no_cell_reports_a_null_address_and_one_naming_one_does_not() {
     let report = Report {
         operations: vec![
             OperationReport {
-                target: "Inputs!A1".to_owned(),
+                target: Some("Inputs!A1".to_owned()),
                 name: None,
                 address: Some(Address {
                     sheet: "Inputs".to_owned(),
@@ -122,7 +122,7 @@ fn an_operation_naming_no_cell_reports_a_null_address_and_one_naming_one_does_no
                 changed: true,
             },
             OperationReport {
-                target: "calculate on load".to_owned(),
+                target: None,
                 name: None,
                 address: None,
                 changed: true,
@@ -142,7 +142,7 @@ fn an_operation_naming_no_cell_reports_a_null_address_and_one_naming_one_does_no
     assert_eq!(
         body["operations"][1],
         json!({
-            "target": "calculate on load",
+            "target": null,
             "name": null,
             "sheet": null,
             "cell": null,
@@ -173,8 +173,8 @@ fn an_operation_naming_no_cell_reports_a_null_address_and_one_naming_one_does_no
     );
     assert_eq!(
         in_text(answer::written(&report)).stdout,
-        "Inputs!A1\t\tInputs!A1\ttrue\ncalculate on load\t\t\ttrue\n",
-        "the address column is empty for an operation that names no cell"
+        "Inputs!A1\t\tInputs!A1\ttrue\n\t\t\ttrue\n",
+        "the target and address columns are empty for an operation naming no cell"
     );
 }
 

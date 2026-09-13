@@ -24,6 +24,7 @@ pub mod answer;
 pub mod atomic;
 pub mod batch;
 pub mod calc_chain;
+pub mod calculation;
 pub mod cells;
 pub mod date;
 pub mod declared;

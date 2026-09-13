@@ -12,14 +12,53 @@ use std::io::{IsTerminal, Read};
 use std::path::Path;
 
 use xlsplice::answer::{self, Answer};
-use xlsplice::batch::{self, Batch};
+use xlsplice::batch::{self, Batch, Operation};
+use xlsplice::calculation;
 use xlsplice::error::Error;
+use xlsplice::package::Package;
+use xlsplice::workbook::Workbook;
 
 use crate::cli::Landing;
 use crate::out::Out;
 
 /// The operand that means stdin rather than a path.
 const STDIN: &str = "-";
+
+/// The `calc` verb: report the calculation flag, or say what it should be.
+///
+/// Reading writes nothing, so `--out` and `--dry-run` have nothing to do
+/// where the flag is not being set, and saying so is better than accepting
+/// them and quietly ignoring them.
+pub fn calc(
+    file: &Path,
+    full_calc_on_load: bool,
+    landing: &Landing,
+    out: &Out,
+) -> xlsplice::Result<Answer> {
+    if full_calc_on_load {
+        let batch = Batch::of(Operation::Calc {
+            full_calc_on_load: true,
+        });
+        return run(file, &batch, landing, out);
+    }
+    if landing.out.is_some() || landing.dry_run {
+        return Err(Error::usage(
+            "calc with no --full-calc-on-load reads the flag and writes nothing, so \
+             --out and --dry-run have nothing to do. Add --full-calc-on-load to set it."
+                .to_owned(),
+        ));
+    }
+    out.trace(&format!(
+        "reading the calculation flag of {}",
+        file.display()
+    ));
+    let mut package = Package::open(file)?;
+    let workbook = Workbook::read(&mut package)?;
+    let part = workbook.part().to_owned();
+    let flag = calculation::full_calc_on_load(package.read_part_text(&part)?)
+        .map_err(|err| err.within(&part))?;
+    answer::calculation(flag)
+}
 
 /// The `apply` verb: read the batch the operand names, and run it.
 ///
@@ -106,12 +145,13 @@ pub fn run(file: &Path, batch: &Batch, landing: &Landing, out: &Out) -> xlsplice
 }
 
 /// What the batch is pointed at, for the trace: every operation's target, in
-/// the order they were given.
+/// the order they were given, with an operation that names none standing as
+/// what it does, so that the list is still as long as the batch.
 fn targets(batch: &Batch) -> String {
     batch
         .operations
         .iter()
-        .map(|operation| operation.target())
+        .map(|operation| operation.target().unwrap_or_else(|| operation.kind()))
         .collect::<Vec<&str>>()
         .join(", ")
 }

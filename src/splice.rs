@@ -211,6 +211,15 @@ impl<'a, 'input> Element<'a, 'input> {
         }
     }
 
+    /// Put `text` at the front of the element's content, opening a
+    /// self-closing element to do it. What a first child of it would be.
+    pub fn first_child_splice(&self, text: &str) -> Splice {
+        match self.self_closing {
+            true => self.content_splice(text),
+            false => Splice::new(self.content.start..self.content.start, text),
+        }
+    }
+
     /// Give the attribute called `name` the value `value`, or take it away
     /// when `value` is `None`. `None` for an attribute the element does not
     /// have is nothing to do.

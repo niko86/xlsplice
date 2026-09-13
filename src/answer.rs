@@ -376,8 +376,9 @@ struct WriteReport {
 
 #[derive(Serialize)]
 struct OperationEntry {
-    /// The operand exactly as it was given.
-    target: String,
+    /// The operand exactly as it was given, or `null` for an operation that
+    /// names none: the calculation flag is the workbook's, not a cell's.
+    target: Option<String>,
     /// The defined name the operand went through, in the package's own
     /// spelling, or `null` when the operand was an address.
     name: Option<String>,
@@ -439,7 +440,7 @@ fn operation_entry(operation: &OperationReport) -> OperationEntry {
 /// field is always the same field to `cut`.
 fn operation_row(operation: &OperationReport) -> Vec<String> {
     vec![
-        operation.target.clone(),
+        operation.target.clone().unwrap_or_default(),
         operation.name.clone().unwrap_or_default(),
         operation
             .address
@@ -448,6 +449,27 @@ fn operation_row(operation: &OperationReport) -> Vec<String> {
             .unwrap_or_default(),
         operation.changed.to_string(),
     ]
+}
+
+/// The columns of `calc` reading the flag.
+const CALC_HEADERS: [&str; 1] = ["FULL CALC ON LOAD"];
+
+/// The payload of `calc --json` reading the flag.
+#[derive(Serialize)]
+struct Calculation {
+    /// Whether the workbook is flagged to recalculate fully when it opens.
+    full_calc_on_load: bool,
+}
+
+/// What `calc` answers when it is only asked: whether the workbook is flagged
+/// to recalculate fully on load. Setting the flag is a writing verb and
+/// answers as one.
+pub fn calculation(full_calc_on_load: bool) -> Result<Answer> {
+    Answer::rows(
+        Calculation { full_calc_on_load },
+        &CALC_HEADERS,
+        vec![vec![full_calc_on_load.to_string()]],
+    )
 }
 
 /// The payload of `version --json`.

@@ -185,12 +185,24 @@ finish() {
 # ──────────────────────────────────────────────────────────────────────────
 
 
-TOTAL_STAGES=10
-
 FIXTURES="tests/fixtures"
 PLAIN="$FIXTURES/plain.xlsx"
 MACROS="$FIXTURES/macros.xlsm"
 FEATURE="$FIXTURES/feature.xlsx"
+DATED="$FIXTURES/dated-row.xlsx"
+
+# A fixture that exists is a baseline, so a wizard that walks you back through
+# building one is a wizard inviting you to re-save it. A run that finds the
+# three of #4 already saved is therefore a run about the fourth alone.
+if [[ -f "$PLAIN" && -f "$MACROS" && -f "$FEATURE" ]]; then
+  MODE=fourth
+  TOTAL_STAGES=4
+  FIRST_SAVED=2026-09-11   # when the three were saved, which is not today
+else
+  MODE=all
+  TOTAL_STAGES=12
+  FIRST_SAVED=$(date +%Y-%m-%d)
+fi
 
 # ── Verification helpers ──────────────────────────────────────────────────
 # Issue #4 can be got subtly wrong in ways that only bite three tickets
@@ -234,6 +246,57 @@ saved() {
   printf '  %s✓%s %s saved (%s)\n' "$GREEN" "$RESET" "$1" "$(du -h "$1" | cut -f1)"
 }
 
+# dated_row FILE ROW: the row declares a custom format, and the style it
+# points at is a date format. Excel writes a styles part as one long line of
+# regular output, so this reads it with grep rather than pretending to parse
+# XML: the alternative is a dependency, for a check on four small files.
+dated_row() {
+  local file="$1" row="$2" sheet element index xfs numfmt code kind=no
+  sheet=$(part "xl/worksheets/sheet*.xml" "$file")
+  element=$(printf '%s' "$sheet" | grep -oE "<(x:)?row r=\"$row\"[^>]*>" | head -n1)
+  if [[ -z "$element" ]]; then
+    printf '  %s✗%s the sheet has no row %s at all\n' "$RED" "$RESET" "$row"
+    FAILED=$((FAILED + 1)); return 1
+  fi
+  check "row $row declares a custom format" "$element" 'customFormat="1"'
+
+  index=$(printf '%s' "$element" | grep -oE ' s="[0-9]+"' | grep -oE '[0-9]+' | head -n1)
+  if [[ -z "$index" ]]; then
+    printf '  %s✗%s row %s points at no style, so it carries no format\n' "$RED" "$RESET" "$row"
+    FAILED=$((FAILED + 1)); return 1
+  fi
+
+  # The row's style index counts into cellXfs, and the entry it lands on names
+  # the number format. cellStyleXfs holds xf elements too, hence the slice.
+  local styles; styles=$(part "xl/styles.xml" "$file" | tr '\n' ' ')
+  xfs=$(printf '%s' "$styles" | sed -n 's/.*<\(x:\)\{0,1\}cellXfs[^>]*>\(.*\)<\/\(x:\)\{0,1\}cellXfs>.*/\2/p')
+  numfmt=$(printf '%s' "$xfs" | grep -oE '<(x:)?xf [^>]*>' | sed -n "$((index + 1))p" \
+    | grep -oE 'numFmtId="[0-9]+"' | grep -oE '[0-9]+' | head -n1)
+  case "${numfmt:-}" in
+  1[4-7] | 22) kind=yes ;;                     # the built-in date formats
+  "" | 0) kind=no ;;
+  *)
+    code=$(printf '%s' "$styles" \
+      | grep -oE "<(x:)?numFmt[^>]*numFmtId=\"$numfmt\"[^>]*>" \
+      | grep -oE 'formatCode="[^"]*"' | head -n1)
+    case "$code" in
+    *y* | *Y* | *d* | *D*) kind=yes ;;         # a custom format naming a date
+    esac
+    ;;
+  esac
+  if [[ "$kind" == yes ]]; then
+    printf '  %s✓%s the format row %s carries is a DATE format (numFmtId %s)\n' \
+      "$GREEN" "$RESET" "$row" "${numfmt:-?}"
+  else
+    printf '  %s✗%s row %s carries numFmtId %s, which is not a date format\n' \
+      "$RED" "$RESET" "$row" "${numfmt:-none}"
+    note "  Select the whole row by its header before formatting: formatting"
+    note "  the cell alone leaves the row carrying General, which is the case"
+    note "  feature.xlsx already covers."
+    FAILED=$((FAILED + 1))
+  fi
+}
+
 # verdict "name": report and let the human retry the stage.
 verdict() {
   if (( FAILED == 0 )); then
@@ -248,11 +311,21 @@ verdict() {
   FAILED=0
 }
 
-banner "xlsplice fixtures (issue #4)"
+if [[ "$MODE" == fourth ]]; then
+  banner "xlsplice fixtures — the dated row (issue #28)"
+else
+  banner "xlsplice fixtures (issues #4 and #28)"
+fi
 
 # ──────────────────────────────────────────────────────────────────────────
 stage "Ground rules"
-say "Three packages go into $FIXTURES/, saved by you from Excel."
+if [[ "$MODE" == fourth ]]; then
+  say "The three packages of #4 are already saved, so this run is about the"
+  say "fourth alone: a package with a row whose custom format is a DATE"
+  say "format. Nothing here touches the three that exist."
+else
+  say "Four packages go into $FIXTURES/, saved by you from Excel."
+fi
 printf '\n'
 step "Keep every file small: a handful of cells, no styling beyond what is asked."
 step "No vendor material. Nothing from a the vendor system Template, not one cell."
@@ -267,8 +340,13 @@ mkdir -p "$FIXTURES"
 note "created $FIXTURES/"
 pause "Ready?"
 
+# ── The three packages of issue #4 ────────────────────────────────────────
+# Only built when they are not on disk. The body is left unindented so that
+# the diff that wrapped it shows what it wrapped, and nothing else.
+if [[ "$MODE" == all ]]; then
+
 # ──────────────────────────────────────────────────────────────────────────
-stage "1 of 3 · plain.xlsx"
+stage "1 of 4 · plain.xlsx"
 say "A plain workbook: one visible sheet, a few numbers, a text, a date"
 say "formatted as a date, and a boolean."
 printf '\n'
@@ -302,7 +380,7 @@ verdict "plain.xlsx"
 pause
 
 # ──────────────────────────────────────────────────────────────────────────
-stage "2 of 3 · macros.xlsm"
+stage "2 of 4 · macros.xlsm"
 say "A macro-enabled workbook with a REAL VBA project, so the pass-through of"
 say "xl/vbaProject.bin is exercised. Any trivial macro will do."
 printf '\n'
@@ -335,7 +413,7 @@ verdict "macros.xlsm"
 pause
 
 # ──────────────────────────────────────────────────────────────────────────
-stage "3 of 3 · feature.xlsx — sheets and visibility"
+stage "3 of 4 · feature.xlsx — sheets and visibility"
 say "The feature workbook is built across the next five stages and saved ONCE"
 say "at the end. Do not save until this wizard tells you to."
 printf '\n'
@@ -468,16 +546,117 @@ fi
 verdict "feature.xlsx"
 pause
 
+fi  # ── end of the three packages of issue #4 ──────────────────────────────
+
+# ──────────────────────────────────────────────────────────────────────────
+stage "4 of 4 · dated-row.xlsx — a row Excel formats as a date"
+say "An inserted cell has no style of its own, so it can render as a date"
+say "only by taking the one its row carries. No fixture can be asked for that:"
+say "row 7 of feature.xlsx declares a custom format, but a bold one. This"
+say "package is that row, and it is the whole of what it is for."
+printf '\n'
+if [[ -f "$DATED" ]]; then
+  say "It is already saved, so there is nothing to build here — a fixture's"
+  say "bytes are the baseline, and re-saving one is the thing that must not"
+  say "happen. The next stage checks the file that is there."
+  printf '\n'
+  note "$DATED"
+  pause
+else
+  say "Nothing to type: the content is written out and opened for you. A CSV"
+  say "is data entry, and what you save from it is still bytes Excel wrote."
+  printf '\n'
+  CSV_DIR=$(mktemp -d)
+  CSV="$CSV_DIR/Inputs.csv"   # a CSV opens under its own file name as the sheet
+  {
+    printf 'xlsplice fixture for issue #28\n'
+    printf 'A row whose custom format is a date format.\n'
+    printf '\n\n\n\n'
+    printf '2026-09-11\n'
+  } >"$CSV"
+  note "wrote $CSV"
+  if command -v open >/dev/null 2>&1 && open -a "Microsoft Excel" "$CSV" 2>/dev/null; then
+    printf '  %s↗ opened%s it in Excel\n' "$GREEN" "$RESET"
+  else
+    warn "could not open Excel for you, so open that file yourself."
+  fi
+  printf '\n'
+  step "Click the ROW 7 HEADER, to select the whole row rather than a cell."
+  step "Format → Cells… → Number → Date → OK."
+  printf '\n'
+  step "Leave B7 alone: nothing typed into it, nothing deleted out of it."
+  printf '\n'
+  note "A7 holds the date and the row carries the format. B7 is the cell that"
+  note "is not there, which is what a write into it has to insert."
+  printf '\n'
+  pause "Press Enter when row 7 is formatted as a date."
+fi
+
+# ──────────────────────────────────────────────────────────────────────────
+stage "dated-row.xlsx — save once, then verify"
+if [[ -f "$DATED" ]]; then
+  say "Checking the fixture already on disk. Nothing is written to it."
+  printf '\n'
+else
+  say "Save it now, exactly once."
+  printf '\n'
+  step "File → Save As → Format: Excel Workbook (.xlsx)"
+  step "Save it at exactly:  $(pwd)/$DATED"
+  step "Then CLOSE the workbook."
+  printf '\n'
+  warn "Excel will offer to keep the CSV format. It has to be .xlsx, or there"
+  warn "is no package here to test at all."
+  printf '\n'
+  pause "Press Enter once it is saved and closed."
+  printf '\n'
+fi
+if saved "$DATED"; then
+  sheet=$(part "xl/worksheets/sheet*.xml" "$DATED")
+  dated_row "$DATED" 7
+  check "row 7 holds a cell of its own" "$sheet" '<(x:)?c r="A7"'
+  refute "B7 is absent, so a write into it is an insertion" "$sheet" '<(x:)?c r="B7"'
+  refute "no VBA project crept in" "$(unzip -l "$DATED")" 'vbaProject\.bin'
+fi
+# A checksum recorded for a fixture that failed its checks is a false green,
+# so the note below is told whether this one held.
+if (( FAILED == 0 )); then DATED_OK=yes; else DATED_OK=no; fi
+verdict "dated-row.xlsx"
+# An `if`, not a `&&` list: under `set -e` a false test as a whole statement
+# is an exit, and on the run that only verifies there is no CSV to remove.
+if [[ -n "${CSV_DIR:-}" ]]; then
+  rm -rf "$CSV_DIR"
+fi
+pause
+
 # ──────────────────────────────────────────────────────────────────────────
 stage "Record the note and stage for commit"
-say "Issue #4 asks for a short note naming what each file contains."
+say "Issue #4 asks for a short note naming what each file contains, and #28"
+say "adds the fourth to it. The note is written from the files themselves."
 printf '\n'
+
+# The date the fourth was saved is a fact about the file, not about this run,
+# so a re-run reads back the one already recorded rather than stamping today.
+FOURTH_SAVED=$(date +%Y-%m-%d)
+if recorded=$(grep -oE 'dated-row\.xlsx` on [0-9]{4}-[0-9]{2}-[0-9]{2}' \
+  "$FIXTURES/README.md" 2>/dev/null | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}'); then
+  FOURTH_SAVED=$recorded
+fi
+
+if [[ ! -f "$PLAIN" || ! -f "$MACROS" || ! -f "$FEATURE" || ! -f "$DATED" ]]; then
+  warn "a fixture is missing, so the note is left exactly as it is."
+  note "Nothing is recorded until all four are saved."
+elif [[ "${DATED_OK:-no}" != yes ]]; then
+  warn "dated-row.xlsx did not meet its checks, so the note is left alone."
+  note "Save it again from Excel — it has no byte history to protect until it"
+  note "is committed — and run this wizard once more."
+else
 {
   printf '# Fixtures\n\n'
-  printf 'Three packages saved from Excel by hand for issue #4. A fixture is a\n'
-  printf 'package **Excel saved**: never re-save one, never regenerate one with a\n'
-  printf 'library, and never put vendor material in one. Their bytes are the\n'
-  printf 'baseline every byte-preservation test compares against.\n\n'
+  printf 'Four packages saved from Excel by hand: three for issue #4 and a fourth\n'
+  printf 'for issue #28. A fixture is a package **Excel saved**: never re-save one,\n'
+  printf 'never regenerate one with a library, and never put vendor material in\n'
+  printf 'one. Their bytes are the baseline every byte-preservation test compares\n'
+  printf 'against.\n\n'
   printf -- '- `plain.xlsx` — one visible sheet: a few numbers, a text, a date\n'
   printf '  formatted as a date, and a boolean.\n'
   printf -- '- `macros.xlsm` — a real VBA project (`xl/vbaProject.bin`) holding one\n'
@@ -487,20 +666,42 @@ printf '\n'
   printf '  filled across several cells; a hidden sheet and a very hidden sheet; a\n'
   printf '  row with a custom row format and a column with a column style, both\n'
   printf '  leaving their cells absent; and custom document properties of each of\n'
-  printf '  the four types Excel offers.\n\n'
-  printf 'Saved with Excel %s on %s.\n\n' "${EXCEL_VERSION:-16.x}" "$(date +%Y-%m-%d)"
+  printf '  the four types Excel offers.\n'
+  printf -- '- `dated-row.xlsx` — one sheet, `Inputs`, whose row 7 carries a custom\n'
+  printf '  row format that is a **date** format, with `B7` left absent. A date\n'
+  printf '  written into `B7` renders as a date only by inheriting the style of\n'
+  printf '  its row, which is the half of inheritance no other fixture holds.\n\n'
+  printf 'Saved with Excel %s — the first three on %s, and\n' \
+    "${EXCEL_VERSION:-16.x}" "$FIRST_SAVED"
+  printf '`dated-row.xlsx` on %s.\n\n' "$FOURTH_SAVED"
+  printf 'Excel stamps the absolute path it saved to into `xl/workbook.xml`, as\n'
+  printf '`x15ac:absPath`. Taking it out would mean editing the file, which is the one\n'
+  printf 'thing a fixture must not have had done to it, so it stays.\n\n'
   printf '## Checksums\n\n'
   printf 'If one of these ever changes, a fixture was re-saved and the baseline\n'
   printf 'moved. That is a bug, not an update.\n\n'
   printf '```\n'
-  shasum -a 256 "$PLAIN" "$MACROS" "$FEATURE" 2>/dev/null | sed "s| .*/| |"
+  shasum -a 256 "$PLAIN" "$MACROS" "$FEATURE" "$DATED" 2>/dev/null | sed "s| .*/| |"
+  printf '```\n\n'
+  printf '## The oracle\n\n'
+  printf '`tests/oracle.rs` puts these in front of a real Excel and asks whether it\n'
+  printf 'opens them without complaint. Those cases are ignored by default, and the\n'
+  printf 'way to run them is:\n\n'
   printf '```\n'
-} > "$FIXTURES/README.md"
+  printf 'scripts/oracle.sh\n'
+  printf '```\n\n'
+  printf 'One at a time, because there is one Excel and they take turns at it. Run\n'
+  printf 'them that way rather than by hand: the script exports what the suite reads,\n'
+  printf 'so a suite of skips cannot pass itself off as a suite of verdicts. See\n'
+  printf '`docs/adr/0006-the-oracle-hands-excel-the-file-and-reads-the-screen.md` for\n'
+  printf 'what that costs and why.\n'
+} >"$FIXTURES/README.md"
 note "wrote $FIXTURES/README.md"
 printf '\n'
-shasum -a 256 "$PLAIN" "$MACROS" "$FEATURE" 2>/dev/null || true
+shasum -a 256 "$PLAIN" "$MACROS" "$FEATURE" "$DATED" 2>/dev/null || true
 printf '\n'
-if confirm "Stage all three fixtures and the note for commit?"; then
+fi
+if confirm "Stage the fixtures and the note for commit?"; then
   git add "$FIXTURES"
   note "staged. Review with 'git diff --cached --stat', then commit."
 else
@@ -508,6 +709,9 @@ else
 fi
 
 finish
-note "Next: tell the agent the fixtures have landed. It will re-point the"
-note "tests in tests/support/mod.rs at the real bytes and close #4."
+note "Next: tell the agent the fixture has landed. It will point the oracle"
+note "case a_date_inheriting_a_date_style_from_its_row_opens_clean at it,"
+note "delete the derivation that stood in for it, and close #28."
+printf '\n'
+note "Then put it in front of Excel: scripts/oracle.sh"
 printf '\n'

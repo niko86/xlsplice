@@ -8,7 +8,7 @@
 //! lands anywhere near the repository.
 //!
 //! Absent the variable there is no corpus, and a suite over it skips. What
-//! does not skip is the same operation set over the three fixtures, which is
+//! does not skip is the same operation set over the four fixtures, which is
 //! how the machinery here is held to on a machine that has no corpus at all.
 //!
 //! ## What one package is put through

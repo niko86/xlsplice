@@ -16,7 +16,7 @@
 //! container shows. The judge is the comparator in `support`, which reads both
 //! containers itself.
 //!
-//! It runs over two sets of packages. The three fixtures run everywhere,
+//! It runs over two sets of packages. The four fixtures run everywhere,
 //! including CI, which is what keeps the machinery here honest on a machine
 //! with no corpus. The corpus — real vendor templates, kept outside this
 //! repository in the directory `XLSPLICE_CORPUS` names — runs where there is
@@ -39,7 +39,12 @@ use xlsplice::batch::Report;
 /// machinery here still works on a machine that has never seen a template.
 #[test]
 fn the_fixed_operation_set_holds_the_guarantee_over_every_fixture() {
-    for name in ["plain.xlsx", "macros.xlsm", "feature.xlsx"] {
+    for name in [
+        "plain.xlsx",
+        "macros.xlsm",
+        "feature.xlsx",
+        "dated-row.xlsx",
+    ] {
         holds_the_guarantee(&support::fixture(name));
     }
 }

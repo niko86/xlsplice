@@ -23,7 +23,7 @@
 //!
 //! ## What is put in front of Excel
 //!
-//! The three fixtures Excel saved, which must open clean, and a package whose
+//! The four fixtures Excel saved, which must open clean, and a package whose
 //! worksheet envelope has been put out of order, which must not — the pair
 //! that says a clean verdict means something.
 //!
@@ -62,8 +62,13 @@ use support::oracle::{Verdict, asked, decided, opened_by, requires};
 use support::{Workspace, fixture, part_text, verb};
 use xlsplice::batch::WriteType;
 
-/// The three fixtures, which Excel saved and so must open clean.
-const FIXTURES: [&str; 3] = ["plain.xlsx", "macros.xlsm", "feature.xlsx"];
+/// The four fixtures, which Excel saved and so must open clean.
+const FIXTURES: [&str; 4] = [
+    "plain.xlsx",
+    "macros.xlsm",
+    "feature.xlsx",
+    "dated-row.xlsx",
+];
 
 const SHEET1: &str = "xl/worksheets/sheet1.xml";
 
@@ -267,32 +272,20 @@ fn a_date_inheriting_a_date_style_from_its_column_opens_clean() {
     assert_verdict(&path, Verdict::Clean, "a date under a column's style");
 }
 
-/// The other half of the inheritance, which no fixture can be asked for as it
-/// stands: row 7 declares a custom format, but the format it declares is a
-/// bold one rather than a date one. So the case derives the package it needs,
-/// moving that row to the date style the row's own cell already carries —
-/// which is to say, to a style Excel itself wrote into that row. The package
-/// it derived is put to Excel too, so a repair says which of the two Excel
-/// minded.
+/// The other half of the inheritance, and the fixture saved for it: row 7 of
+/// `dated-row.xlsx` carries a custom row format that is a date format, and
+/// `B7` is a cell of that row which is not there. So a date written into it
+/// can render as a date only if the style it took is the row's.
 ///
-/// A fixture saved with such a row would take the derivation out of it, and
-/// #28 asks for one.
+/// No other fixture can be asked for this. Row 7 of `feature.xlsx` declares a
+/// custom format too, but a bold one, which is why this case derived the
+/// package it needed until #28 saved one.
 #[test]
 #[ignore = "drives Excel"]
 fn a_date_inheriting_a_date_style_from_its_row_opens_clean() {
-    let (workspace, path) = copy("oracle-date-row", "feature.xlsx");
-    let sheet = part_text(&path, SHEET1);
-    let dated = sheet.replacen(r#"s="1" customFormat="1""#, r#"s="3" customFormat="1""#, 1);
-    assert_ne!(
-        dated, sheet,
-        "the test must have moved the row to a date style"
-    );
-    let derived = workspace.dir().join("dated-row.xlsx");
-    rewritten(&path, &derived, SHEET1, &dated);
-    assert_verdict(&derived, Verdict::Clean, "the package this case derives");
-
+    let (_workspace, path) = copy("oracle-date-row", "dated-row.xlsx");
     verb::set(
-        &derived,
+        &path,
         "Inputs!B7",
         WriteType::Date,
         "2026-09-11",
@@ -300,12 +293,12 @@ fn a_date_inheriting_a_date_style_from_its_row_opens_clean() {
         false,
     )
     .expect("a date written into an absent cell must land");
-
     assert!(
-        part_text(&derived, SHEET1).contains(r#"<c r="B7" s="3"><v>46276</v></c>"#),
+        part_text(&path, SHEET1).contains(r#"<c r="B7" s="1"><v>46276</v></c>"#),
         "the cell must have taken the row's date style for this to be the case it is"
     );
-    assert_verdict(&derived, Verdict::Clean, "a date under a row's style");
+
+    assert_verdict(&path, Verdict::Clean, "a date under a row's style");
 }
 
 /// A formula replaced by a value leaves its entry in the calc chain naming a
@@ -554,7 +547,7 @@ fn a_mixed_batch_opens_clean() {
 }
 
 /// Every output of the byte-preservation cases, put in front of Excel: the
-/// fixed operation set of `support::corpus`, over the three fixtures. What
+/// fixed operation set of `support::corpus`, over the four fixtures. What
 /// those suites assert is that nothing outside the target moved; what this
 /// asserts is that Excel opens the result of each.
 #[test]

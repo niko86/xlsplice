@@ -7,7 +7,7 @@
 //! Nothing here trusts the tool's own account of what it changed, and the
 //! comparator reads both containers itself, so a process never came into it.
 //!
-//! The packages are the three fixtures Excel saved. A test copies the one it
+//! The packages are the fixtures Excel saved. A test copies the one it
 //! needs and writes to the copy.
 //!
 //! Three still spawn, because argv is what they are about: what clap does

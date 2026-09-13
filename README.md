@@ -95,7 +95,7 @@ scripts/demo.sh ~/templates/a.xlsm   # or a template of your own
 
 ## Testing
 
-`cargo test` runs everywhere and needs nothing: the suites work over three
+`cargo test` runs everywhere and needs nothing: the suites work over four
 small fixtures committed to `tests/fixtures/`, and hold every write to the
 byte-level guarantee with a comparator that reads both containers itself.
 

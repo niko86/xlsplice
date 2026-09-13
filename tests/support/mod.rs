@@ -1,7 +1,7 @@
 //! Packages for the tests to read and to write, somewhere to keep them, and
 //! the comparison that holds the byte-level guarantee.
 //!
-//! Three fixtures saved from Excel live in `tests/fixtures/`. [`fixture`]
+//! Four fixtures saved from Excel live in `tests/fixtures/`. [`fixture`]
 //! names one and [`Workspace::copy_of`] takes a writable copy, because a
 //! fixture's bytes are the baseline and nothing may write over them. For the
 //! shapes Excel cannot be made to save, a test builds the package it needs

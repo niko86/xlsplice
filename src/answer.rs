@@ -20,6 +20,7 @@ use serde::Serialize;
 
 use crate::batch::{OperationReport, Report};
 use crate::cells::{CellReport, Value};
+use crate::diff::{Difference, PartStatus};
 use crate::error::{Error, Result};
 use crate::properties::{self, Property};
 use crate::workbook::{DefinedName, Resolved, Scope, Sheet, Workbook};
@@ -631,6 +632,61 @@ pub fn properties(found: &[Property]) -> Result<Answer> {
     let properties: Vec<PropertyEntry> = found.iter().map(PropertyEntry::of).collect();
     let rows = rows_of(&properties);
     Answer::rows(Properties { properties }, &PropertyEntry::HEADERS, rows)
+}
+
+/// The payload of `diff --json`.
+#[derive(Serialize)]
+struct Comparison {
+    /// Whether the two packages hold the same parts with the same bytes.
+    identical: bool,
+    /// Every part either package holds, and what became of it.
+    parts: Vec<DifferenceEntry>,
+}
+
+#[derive(Serialize)]
+struct DifferenceEntry {
+    /// The part's path, as the container holds it.
+    part: String,
+    /// `identical`, `differs`, `added` or `removed`.
+    status: &'static str,
+}
+
+impl DifferenceEntry {
+    fn of(part: &PartStatus) -> Self {
+        DifferenceEntry {
+            part: part.part.clone(),
+            status: part.status.as_str(),
+        }
+    }
+}
+
+impl Entry<2> for DifferenceEntry {
+    const HEADERS: [&'static str; 2] = ["PART", "STATUS"];
+
+    fn row(&self) -> [String; 2] {
+        let DifferenceEntry { part, status } = self;
+        [part.clone(), (*status).to_owned()]
+    }
+}
+
+/// What `diff` answers: one row per part, the first package's parts in the
+/// order it holds them and the second's own after them.
+///
+/// Whether the two are the same is in the envelope rather than in a row of its
+/// own: it is a fact about the comparison and not about any part, and a table
+/// of parts with one row that is not a part would be a table a caller has to
+/// filter.
+pub fn difference(found: &Difference) -> Result<Answer> {
+    let parts: Vec<DifferenceEntry> = found.parts.iter().map(DifferenceEntry::of).collect();
+    let rows = rows_of(&parts);
+    Answer::rows(
+        Comparison {
+            identical: found.identical,
+            parts,
+        },
+        &DifferenceEntry::HEADERS,
+        rows,
+    )
 }
 
 /// The payload of `version --json`.

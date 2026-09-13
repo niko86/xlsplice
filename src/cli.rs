@@ -216,6 +216,28 @@ pub enum Command {
         landing: Landing,
     },
 
+    /// Compare two packages part by part.
+    ///
+    /// Says of every part whether the two hold it identically, hold it
+    /// differently, or whether only one of them holds it at all. Part-level
+    /// only: nothing here says what inside a part moved. Neither package is
+    /// written to.
+    Diff {
+        /// The package to compare from.
+        #[arg(value_name = "A")]
+        file: PathBuf,
+
+        /// The package to compare to.
+        #[arg(value_name = "B")]
+        other: PathBuf,
+
+        /// Exit 1 where the two differ, as diff(1) does. Without it the
+        /// command exits 0 whether they differ or not, and the answer is
+        /// where the difference is read.
+        #[arg(long)]
+        exit_code: bool,
+    },
+
     /// Print the version of xlsplice.
     Version,
 
@@ -317,6 +339,7 @@ impl Command {
                 PropsAction::Unset { .. } => "props unset",
             },
             Command::Apply { .. } => "apply",
+            Command::Diff { .. } => "diff",
             Command::Version => "version",
             #[cfg(debug_assertions)]
             Command::Selftest { .. } => "selftest",

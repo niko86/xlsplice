@@ -16,11 +16,26 @@
 //! Any non-zero code guarantees that no package was written. Changes are
 //! additive: codes may be added, never removed or renumbered, so consumers
 //! must tolerate a code they do not recognise.
+//!
+//! One exit code is not an error code: `diff --exit-code` exits 1 where the
+//! two packages differ, which is diff(1)'s convention and what a caller
+//! reaching for that flag is reaching for. It shares its number with
+//! `internal`, and that is the price of the convention. Everything else still
+//! tells them apart — a difference is an answer, with `ok: true` and the parts
+//! listed; an internal failure is `ok: false` and a message — and neither
+//! writes a package, which is what the guarantee above is about.
 
 use std::fmt;
 
 /// The exit code of a successful command.
 pub const EXIT_SUCCESS: u8 = 0;
+
+/// What `diff --exit-code` exits with when the two packages differ.
+///
+/// Not an error: the command succeeded and answered. See the table above for
+/// why it shares its number with `internal`, and for what still tells the two
+/// apart.
+pub const EXIT_DIFFERENT: u8 = 1;
 
 /// The stable, snake-case error code carried by every [`Error`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -196,6 +196,16 @@ A batch done in full and put nowhere. It writes no file at all, and reports
 what a real run would have changed.
 _Avoid_: preview, simulation, check
 
+**Difference**:
+What two packages come to, compared _part_ by part: for each part, whether
+both hold it with the same bytes, both hold it with different bytes, or only
+one holds it at all; and, over all of them, whether the two are the same
+package twice. Part-level only: nothing in a difference says what inside a
+part moved. The container around the parts is no part of it, so two packages
+whose entries sit in a different order, or carry different moments, still hold
+the same parts.
+_Avoid_: delta, changeset, comparison
+
 ### The contract
 
 **Answer**:

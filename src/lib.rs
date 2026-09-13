@@ -28,6 +28,7 @@ pub mod calculation;
 pub mod cells;
 pub mod date;
 pub mod declared;
+pub mod diff;
 pub mod envelope;
 pub mod error;
 pub mod package;

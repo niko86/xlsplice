@@ -17,6 +17,7 @@ use clap::Parser;
 use xlsplice::answer::{self, Answer};
 use xlsplice::batch::{Batch, Operation};
 use xlsplice::cells;
+use xlsplice::diff::{self, Difference};
 use xlsplice::error::Error;
 use xlsplice::package::Package;
 use xlsplice::render::OutputMode;
@@ -50,6 +51,17 @@ fn run(command: Command, out: &Out) -> ExitCode {
         env!("CARGO_PKG_VERSION"),
         command.name()
     ));
+
+    // `diff` is the one verb whose exit code says something when it succeeds,
+    // so it reaches the streams itself rather than through the common path.
+    if let Command::Diff {
+        file,
+        other,
+        exit_code,
+    } = command
+    {
+        return diff(&file, &other, exit_code, out);
+    }
 
     out.emit(match command {
         Command::Sheets { file } => sheets(&file, out),
@@ -129,7 +141,37 @@ fn run(command: Command, out: &Out) -> ExitCode {
         Command::Version => answer::version(),
         #[cfg(debug_assertions)]
         Command::Selftest { .. } => panic!("selftest was asked to panic"),
+        // Answered above, before the common path.
+        Command::Diff { .. } => unreachable!("diff is answered before this match"),
     })
+}
+
+/// Compare two packages, and say in the exit code whether they differ if the
+/// caller asked for that.
+///
+/// Reading two packages is the whole of it, and neither is written to, so
+/// nothing here goes near the write path. The flag is honoured only where the
+/// comparison succeeded: a package that cannot be read is a failure with its
+/// own code, not a difference.
+fn diff(a: &Path, b: &Path, exit_code: bool, out: &Out) -> ExitCode {
+    out.trace(&format!("comparing {} with {}", a.display(), b.display()));
+    let found = match compared(a, b) {
+        Ok(found) => found,
+        Err(err) => return out.emit(Err(err)),
+    };
+    out.trace(&format!("{} part(s) between them", found.parts.len()));
+    let on_success = match exit_code && !found.identical {
+        true => xlsplice::error::EXIT_DIFFERENT,
+        false => xlsplice::error::EXIT_SUCCESS,
+    };
+    out.emit_exiting(answer::difference(&found), on_success)
+}
+
+/// Open both packages and compare them.
+fn compared(a: &Path, b: &Path) -> xlsplice::Result<Difference> {
+    let mut before = Package::open(a)?;
+    let mut after = Package::open(b)?;
+    diff::compare(&mut before, &mut after)
 }
 
 /// Open a package and read its workbook: what every read verb starts with.

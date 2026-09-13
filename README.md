@@ -78,6 +78,21 @@ Unset, the wrapper resolves `xlsplice` the way any other command is resolved.
 
 `CONTEXT.md` carries the vocabulary and `docs/adr/` the decisions.
 
+## Seeing it work
+
+`scripts/demo.sh` hydrates a template start to finish with every command
+shown: it reads the sheets and the input cells behind their defined names,
+refuses a write over a formula, fills two cells and a date and stamps who ran
+it in one batch, sets the recalculate flag, and then holds the result against
+the template part by part. Nothing is written beside the package it reads —
+the output goes to a temporary directory, and the path is printed for opening
+in Excel.
+
+```
+scripts/demo.sh                      # the fixture committed here
+scripts/demo.sh ~/templates/a.xlsm   # or a template of your own
+```
+
 ## Testing
 
 `cargo test` runs everywhere and needs nothing: the suites work over three

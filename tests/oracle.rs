@@ -84,9 +84,17 @@ fn copy(label: &str, name: &str) -> (Workspace, PathBuf) {
 }
 
 /// Ask the oracle, and assert the answer, unless there is no oracle to ask.
-fn assert_verdict(package: &Path, wanted: Verdict, what: &str) {
-    let Some(said) = asked(package) else { return };
+///
+/// Answers whether there was an oracle to ask, so that a case putting many
+/// packages in front of Excel can say how many of them Excel actually saw. A
+/// skip is not a pass, and a run that counted cases rather than answers would
+/// say it had opened packages it never opened.
+fn assert_verdict(package: &Path, wanted: Verdict, what: &str) -> bool {
+    let Some(said) = asked(package) else {
+        return false;
+    };
     assert_eq!(said, wanted, "{what}");
+    true
 }
 
 #[test]
@@ -552,9 +560,11 @@ fn a_mixed_batch_opens_clean() {
 #[test]
 #[ignore = "drives Excel"]
 fn every_output_of_the_fixed_operation_set_over_the_fixtures_opens_clean() {
+    let mut opened = Opened::default();
     for name in FIXTURES {
-        opens_clean_after_the_fixed_set(&fixture(name));
+        opened = opened.and(opens_clean_after_the_fixed_set(&fixture(name)));
     }
+    eprintln!("{}", opened.said("the fixtures"));
 }
 
 /// What a case of this suite does about there being no corpus, said apart
@@ -579,15 +589,16 @@ fn every_output_of_the_fixed_operation_set_over_the_corpus_opens_clean() {
         return;
     };
 
-    let mut opened = 0;
+    let mut opened = Opened::default();
     for package in &packages {
-        opened += opens_clean_after_the_fixed_set(package);
+        opened = opened.and(opens_clean_after_the_fixed_set(package));
     }
-    // Said out loud, because this case passes by skipping when there is no
-    // corpus, and a green run says nothing about which of the two happened.
-    // `--nocapture` is what shows it.
+    // Said out loud, because this case passes whether Excel saw anything or
+    // not: there may be no corpus, and there may be no oracle. `--nocapture`
+    // is what shows which of the three happened.
     eprintln!(
-        "the corpus: {opened} output(s) of {} package(s) opened clean",
+        "{} across {} package(s)",
+        opened.said("the corpus"),
         packages.len()
     );
 }
@@ -596,20 +607,64 @@ fn every_output_of_the_fixed_operation_set_over_the_corpus_opens_clean() {
 /// about each result. What the case did to the package is asserted by the
 /// byte-preservation suite over the same set; what is asked here is only
 /// whether Excel opens it.
-fn opens_clean_after_the_fixed_set(package: &Path) -> usize {
+fn opens_clean_after_the_fixed_set(package: &Path) -> Opened {
     let cases = corpus::cases(package);
+    let mut opened = Opened {
+        answered: 0,
+        asked: cases.len(),
+    };
     for case in &cases {
         let workspace = Workspace::new("oracle-set");
 
         let (copy, _) = corpus::applied(&workspace, package, case);
 
-        assert_verdict(
+        if assert_verdict(
             &copy,
             Verdict::Clean,
             &format!("{}: {}", package.display(), case.label),
-        );
+        ) {
+            opened.answered += 1;
+        }
     }
-    cases.len()
+    opened
+}
+
+/// How many packages a case put in front of Excel, and how many of those
+/// Excel answered about. The two differ wherever there was no oracle to ask,
+/// which is the difference between a case that passed and a case that ran.
+#[derive(Debug, Default, Clone, Copy)]
+struct Opened {
+    answered: usize,
+    asked: usize,
+}
+
+impl Opened {
+    /// Add one package's tally to another's.
+    fn and(self, other: Opened) -> Opened {
+        Opened {
+            answered: self.answered + other.answered,
+            asked: self.asked + other.asked,
+        }
+    }
+
+    /// What became of them, for a run to print.
+    fn said(self, whose: &str) -> String {
+        match self.answered {
+            0 => format!(
+                "{whose}: none of {} output(s) reached Excel, so this case passed \
+                 without opening anything",
+                self.asked
+            ),
+            answered if answered == self.asked => {
+                format!("{whose}: {answered} output(s) opened clean")
+            }
+            answered => format!(
+                "{whose}: {answered} of {} output(s) opened clean, and the rest could not \
+                 be asked",
+                self.asked
+            ),
+        }
+    }
 }
 
 /// The skip is a behaviour, not an accident, so it is asserted rather than

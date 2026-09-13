@@ -141,11 +141,31 @@ pub fn decided(said: Verdict, required: bool) -> Option<Verdict> {
                 !required,
                 "{REQUIRE}=require, and the oracle could not answer: {why}"
             );
-            eprintln!("skipping: the oracle could not answer: {why}");
+            if unheard(&why) {
+                eprintln!("skipping: the oracle could not answer: {why}");
+            }
             None
         }
         answered => Some(answered),
     }
+}
+
+/// Whether this is the first time a run has been told `why`.
+///
+/// One case may ask the oracle fifty times, and fifty identical paragraphs
+/// about a missing permission bury the line that says how many packages Excel
+/// actually saw. Each distinct reason is worth reading once; the same one
+/// fifty times is not.
+fn unheard(why: &str) -> bool {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+
+    static HEARD: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    HEARD
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .expect("the set of reasons already printed")
+        .insert(why.to_owned())
 }
 
 /// Whether the environment says an oracle must be there.

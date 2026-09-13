@@ -104,12 +104,23 @@ repair. It drives the application through the screen, so it is ignored by
 default and asked for by name, one case at a time:
 
 ```
-cargo test --test oracle -- --ignored --test-threads=1
+scripts/oracle.sh                    # over the fixtures
+scripts/oracle.sh ~/templates        # and over a corpus
 ```
 
+The script is the way to run it. It exports what the suite reads — a variable
+typed on a line of its own sets a shell variable the child process never sees,
+which silently turns `require` off and makes a suite of skips look like a suite
+of verdicts — checks the screen can be read before Excel is launched, and
+passes `--nocapture` so the counts the suite prints are visible. Underneath it
+is `cargo test --test oracle -- --ignored --test-threads=1`.
+
 On a machine with no Excel each case skips and says why;
-`XLSPLICE_ORACLE=require` turns that skip into a failure, for the machine the
-oracle is meant to run on. The verdict is read off the screen, so it needs
+`XLSPLICE_ORACLE=require`, which the script exports, turns that skip into a
+failure, for the machine the oracle is meant to run on. A case putting many
+packages in front of Excel says how many of them Excel answered about, because
+a skip is not a pass and a green run on its own does not tell you which it
+was. The verdict is read off the screen, so it needs
 Accessibility permission for the terminal the tests are started from — without
 it every case skips saying so — and `XLSPLICE_ORACLE_TRACE=1` prints what Excel
 was seen to do. See ADR-0006.

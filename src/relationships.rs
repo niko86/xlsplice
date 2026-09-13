@@ -53,13 +53,10 @@ impl Relationships {
                 entries: Vec::new(),
             });
         }
+        let file = package.path().display().to_string();
         let xml = package.read_part_text(&part)?;
-        let document = Document::parse(&xml).map_err(|err| {
-            Error::unreadable(format!(
-                "{}: {part} is not valid XML: {err}",
-                package.path().display()
-            ))
-        })?;
+        let document = Document::parse(xml)
+            .map_err(|err| Error::unreadable(format!("{file}: {part} is not valid XML: {err}")))?;
         let entries = children(document.root_element(), "Relationship")
             .map(|node| Entry {
                 id: node.attribute("Id").unwrap_or_default().to_owned(),

@@ -4,13 +4,24 @@
 //! A batch is a list of operations over one package. It is validated whole
 //! before a byte is spliced and applied whole afterwards, so a failure on any
 //! operation leaves the package as it was. Nothing here reaches the disk until
-//! every operation has been located and every splice computed.
+//! every operation has answered with the edits it wants. Each is asked in
+//! turn, so the failure a caller is told about is the first operation's that
+//! has one, whatever kind of failure the ones after it would have had.
+//!
+//! An operation is handed the package and answers with [`PartEdit`]s, named
+//! by part: a splice of a part's bytes, the creation of a part, or its
+//! removal. So the batch runs over parts rather than over cells, and an
+//! operation that touches a part holding no cell at all, or none the package
+//! holds yet, is a kind of operation rather than an impossibility. An
+//! operation owns its own reading, and the package memoises the text of a
+//! part it has read, so two operations landing on one part read it once
+//! between them (ADR-0005).
 //!
 //! An operation carries what a caller gave and nothing derived from it: a
 //! target, and a value as the text it was written as under the write type it
 //! names. Reading that text into the value it becomes is done here, with the
-//! workbook open and before any part is read, so a batch is a document a
-//! caller can write as readily as the command line can build one.
+//! workbook open, so a batch is a document a caller can write as readily as
+//! the command line can build one.
 //!
 //! One operation exists so far, `set`, and it writes a value into a cell that
 //! is already there. A cell the sheet does not hold is
@@ -32,12 +43,12 @@ use roxmltree::{Document, Node};
 use serde::{Deserialize, Serialize};
 
 use crate::atomic;
-use crate::cells::{Resolution, parts_of, resolve};
 use crate::error::{Error, Result};
-use crate::package::Package;
+use crate::package::{Content, Package};
 use crate::reference::Address;
 use crate::relationships::Relationships;
 use crate::splice::{self, Splice};
+use crate::target::{Resolution, resolve};
 use crate::workbook::Workbook;
 use crate::worksheet::{FormulaRole, Located, Worksheet, Written, formula_of, value_splices};
 
@@ -66,6 +77,28 @@ impl Operation {
     pub fn target(&self) -> &str {
         match self {
             Operation::Set { target, .. } => target,
+        }
+    }
+
+    /// The edits this operation wants made, named by the part each lands in,
+    /// and the cell it resolved to for the report.
+    ///
+    /// The operation reads whatever parts it needs out of `opened`, which
+    /// memoises them, and answers without changing anything: a batch is
+    /// applied only once every operation has answered. `index` is the place
+    /// the operation has in the batch, which is what a failure names it by.
+    pub fn edits(&self, index: usize, opened: &mut Opened) -> Result<Asked> {
+        match self {
+            Operation::Set { target, .. } => {
+                let written = self.written(index)?;
+                let at = opened.resolve(target)?;
+                let xml = opened.text(&at.part)?;
+                let splices = splices_of(xml, &at, &written)?;
+                Ok(Asked {
+                    parts: vec![(at.part.clone(), PartEdit::Splice(splices))],
+                    at: Some(at),
+                })
+            }
         }
     }
 
@@ -177,6 +210,151 @@ fn read_boolean(text: &str) -> Result<Written> {
     }
 }
 
+/// One thing to be done to one part.
+///
+/// A splice is one species of part edit rather than the whole of it: a part
+/// may also be created or removed, and an operation that does either names a
+/// part the way an operation that splices one does. Which parts a package
+/// holds is the container's business, so a created part carries bytes alone
+/// and nothing about where its entry sits or what stamp it takes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PartEdit {
+    /// Replace the bytes of named ranges of the part, and leave every other
+    /// byte of it alone.
+    Splice(Vec<Splice>),
+    /// Put a part the package does not hold into it, holding these bytes.
+    Create(Vec<u8>),
+    /// Leave the part out of the package.
+    Remove,
+}
+
+impl PartEdit {
+    /// The two edits as the one edit they come to, or `None` where they
+    /// disagree about what is being done to the part.
+    ///
+    /// Splices merge, because they are ranges of one text and
+    /// [`splice::apply`] is what says whether two of them collide; removals
+    /// merge, because two operations may both be done with a part; two
+    /// creations merge only if they carry the same bytes. A part is spliced,
+    /// created or removed, not two of the three.
+    fn and(self, other: &PartEdit) -> Option<PartEdit> {
+        match (self, other) {
+            (PartEdit::Splice(mut mine), PartEdit::Splice(theirs)) => {
+                mine.extend(theirs.iter().cloned());
+                Some(PartEdit::Splice(mine))
+            }
+            (PartEdit::Create(mine), PartEdit::Create(theirs)) if &mine == theirs => {
+                Some(PartEdit::Create(mine))
+            }
+            (PartEdit::Remove, PartEdit::Remove) => Some(PartEdit::Remove),
+            _ => None,
+        }
+    }
+
+    /// The splices this edit is, or none at all where it is another kind of
+    /// edit. A part created or removed is not spliced, so it has none.
+    fn splices(&self) -> &[Splice] {
+        match self {
+            PartEdit::Splice(splices) => splices,
+            PartEdit::Create(_) | PartEdit::Remove => &[],
+        }
+    }
+}
+
+/// What one operation asked of the package: its part edits, and where it
+/// landed.
+///
+/// The edits are named by part, and there may be none: an operation that
+/// finds the package already saying what it was asked for asks for nothing.
+/// A cell operation also answers with the cell it resolved to, for the
+/// report; an operation naming no cell answers with none, and the batch
+/// resolves nothing on its behalf.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Asked {
+    /// The cell the operation named, or `None` where it named none.
+    pub at: Option<Resolution>,
+    /// What each part is to have done to it, named by part path.
+    pub parts: Vec<(String, PartEdit)>,
+}
+
+/// A package open for writing, with the models an operation reads it through.
+///
+/// This is what an operation is handed, and it is the whole of what an
+/// operation may do to a package: resolve a target, ask whether a part is
+/// there, and read one. Rebuilding the container is no part of it, which is
+/// why the batch alone reaches that, through [`Opened::land`].
+///
+/// The workbook and its relationships are read once, when the package is
+/// opened, because every target goes through them; every other part is read
+/// by the operation that wants it, and memoised by the package, so the second
+/// operation to want a part pays nothing for it (ADR-0005).
+pub struct Opened {
+    package: Package,
+    workbook: Workbook,
+    rels: Relationships,
+}
+
+impl Opened {
+    /// Open the package at `path` and read the two parts every target is
+    /// resolved through.
+    pub fn open(path: &Path) -> Result<Self> {
+        let mut package = Package::open(path)?;
+        let workbook = Workbook::read(&mut package)?;
+        let rels = Relationships::read(&mut package, workbook.part())?;
+        Ok(Opened {
+            package,
+            workbook,
+            rels,
+        })
+    }
+
+    /// The cell and part a target names.
+    pub fn resolve(&self, target: &str) -> Result<Resolution> {
+        resolve(&self.package, &self.rels, &self.workbook, target)
+    }
+
+    /// The text of one part, read once however many operations ask for it.
+    pub fn text(&mut self, part: &str) -> Result<&str> {
+        self.package.read_part_text(part)
+    }
+
+    /// Whether the package holds a part at `part`.
+    pub fn has_part(&self, part: &str) -> bool {
+        self.package.has_part(part)
+    }
+
+    /// How many parts have been taken out of the container so far.
+    pub fn reads(&self) -> usize {
+        self.package.reads()
+    }
+
+    /// Put the result where it was asked for.
+    ///
+    /// A batch that changed nothing has nothing to rebuild: in place, the
+    /// package already says what was asked for and is left alone; to another
+    /// path, its own bytes are copied across, so the result is the input byte
+    /// for byte rather than a container rebuilt around the same parts
+    /// (ADR-0003).
+    fn land(
+        &mut self,
+        path: &Path,
+        destination: &Destination,
+        content: &BTreeMap<String, Content>,
+    ) -> Result<()> {
+        let bytes = match (content.is_empty(), destination) {
+            (true, Destination::InPlace) => return Ok(()),
+            (true, Destination::Out(_)) => std::fs::read(path).map_err(|err| {
+                Error::internal(format!(
+                    "cannot read {} back to copy it: {err}. Nothing was written.",
+                    path.display()
+                ))
+            })?,
+            (false, _) => self.package.rebuild(content)?,
+        };
+        atomic::replace(destination.path(path), &bytes)
+    }
+}
+
 /// Everything one invocation asks of one package.
 ///
 /// A batch is one document: a JSON array of operations, which is what the
@@ -235,8 +413,9 @@ pub struct OperationReport {
     pub target: String,
     /// The defined name it went through, or `None` for an address.
     pub name: Option<String>,
-    /// The cell it resolved to, in the package's own spelling.
-    pub address: Address,
+    /// The cell it resolved to, in the package's own spelling, or `None` for
+    /// an operation that names no cell.
+    pub address: Option<Address>,
     /// Whether it changed a byte. A write of the value already there did not.
     pub changed: bool,
 }
@@ -246,11 +425,11 @@ pub struct OperationReport {
 pub struct Parts {
     /// The parts whose bytes differ, in path order.
     pub changed: Vec<String>,
-    /// The parts the batch created. `set` creates none; the properties and
-    /// calculation operations will.
+    /// The parts the batch created, in path order. `set` creates none; the
+    /// custom properties operation will.
     pub added: Vec<String>,
-    /// The parts the batch removed. `set` removes none; replacing the last
-    /// chained formula will.
+    /// The parts the batch removed, in path order. `set` removes none;
+    /// replacing the last chained formula will.
     pub removed: Vec<String>,
 }
 
@@ -271,130 +450,199 @@ pub struct Report {
 /// Apply `batch` to the package at `path`, putting the result at
 /// `destination`.
 ///
-/// Everything is validated and spliced before anything is written, and the
-/// write itself is one atomic landing of the whole container, so a failure
+/// Every operation answers with its edits before any of them is applied, and
+/// the write itself is one atomic landing of the whole container, so a failure
 /// anywhere leaves both the input and the destination as they were.
 pub fn run(path: &Path, batch: &Batch, destination: &Destination, dry_run: bool) -> Result<Report> {
-    let mut package = Package::open(path)?;
-    let workbook = Workbook::read(&mut package)?;
-    let rels = Relationships::read(&mut package, workbook.part())?;
+    let mut opened = Opened::open(path)?;
 
-    // Every value is read once the workbook model is in hand, because a date
-    // is a number only once the workbook's date system has had its say, and
-    // before any target is looked up, because a batch whose own text is not of
-    // the type it names has nothing worth looking up.
-    let written: Vec<Written> = batch
+    // Every operation is asked what it wants before anything is done to a
+    // part, so a batch that fails on its last operation has changed nothing
+    // for its first.
+    let asked: Vec<Asked> = batch
         .operations
         .iter()
         .enumerate()
-        .map(|(index, operation)| operation.written(index))
+        .map(|(index, operation)| operation.edits(index, &mut opened))
         .collect::<Result<_>>()?;
 
-    // Every target is resolved before any part is read, so a batch naming a
-    // sheet the package does not have fails before a splice is computed.
-    let resolved: Vec<ResolvedOperation> = batch
-        .operations
-        .iter()
-        .zip(written)
-        .map(|(operation, written)| {
-            Ok(ResolvedOperation {
-                written,
-                at: resolve(&package, &rels, &workbook, operation.target())?,
-            })
-        })
-        .collect::<Result<_>>()?;
-
-    let mut changed = vec![false; resolved.len()];
-    let mut replaced: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    for part in parts_of(resolved.iter().map(|resolved| &resolved.at)) {
-        let xml = package.read_part_text(&part)?;
-        let spliced = splice_part(&xml, &part, &resolved, &mut changed)?;
-        if spliced != xml {
-            replaced.insert(part, spliced.into_bytes());
-        }
-    }
+    let applied = apply(&mut opened, &asked)?;
 
     let output = destination.path(path).to_owned();
     if !dry_run {
-        land(&mut package, path, destination, &replaced)?;
+        opened.land(path, destination, &applied.content)?;
     }
 
     Ok(Report {
-        operations: resolved
-            .into_iter()
-            .zip(changed)
-            .map(|(resolved, changed)| OperationReport {
-                target: resolved.at.target,
-                name: resolved.at.name,
-                address: resolved.at.address,
-                changed,
-            })
-            .collect(),
-        parts: Parts {
-            changed: replaced.keys().cloned().collect(),
-            ..Parts::default()
-        },
+        operations: reports(&batch.operations, &asked, &applied.changed),
+        parts: applied.parts,
         output,
         dry_run,
     })
 }
 
-/// One operation's value, read, with the cell and part its target turned out
-/// to name. The two travel together from the moment the target is resolved, so
-/// nothing has to keep two lists in step.
-struct ResolvedOperation {
-    /// The value, read the way the operation's write type said to.
-    written: Written,
-    /// The cell and part the operation's target named.
-    at: Resolution,
+/// One result per operation, in the order the operations were given.
+///
+/// What an operation resolved to is what it answered with rather than
+/// something looked up here: an operation that named no cell reports none,
+/// and nothing resolves one on its behalf.
+fn reports(operations: &[Operation], asked: &[Asked], changed: &[bool]) -> Vec<OperationReport> {
+    operations
+        .iter()
+        .zip(asked)
+        .zip(changed)
+        .map(|((operation, edits), changed)| OperationReport {
+            target: operation.target().to_owned(),
+            name: edits.at.as_ref().and_then(|at| at.name.clone()),
+            address: edits.at.as_ref().map(|at| at.address.clone()),
+            changed: *changed,
+        })
+        .collect()
 }
 
-/// One worksheet part with every operation that lands on it applied.
-///
-/// The part is parsed once however many operations name cells in it, and
-/// every splice is computed against that one tree before any of them is
-/// applied, which is what lets the splices be applied from the end backwards.
-///
-/// `changed` is filled in for the operations that landed on this part, by the
-/// index each has in `resolved`.
-fn splice_part(
-    xml: &str,
-    part: &str,
-    resolved: &[ResolvedOperation],
-    changed: &mut [bool],
-) -> Result<String> {
-    let document = Document::parse(xml)
-        .map_err(|err| Error::unreadable(format!("not valid XML: {err}")).within(part))?;
-    let sheet = Worksheet::of(&document).map_err(|err| err.within(part))?;
+/// What a batch's edits came to, before anything is written.
+struct Applied {
+    /// What each part the batch touched is to become.
+    content: BTreeMap<String, Content>,
+    /// Whether each operation changed a byte, by its place in the batch.
+    changed: Vec<bool>,
+    /// What to report about the parts.
+    parts: Parts,
+}
 
-    let mut splices: Vec<Splice> = Vec::new();
-    for (index, resolved) in resolved.iter().enumerate() {
-        let at = &resolved.at;
-        if at.part != part {
-            continue;
-        }
-        let node = match sheet
-            .locate(at.address.cell)
-            .map_err(|err| err.within(part))?
-        {
-            Located::Cell(node) => node,
-            // Inserting the cell, and the row it would sit in, is the next
-            // ticket; until then a write has nothing to write into.
-            Located::Absent | Located::NoRow => {
-                return Err(Error::not_found(format!(
-                    "no cell {} to write to: sheet '{}' does not hold it. \
-                     Writing a cell that is not there is not yet supported.",
-                    at.address, at.address.sheet
-                )));
+/// Work every operation's edits out into what each part is to become.
+///
+/// A part is dealt with once, however many operations landed on it: it is
+/// read once, spliced once with all of their splices, and written once. The
+/// parts are taken in path order, which is the order the report lists them
+/// in.
+fn apply(opened: &mut Opened, asked: &[Asked]) -> Result<Applied> {
+    let mut applied = Applied {
+        content: BTreeMap::new(),
+        changed: vec![false; asked.len()],
+        parts: Parts::default(),
+    };
+    for (part, edits) in by_part(asked) {
+        match merged(&part, &edits)? {
+            PartEdit::Splice(all) => {
+                let xml = opened.text(&part)?;
+                spliced(&mut applied.changed, &edits, xml);
+                let spliced = splice::apply(xml, &all)?;
+                if spliced != xml {
+                    applied.parts.changed.push(part.clone());
+                    applied
+                        .content
+                        .insert(part, Content::Bytes(spliced.into_bytes()));
+                }
             }
-        };
-        refuse_a_formula(node, at)?;
-
-        let here = value_splices(node, xml, &resolved.written)?;
-        changed[index] = here.iter().any(|splice| splice.changes(xml));
-        splices.extend(here);
+            PartEdit::Create(bytes) => {
+                if opened.has_part(&part) {
+                    return Err(Error::internal(format!(
+                        "part '{part}' is already in the package, so it cannot be created"
+                    )));
+                }
+                mark(&mut applied.changed, &edits);
+                applied.parts.added.push(part.clone());
+                applied.content.insert(part, Content::Bytes(bytes));
+            }
+            PartEdit::Remove => {
+                if !opened.has_part(&part) {
+                    return Err(Error::internal(format!(
+                        "part '{part}' is not in the package, so it cannot be removed"
+                    )));
+                }
+                mark(&mut applied.changed, &edits);
+                applied.parts.removed.push(part.clone());
+                applied.content.insert(part, Content::Gone);
+            }
+        }
     }
-    splice::apply(xml, &splices)
+    Ok(applied)
+}
+
+/// Every operation's edits, gathered by the part they land in, in path order.
+fn by_part(asked: &[Asked]) -> BTreeMap<String, Vec<(usize, &PartEdit)>> {
+    let mut by_part: BTreeMap<String, Vec<(usize, &PartEdit)>> = BTreeMap::new();
+    for (index, edits) in asked.iter().enumerate() {
+        for (part, edit) in &edits.parts {
+            by_part.entry(part.clone()).or_default().push((index, edit));
+        }
+    }
+    by_part
+}
+
+/// What the edits on one part come to together.
+///
+/// The edits are folded into one, and two that disagree about what is being
+/// done to the part are two operations asking different things of it: a fault
+/// in whatever built the batch rather than something the package can be wrong
+/// about, so the failure names both of them.
+fn merged(part: &str, edits: &[(usize, &PartEdit)]) -> Result<PartEdit> {
+    let Some(((first, edit), rest)) = edits.split_first() else {
+        return Err(Error::internal(format!(
+            "part '{part}' is named by no edit"
+        )));
+    };
+    let mut merged = (*edit).clone();
+    for (other, edit) in rest {
+        merged = merged.and(edit).ok_or_else(|| {
+            Error::internal(format!(
+                "the operations at index {first} and {other} ask different things of part \
+                 '{part}': a part is spliced, created or removed, not two of the three"
+            ))
+        })?;
+    }
+    Ok(merged)
+}
+
+/// Say which operations this part's splices changed a byte for.
+///
+/// An operation may edit several parts, and the parts are taken one at a
+/// time, so what this part says about an operation is added to what its other
+/// parts said rather than put in place of it: an operation changed something
+/// if any one of its edits did.
+fn spliced(changed: &mut [bool], edits: &[(usize, &PartEdit)], xml: &str) {
+    for (index, edit) in edits {
+        changed[*index] |= edit.splices().iter().any(|splice| splice.changes(xml));
+    }
+}
+
+/// Say that every operation that asked for this part changed something. A
+/// part created or removed is a change by every operation that asked for it,
+/// because the part was not there, or was, before any of them asked.
+fn mark(changed: &mut [bool], edits: &[(usize, &PartEdit)]) {
+    for (index, _) in edits {
+        changed[*index] = true;
+    }
+}
+
+/// The splices that put `written` into the cell `at` names, in the part whose
+/// text is `xml`.
+///
+/// The part is parsed here, by the operation that named it, and the splices
+/// are byte ranges of the text handed in: the same text every other operation
+/// on this part is handed, so their ranges all mean the same thing.
+fn splices_of(xml: &str, at: &Resolution, written: &Written) -> Result<Vec<Splice>> {
+    let document = Document::parse(xml)
+        .map_err(|err| Error::unreadable(format!("not valid XML: {err}")).within(&at.part))?;
+    let sheet = Worksheet::of(&document).map_err(|err| err.within(&at.part))?;
+    let node = match sheet
+        .locate(at.address.cell)
+        .map_err(|err| err.within(&at.part))?
+    {
+        Located::Cell(node) => node,
+        // Inserting the cell, and the row it would sit in, is the next
+        // ticket; until then a write has nothing to write into.
+        Located::Absent | Located::NoRow => {
+            return Err(Error::not_found(format!(
+                "no cell {} to write to: sheet '{}' does not hold it. \
+                 Writing a cell that is not there is not yet supported.",
+                at.address, at.address.sheet
+            )));
+        }
+    };
+    refuse_a_formula(node, at)?;
+    value_splices(node, xml, written)
 }
 
 /// Refuse to write over a formula.
@@ -433,31 +681,6 @@ fn refuse_a_formula(node: Node, at: &Resolution) -> Result<()> {
          cell that holds a value.",
         at.address
     )))
-}
-
-/// Put the result where it was asked for.
-///
-/// A batch that changed nothing has nothing to rebuild: in place, the package
-/// already says what was asked for and is left alone; to another path, its own
-/// bytes are copied across, so the result is the input byte for byte rather
-/// than a container rebuilt around the same parts.
-fn land(
-    package: &mut Package,
-    path: &Path,
-    destination: &Destination,
-    replaced: &BTreeMap<String, Vec<u8>>,
-) -> Result<()> {
-    let bytes = match (replaced.is_empty(), destination) {
-        (true, Destination::InPlace) => return Ok(()),
-        (true, Destination::Out(_)) => std::fs::read(path).map_err(|err| {
-            Error::internal(format!(
-                "cannot read {} back to copy it: {err}. Nothing was written.",
-                path.display()
-            ))
-        })?,
-        (false, _) => package.rebuild(replaced)?,
-    };
-    atomic::replace(destination.path(path), &bytes)
 }
 
 #[cfg(test)]
@@ -598,6 +821,151 @@ mod tests {
                 write_type: WriteType::Bool,
                 value: "1".to_owned(),
             }]
+        );
+    }
+
+    fn splice() -> Splice {
+        Splice::new(0..1, "x")
+    }
+
+    /// Two operations landing on one part are one splice list against one
+    /// text; whether two of those ranges collide is `splice::apply`'s to say,
+    /// not this.
+    #[test]
+    fn the_splices_of_every_operation_on_one_part_are_merged_into_one_list() {
+        let one = PartEdit::Splice(vec![splice()]);
+        let two = PartEdit::Splice(vec![Splice::new(4..5, "y"), Splice::new(9..9, "z")]);
+
+        let merged = merged("sheet1.xml", &[(0, &one), (1, &two)]).expect("splices merge");
+
+        assert_eq!(
+            merged,
+            PartEdit::Splice(vec![
+                splice(),
+                Splice::new(4..5, "y"),
+                Splice::new(9..9, "z")
+            ])
+        );
+    }
+
+    /// Two operations may both be done with one part, and a part is removed
+    /// once however many of them said so.
+    #[test]
+    fn two_operations_removing_one_part_remove_it_once() {
+        let merged = merged(
+            "xl/calcChain.xml",
+            &[(0, &PartEdit::Remove), (1, &PartEdit::Remove)],
+        )
+        .expect("two removals are one removal");
+
+        assert_eq!(merged, PartEdit::Remove);
+    }
+
+    /// Two operations creating one part agree only if they agree about what
+    /// is in it.
+    #[test]
+    fn two_operations_creating_one_part_must_carry_the_same_bytes() {
+        let one = PartEdit::Create(b"<properties/>".to_vec());
+        let same = PartEdit::Create(b"<properties/>".to_vec());
+        let other = PartEdit::Create(b"<properties count=\"1\"/>".to_vec());
+
+        assert_eq!(
+            merged("docProps/custom.xml", &[(0, &one), (1, &same)]).expect("the same bytes"),
+            one
+        );
+        let err = merged("docProps/custom.xml", &[(0, &one), (1, &other)])
+            .expect_err("different bytes are two answers to one question");
+        assert_eq!(err.code(), ErrorCode::Internal);
+    }
+
+    /// A part is spliced, created or removed, not two of the three. Whatever
+    /// built such a batch is at fault, so the failure names both operations.
+    #[test]
+    fn edits_of_different_kinds_on_one_part_are_refused_naming_both_operations() {
+        let splicing = PartEdit::Splice(vec![splice()]);
+
+        let err = merged("sheet1.xml", &[(2, &splicing), (5, &PartEdit::Remove)])
+            .expect_err("a part is not spliced and removed at once");
+
+        assert_eq!(err.code(), ErrorCode::Internal);
+        assert!(err.message().contains("index 2 and 5"), "{}", err.message());
+        assert!(err.message().contains("sheet1.xml"), "{}", err.message());
+    }
+
+    /// An operation may edit several parts, and the parts are taken one at a
+    /// time. What one of them says about an operation is added to what the
+    /// others said, so a part an operation changed nothing in cannot take
+    /// back a part it did change. No operation edits two parts yet; #10 and
+    /// #12 are the first that will.
+    #[test]
+    fn an_operation_that_changed_any_of_its_parts_changed_something() {
+        let changes = PartEdit::Splice(vec![Splice::new(0..1, "y")]);
+        let does_not = PartEdit::Splice(vec![Splice::new(0..1, "x")]);
+
+        let mut changed = [false];
+        spliced(&mut changed, &[(0, &changes)], "xxx");
+        assert!(changed[0], "the splice put a byte there that was not");
+        spliced(&mut changed, &[(0, &does_not)], "xxx");
+        assert!(
+            changed[0],
+            "a later part it changed nothing in does not take that back"
+        );
+
+        let mut removed = [false];
+        mark(&mut removed, &[(0, &PartEdit::Remove)]);
+        spliced(&mut removed, &[(0, &does_not)], "xxx");
+        assert!(removed[0], "and neither does one after a part removed");
+    }
+
+    /// An operation that names no cell reports none, and the batch resolves
+    /// nothing on its behalf. Nothing builds such an operation yet: #10, #11
+    /// and #12 do, and this is the shape their reports take.
+    #[test]
+    fn an_operation_that_names_no_cell_is_reported_with_no_address() {
+        let operations = [
+            Operation::Set {
+                target: "Inputs!A1".to_owned(),
+                write_type: WriteType::Number,
+                value: "1".to_owned(),
+            },
+            Operation::Set {
+                target: "the flag".to_owned(),
+                write_type: WriteType::Bool,
+                value: "true".to_owned(),
+            },
+        ];
+        let asked = [
+            Asked {
+                at: Some(Resolution {
+                    target: "Inputs!A1".to_owned(),
+                    name: None,
+                    address: Address {
+                        sheet: "Inputs".to_owned(),
+                        cell: crate::reference::Cell::parse("A1").expect("a cell"),
+                    },
+                    part: "xl/worksheets/sheet1.xml".to_owned(),
+                }),
+                parts: vec![(
+                    "xl/worksheets/sheet1.xml".to_owned(),
+                    PartEdit::Splice(vec![splice()]),
+                )],
+            },
+            Asked {
+                at: None,
+                parts: vec![("xl/workbook.xml".to_owned(), PartEdit::Splice(Vec::new()))],
+            },
+        ];
+
+        let reports = reports(&operations, &asked, &[true, false]);
+
+        assert_eq!(
+            reports[0].address.as_ref().map(ToString::to_string),
+            Some("Inputs!A1".to_owned())
+        );
+        assert_eq!(reports[1].address, None, "no cell, no address");
+        assert_eq!(
+            reports[1].target, "the flag",
+            "the target is still reported"
         );
     }
 

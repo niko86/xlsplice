@@ -18,6 +18,15 @@ _Avoid_: entry, member, component
 An edit that replaces the bytes of named nodes inside one part and leaves every other byte of that part unchanged.
 _Avoid_: patch, update, rewrite
 
+**Part edit**:
+One thing to be done to one part, named by its path: a _splice_ of its bytes,
+the creation of a part the package does not hold, or the removal of one it
+does. A splice is one species of part edit and the only one in use, so the two
+are not synonyms: an _operation_ answers with part edits, and what a batch
+applies is the edits on each part merged. Said in full wherever an
+_operation_ is also in play, because an operation is not an edit.
+_Avoid_: change, patch, mutation
+
 **Target**:
 What a command is pointed at. On the command line, one operand naming a cell,
 by address or by defined name. Inside the tool, the parts and nodes a command

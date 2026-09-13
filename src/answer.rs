@@ -381,12 +381,14 @@ struct OperationEntry {
     /// The defined name the operand went through, in the package's own
     /// spelling, or `null` when the operand was an address.
     name: Option<String>,
-    /// The sheet, in the package's own spelling.
-    sheet: String,
-    /// The cell in A1 form.
-    cell: String,
+    /// The sheet, in the package's own spelling, or `null` for an operation
+    /// that names no cell.
+    sheet: Option<String>,
+    /// The cell in A1 form, or `null` for an operation that names no cell.
+    cell: Option<String>,
     /// Both together, quoted as a reference: what `get` would accept back.
-    address: String,
+    /// `null` for an operation that names no cell.
+    address: Option<String>,
     /// Whether the operation changed a byte. A write of the value already
     /// there did not.
     changed: bool,
@@ -421,21 +423,29 @@ pub fn written(report: &Report) -> Result<Answer> {
 }
 
 fn operation_entry(operation: &OperationReport) -> OperationEntry {
+    let at = operation.address.as_ref();
     OperationEntry {
         target: operation.target.clone(),
         name: operation.name.clone(),
-        sheet: operation.address.sheet.clone(),
-        cell: operation.address.cell.a1(),
-        address: operation.address.to_string(),
+        sheet: at.map(|address| address.sheet.clone()),
+        cell: at.map(|address| address.cell.a1()),
+        address: at.map(ToString::to_string),
         changed: operation.changed,
     }
 }
 
+/// An operation's row. An operation naming no cell leaves the address column
+/// empty, as a cell that has no formula leaves the formula columns empty: a
+/// field is always the same field to `cut`.
 fn operation_row(operation: &OperationReport) -> Vec<String> {
     vec![
         operation.target.clone(),
         operation.name.clone().unwrap_or_default(),
-        operation.address.to_string(),
+        operation
+            .address
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default(),
         operation.changed.to_string(),
     ]
 }

@@ -41,7 +41,7 @@ impl SharedStrings {
             return Ok(SharedStrings::default());
         };
         let xml = package.read_part_text(&part)?;
-        SharedStrings::parse(&xml).map_err(|err| err.within(&part))
+        SharedStrings::parse(xml).map_err(|err| err.within(&part))
     }
 
     /// Build the table from the text of a shared strings part.

@@ -1,12 +1,10 @@
 //! Reading cells: from the targets a caller named to what the package holds
 //! at each of them.
 //!
-//! This is where the pieces meet. [`crate::reference`] says what a target is,
-//! [`crate::workbook`] says which sheet or defined name it lands on,
-//! [`crate::worksheet`] says what the cell element holds, and
-//! [`crate::strings`] turns a shared-string index into text. Nothing above
-//! this module resolves a reference, and nothing below it knows a target was
-//! ever named.
+//! This is where the pieces meet. [`crate::target`] says which cell and part
+//! an operand names, [`crate::worksheet`] says what the cell element holds,
+//! and [`crate::strings`] turns a shared-string index into text. Nothing
+//! below this module knows a target was ever named.
 //!
 //! Every target is resolved before any part is read, so one naming a sheet
 //! the package does not have fails before a single worksheet is parsed. A
@@ -14,17 +12,16 @@
 //! string table, which may be the largest part in the package, is read only
 //! if some cell turns out to be a shared string.
 
-use std::path::Path;
-
 use roxmltree::Document;
 
 use crate::error::{Error, Result};
 use crate::package::Package;
-use crate::reference::{Address, Target};
+use crate::reference::Address;
 use crate::relationships::Relationships;
 use crate::strings::SharedStrings;
-use crate::workbook::{DefinedName, NoAnchor, Resolved, Scope, Workbook};
-use crate::worksheet::{Formula, Found, Stored, StoredType, Worksheet, part_of_sheet};
+use crate::target::{Resolution, parts_of, resolve};
+use crate::workbook::Workbook;
+use crate::worksheet::{Formula, Found, Stored, StoredType, Worksheet};
 
 /// A cell's value, typed by what the cell stores.
 #[derive(Debug, Clone, PartialEq)]
@@ -99,124 +96,6 @@ pub fn read(
         .collect()
 }
 
-/// One target, resolved to the cell and the part it names.
-///
-/// Reads and writes resolve a target by the same rule, so both come through
-/// [`resolve`] and neither has a spelling of the address rule of its own.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Resolution {
-    /// The target exactly as it was given.
-    pub target: String,
-    /// The defined name it went through, in the package's own spelling, or
-    /// `None` when the target was an address.
-    pub name: Option<String>,
-    /// The cell it resolved to, in the package's own spelling.
-    pub address: Address,
-    /// The worksheet part that cell sits in.
-    pub part: String,
-}
-
-/// Resolve one target to the cell it names and the part that cell sits in.
-pub fn resolve(
-    package: &Package,
-    rels: &Relationships,
-    workbook: &Workbook,
-    target: &str,
-) -> Result<Resolution> {
-    let file = package.path();
-    let (name, address) = match Target::parse(target) {
-        Target::Address { sheet, cell } => (
-            None,
-            Address {
-                sheet: sheet_named(file, workbook, &sheet)?,
-                cell,
-            },
-        ),
-        Target::SheetName { sheet, name } => {
-            let scope = Scope::Sheet(sheet_named(file, workbook, &sheet)?);
-            let defined = workbook
-                .name_in_scope(&name, &scope)
-                .ok_or_else(|| no_such_name(file, workbook, &name, &scope))?;
-            (Some(defined.name.clone()), anchor_of(defined)?)
-        }
-        Target::Name(name) => {
-            let defined = workbook
-                .name_in_scope(&name, &Scope::Workbook)
-                .ok_or_else(|| no_such_name(file, workbook, &name, &Scope::Workbook))?;
-            (Some(defined.name.clone()), anchor_of(defined)?)
-        }
-    };
-    Ok(Resolution {
-        part: part_of_sheet(package, rels, workbook, &address.sheet)?,
-        target: target.to_owned(),
-        name,
-        address,
-    })
-}
-
-/// The package's own spelling of the sheet called `name`.
-fn sheet_named(file: &Path, workbook: &Workbook, name: &str) -> Result<String> {
-    workbook
-        .sheet_named(name)
-        .map(|sheet| sheet.name.clone())
-        .ok_or_else(|| {
-            Error::not_found(format!(
-                "no sheet named '{name}' in {}; the package has: {}",
-                file.display(),
-                list(workbook.sheets().iter().map(|sheet| sheet.name.as_str()))
-            ))
-        })
-}
-
-/// The cell a defined name stands for.
-///
-/// A name that holds a literal or a formula is refused rather than not found,
-/// because the name is there: what it holds is the problem, so the message
-/// carries what it refers to. A name whose reference points at a sheet the
-/// package does not have is a missing sheet like any other.
-fn anchor_of(defined: &DefinedName) -> Result<Address> {
-    let DefinedName {
-        name, refers_to, ..
-    } = defined;
-    match &defined.resolved {
-        Resolved::Anchor(address) => Ok(address.clone()),
-        Resolved::Unresolvable(NoAnchor::UnknownSheet) => Err(Error::not_found(format!(
-            "the defined name '{name}' refers to {refers_to}, whose sheet is not in this package"
-        ))),
-        Resolved::Unresolvable(why) => Err(Error::refused(format!(
-            "the defined name '{name}' refers to {refers_to}, {} rather than a cell; \
-             give an address instead.",
-            match why {
-                NoAnchor::RefError => "a deleted reference",
-                NoAnchor::Constant => "a constant",
-                _ => "a formula",
-            }
-        ))),
-    }
-}
-
-fn no_such_name(file: &Path, workbook: &Workbook, name: &str, scope: &Scope) -> Error {
-    let where_ = match scope {
-        Scope::Workbook => "scoped to the workbook".to_owned(),
-        Scope::Sheet(sheet) => format!("scoped to sheet '{sheet}'"),
-    };
-    Error::not_found(format!(
-        "no defined name '{name}' {where_}; {} has: {}",
-        file.display(),
-        list(workbook.names_in_scope(scope).into_iter())
-    ))
-}
-
-/// Names in a message, or a plain statement that there are none.
-fn list<'a>(names: impl Iterator<Item = &'a str>) -> String {
-    let listed: Vec<&str> = names.collect();
-    if listed.is_empty() {
-        "none".to_owned()
-    } else {
-        listed.join(", ")
-    }
-}
-
 /// The cell element behind each resolved target, `None` where the row is
 /// there and the cell is not.
 ///
@@ -226,7 +105,7 @@ fn read_cells(package: &mut Package, resolved: &[Resolution]) -> Result<Vec<Opti
     let mut stored: Vec<Option<Stored>> = vec![None; resolved.len()];
     for part in parts_of(resolved.iter()) {
         let xml = package.read_part_text(&part)?;
-        let document = Document::parse(&xml)
+        let document = Document::parse(xml)
             .map_err(|err| Error::unreadable(format!("not valid XML: {err}")).within(&part))?;
         let sheet = Worksheet::of(&document).map_err(|err| err.within(&part))?;
         for (index, at) in resolved.iter().enumerate() {
@@ -252,20 +131,6 @@ fn read_cells(package: &mut Package, resolved: &[Resolution]) -> Result<Vec<Opti
         }
     }
     Ok(stored)
-}
-
-/// Each part the resolved cells sit in, once, in the order first named.
-///
-/// Reading and writing both work part by part, so both ask this which parts
-/// they have to open.
-pub fn parts_of<'a>(resolved: impl IntoIterator<Item = &'a Resolution>) -> Vec<String> {
-    let mut parts: Vec<String> = Vec::new();
-    for at in resolved {
-        if !parts.contains(&at.part) {
-            parts.push(at.part.clone());
-        }
-    }
-    parts
 }
 
 fn report(strings: &SharedStrings, at: Resolution, stored: Option<Stored>) -> Result<CellReport> {
@@ -381,29 +246,6 @@ mod tests {
         let err = value(kind, raw).expect_err(raw);
         assert_eq!(err.code(), ErrorCode::Unreadable, "{raw}");
         assert!(err.message().contains("Inputs!A1"), "{}", err.message());
-    }
-
-    #[test]
-    fn each_part_the_targets_land_in_is_listed_once_in_the_order_first_named() {
-        let landing = |part: &str| Resolution {
-            target: String::new(),
-            name: None,
-            address: at(),
-            part: part.to_owned(),
-        };
-        let resolved = [
-            landing("sheet2.xml"),
-            landing("sheet1.xml"),
-            landing("sheet2.xml"),
-        ];
-
-        assert_eq!(parts_of(resolved.iter()), ["sheet2.xml", "sheet1.xml"]);
-    }
-
-    #[test]
-    fn a_list_of_nothing_says_so_rather_than_trailing_off() {
-        assert_eq!(list(std::iter::empty()), "none");
-        assert_eq!(list(["a", "b"].into_iter()), "a, b");
     }
 
     #[test]

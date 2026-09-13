@@ -201,6 +201,34 @@ pub fn files_in(dir: &Path) -> Vec<String> {
     names
 }
 
+/// The moment the entry of one part carries, spelled out.
+///
+/// A [`Part`] holds its timestamp as the container crate's own debug form,
+/// which says whether two parts carry the same moment but not which moment
+/// either is. A created part has no entry of its own to take one from, so
+/// what it takes instead is asserted in full, here.
+pub fn timestamp(path: &Path, wanted: &str) -> String {
+    let file =
+        File::open(path).unwrap_or_else(|err| panic!("{} must be readable: {err}", path.display()));
+    let mut archive = zip::ZipArchive::new(file)
+        .unwrap_or_else(|err| panic!("{} must be a package: {err}", path.display()));
+    let entry = archive
+        .by_name(wanted)
+        .unwrap_or_else(|err| panic!("{} must hold {wanted}: {err}", path.display()));
+    let at = entry
+        .last_modified()
+        .unwrap_or_else(|| panic!("{wanted} must carry a timestamp"));
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        at.year(),
+        at.month(),
+        at.day(),
+        at.hour(),
+        at.minute(),
+        at.second()
+    )
+}
+
 /// The text of one part of the package at `path`.
 pub fn part_text(path: &Path, wanted: &str) -> String {
     String::from_utf8(part(path, wanted).bytes).unwrap_or_else(|_| panic!("{wanted} must be UTF-8"))
@@ -477,9 +505,9 @@ pub const SHARED_STRINGS: &str = r#"<?xml version="1.0" encoding="UTF-8" standal
 /// untested is the wiring of one dispatch arm to one verb, which the tests
 /// that do spawn still cross.
 ///
-/// `set` takes the value already read into a [`Written`], because `--type` is
-/// the command line's own and reads it there until #20 moves it into the
-/// batch.
+/// `set` takes the write type and the caller's text, which is what an
+/// operation carries: reading the one as the other is the batch's, with the
+/// workbook open.
 pub mod verb {
     use std::path::{Path, PathBuf};
 

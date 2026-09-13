@@ -12,10 +12,13 @@
 
 mod support;
 
+use std::path::PathBuf;
+
 use serde_json::json;
 use support::{Workspace, envelope, in_text, under_json, verb};
 use xlsplice::answer;
-use xlsplice::batch::WriteType;
+use xlsplice::batch::{OperationReport, Parts, Report, WriteType};
+use xlsplice::reference::{Address, Cell};
 
 /// The version declared in `Cargo.toml`, read from the manifest rather than
 /// from the crate's own constant, so a hardcoded version would be caught.
@@ -99,6 +102,80 @@ fn every_member_of_a_list_carries_the_keys_the_others_carry() {
     };
     assert_eq!(keys(&body["cells"][0]), keys(&body["cells"][1]));
     assert_eq!(keys(&body["cells"][1]), keys(&body["cells"][2]));
+}
+
+/// An operation that names no cell answers with a null address, and one that
+/// names a cell answers as it always did. No operation names no cell yet, so
+/// the report is written out here: #10, #11 and #12 are the ones that will,
+/// and this is the shape their envelope takes when they do.
+#[test]
+fn an_operation_naming_no_cell_reports_a_null_address_and_one_naming_one_does_not() {
+    let report = Report {
+        operations: vec![
+            OperationReport {
+                target: "Inputs!A1".to_owned(),
+                name: None,
+                address: Some(Address {
+                    sheet: "Inputs".to_owned(),
+                    cell: Cell::parse("A1").expect("the test asks for a cell"),
+                }),
+                changed: true,
+            },
+            OperationReport {
+                target: "calculate on load".to_owned(),
+                name: None,
+                address: None,
+                changed: true,
+            },
+        ],
+        parts: Parts {
+            changed: vec!["xl/worksheets/sheet1.xml".to_owned()],
+            added: Vec::new(),
+            removed: vec!["xl/calcChain.xml".to_owned()],
+        },
+        output: PathBuf::from("book.xlsx"),
+        dry_run: false,
+    };
+
+    let body = envelope(&under_json(answer::written(&report)));
+
+    assert_eq!(
+        body["operations"][1],
+        json!({
+            "target": "calculate on load",
+            "name": null,
+            "sheet": null,
+            "cell": null,
+            "address": null,
+            "changed": true,
+        }),
+        "an operation that names no cell still answers with every member"
+    );
+    assert_eq!(
+        body["operations"][0],
+        json!({
+            "target": "Inputs!A1",
+            "name": null,
+            "sheet": "Inputs",
+            "cell": "A1",
+            "address": "Inputs!A1",
+            "changed": true,
+        }),
+        "an operation that names a cell answers as it always did"
+    );
+    assert_eq!(
+        body["parts"],
+        json!({
+            "changed": ["xl/worksheets/sheet1.xml"],
+            "added": [],
+            "removed": ["xl/calcChain.xml"],
+        })
+    );
+    assert_eq!(
+        in_text(answer::written(&report)).stdout,
+        "Inputs!A1\t\tInputs!A1\ttrue\ncalculate on load\t\t\ttrue\n",
+        "the address column is empty for an operation that names no cell"
+    );
 }
 
 #[test]

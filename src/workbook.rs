@@ -126,7 +126,7 @@ impl Workbook {
     pub fn read(package: &mut Package) -> Result<Self> {
         let part = workbook_part_path(package)?;
         let xml = package.read_part_text(&part)?;
-        Workbook::parse_part(&xml, &part).map_err(|err| err.within(package.path().display()))
+        Workbook::parse_part(xml, &part).map_err(|err| err.within(package.path().display()))
     }
 
     /// Build the model from the text of a workbook part.

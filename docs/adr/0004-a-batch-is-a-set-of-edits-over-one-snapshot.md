@@ -54,3 +54,16 @@ XX `internal_error`.
 - Unreachable from the command line today, which builds a batch of one. #8
   makes it reachable, and two invocations of `set` on one cell remain two
   batches and both land.
+- The rule is about what an operation is pointed at, not about cells in
+  particular. #12's custom document properties are named twice the same way
+  and are refused the same way, on the name rather than on what either
+  operation meant to do with it — so setting a property and then unsetting it
+  in one batch is the same contradiction as setting it twice.
+- A question with no per-operation answer is answered once, for the part, after
+  every operation's edits are merged and before anything is written: whether
+  an emptied calc chain still belongs in the package (#10), and how many
+  properties are being added and which identifiers they take (#12). Both are
+  questions one snapshot makes unanswerable per operation — two operations each
+  removing a chain entry cannot see the other's, and two adding a property
+  would both add it in the same place and both call it the same thing — so the
+  batch, which can see all of them, is where they belong.

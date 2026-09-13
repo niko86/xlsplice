@@ -192,7 +192,7 @@ fn an_unknown_operation_kind_is_a_usage_error_listing_the_known_kinds() {
     let batch = batch_file(
         &workspace,
         "batch.json",
-        r#"[{"op": "props.set", "name": "Reference", "value": "X"}]"#,
+        r#"[{"op": "sheet.rename", "target": "Inputs", "value": "X"}]"#,
     );
     let file = package.display().to_string();
 
@@ -203,9 +203,9 @@ fn an_unknown_operation_kind_is_a_usage_error_listing_the_known_kinds() {
         .as_str()
         .expect("a failed envelope carries a message")
         .to_owned();
-    assert!(message.contains("props.set"), "{message}");
+    assert!(message.contains("sheet.rename"), "{message}");
     assert!(
-        message.contains("The operation kinds are: set, clear, calc."),
+        message.contains("The operation kinds are: set, clear, calc, props.set, props.unset."),
         "the failure must say what this build knows: {message}"
     );
     assert_same_bytes(&fixture("feature.xlsx"), &package);

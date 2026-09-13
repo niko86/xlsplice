@@ -15,6 +15,7 @@ use serde::Serialize;
 use crate::batch::{OperationReport, Report};
 use crate::cells::{CellReport, Value};
 use crate::error::{Error, Result};
+use crate::properties::{self, Property};
 use crate::workbook::{DefinedName, Resolved, Scope, Sheet, Workbook};
 
 /// What one verb found: the payload for the envelope, and the same facts in
@@ -470,6 +471,77 @@ pub fn calculation(full_calc_on_load: bool) -> Result<Answer> {
         &CALC_HEADERS,
         vec![vec![full_calc_on_load.to_string()]],
     )
+}
+
+/// The columns of `props get`.
+const PROPERTY_HEADERS: [&str; 3] = ["NAME", "TYPE", "VALUE"];
+
+/// The payload of `props get --json`.
+#[derive(Serialize)]
+struct Properties {
+    properties: Vec<PropertyEntry>,
+}
+
+#[derive(Serialize)]
+struct PropertyEntry {
+    /// The name, as the package spells it.
+    name: String,
+    /// The variant type, as the package spells it: `lpwstr`, `i4`, `bool`,
+    /// `filetime`, or whatever else is there. Not one of xlsplice's write
+    /// types, because what is reported is what was found.
+    #[serde(rename = "type")]
+    kind: String,
+    /// The value, typed as far as the variant allows. A moment comes back as
+    /// the text the package holds, because JSON has no moment.
+    value: serde_json::Value,
+}
+
+/// What `props get` answers: every custom document property, in the order the
+/// package holds them.
+pub fn properties(found: &[Property]) -> Result<Answer> {
+    let payload = Properties {
+        properties: found
+            .iter()
+            .map(|property| PropertyEntry {
+                name: property.name.clone(),
+                kind: property.variant.clone(),
+                value: property_json(&property.value),
+            })
+            .collect(),
+    };
+    let rows = found
+        .iter()
+        .map(|property| {
+            vec![
+                property.name.clone(),
+                property.variant.clone(),
+                property_text(&property.value),
+            ]
+        })
+        .collect();
+    Answer::rows(payload, &PROPERTY_HEADERS, rows)
+}
+
+/// A property's value as JSON carries it.
+fn property_json(value: &properties::Value) -> serde_json::Value {
+    match value {
+        properties::Value::Text(text) | properties::Value::Moment(text) => {
+            serde_json::Value::String(text.clone())
+        }
+        properties::Value::Integer(number) => serde_json::Value::from(*number),
+        properties::Value::Real(number) => number_json(*number),
+        properties::Value::Bool(yes) => serde_json::Value::Bool(*yes),
+    }
+}
+
+/// A property's value as one field of a row.
+fn property_text(value: &properties::Value) -> String {
+    match value {
+        properties::Value::Text(text) | properties::Value::Moment(text) => text.clone(),
+        properties::Value::Integer(number) => number.to_string(),
+        properties::Value::Real(number) => crate::xml::number_text(*number),
+        properties::Value::Bool(yes) => yes.to_string(),
+    }
 }
 
 /// The payload of `version --json`.

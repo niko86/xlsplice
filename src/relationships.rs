@@ -26,6 +26,10 @@ pub const SHARED_STRINGS: &str =
 /// The relationships of the package root, which name the workbook.
 pub const ROOT_RELS: &str = "_rels/.rels";
 
+/// The package root, as the owner of a set of relationships. It is not a
+/// part, so it is named by no path at all.
+pub const PACKAGE_ROOT: &str = "";
+
 /// One part's relationships, resolved against the part that owns them.
 #[derive(Debug)]
 pub struct Relationships {

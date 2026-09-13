@@ -1,4 +1,9 @@
-//! Dates: from what a caller wrote to the serial number a workbook stores.
+//! Dates: from what a caller wrote to the form the package stores it in.
+//!
+//! A cell stores a [`serial`]; a custom document property stores a moment,
+//! spelled out in full. Both start from the same ISO 8601 spelling a caller
+//! has to hand, and both are checked against the same calendar, so they are
+//! read here together.
 //!
 //! A workbook has no date cells. It has numbers, and a format that makes one
 //! look like a date, so writing a date means writing the number Excel would
@@ -89,6 +94,66 @@ fn within_the_system(serial: f64, dates: DateSystem) -> Result<f64> {
         ))),
         _ => Ok(serial),
     }
+}
+
+/// The moment `text` names, spelled the way a document property spells one:
+/// ISO 8601, to the second, in UTC.
+///
+/// A property's filetime is a moment rather than a serial, so it needs no
+/// workbook open and carries no phantom leap day. A date with no time of day
+/// is that day's midnight, and a trailing `Z` is accepted and re-spelled,
+/// because that is what the package holds. An offset other than `Z` is
+/// refused rather than shifted: a caller who wrote one meant a moment in
+/// their own zone, and guessing which is worse than saying so.
+pub fn utc(text: &str) -> Result<String> {
+    let text = text.trim();
+    let body = text.strip_suffix('Z').unwrap_or(text);
+    let (date, time) = match body.split_once('T') {
+        None => (body, ""),
+        Some((date, time)) => (date, time),
+    };
+    let (year, month, day) = civil(date, text)?;
+    let (hour, minute, second) = clock(time, text)?;
+    Ok(format!(
+        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z"
+    ))
+}
+
+/// The time of day `time` spells, to the second. The empty string is
+/// midnight: a date with no time of day names the moment the day starts.
+fn clock(time: &str, whole: &str) -> Result<(i64, i64, i64)> {
+    if time.is_empty() {
+        return Ok((0, 0, 0));
+    }
+    let mut fields = time.split(':');
+    let parsed = (|| {
+        let hour: i64 = number(fields.next()?, 2)?;
+        let minute: i64 = number(fields.next()?, 2)?;
+        let second: i64 = match fields.next() {
+            None => 0,
+            Some(field) => number(field, 2)?,
+        };
+        match fields.next() {
+            None => Some((hour, minute, second)),
+            Some(_) => None,
+        }
+    })();
+    let (hour, minute, second) = parsed.ok_or_else(|| not_a_moment(whole))?;
+    if hour > 23 || minute > 59 || second > 59 {
+        return Err(Error::usage(format!(
+            "'{whole}' is not a moment: there is no {hour:02}:{minute:02}:{second:02} in a day"
+        )));
+    }
+    Ok((hour, minute, second))
+}
+
+fn not_a_moment(text: &str) -> Error {
+    Error::usage(format!(
+        "'{text}' is not a moment; write type date on a document property takes an ISO 8601 \
+         date such as 2026-09-13, or a datetime to the second such as 2026-09-13T14:30:00 or \
+         2026-09-13T14:30:00Z. A property's moment is stored in UTC, so an offset other than \
+         Z has to be worked out before it is written."
+    ))
 }
 
 /// A year, a month and a day, as an ISO date spells them.
@@ -338,5 +403,43 @@ mod tests {
     #[test]
     fn whitespace_around_a_serial_is_not_part_of_it() {
         assert_eq!(of(" 46278 "), 46_278.0);
+    }
+
+    #[test]
+    fn a_moment_is_spelled_out_to_the_second_in_utc() {
+        for (written, expected) in [
+            ("2026-09-11", "2026-09-11T00:00:00Z"),
+            ("2026-09-11T10:00:00", "2026-09-11T10:00:00Z"),
+            ("2026-09-11T10:00:00Z", "2026-09-11T10:00:00Z"),
+            ("2026-09-11T10:30", "2026-09-11T10:30:00Z"),
+            ("  2026-09-11T10:00:00Z  ", "2026-09-11T10:00:00Z"),
+            ("1601-01-01", "1601-01-01T00:00:00Z"),
+        ] {
+            assert_eq!(utc(written).expect(written), expected, "{written}");
+        }
+    }
+
+    /// A moment is not a serial, so the phantom leap day is nothing to it: it
+    /// is only a day the calendar does not have.
+    #[test]
+    fn a_moment_is_held_to_the_calendar_and_nothing_else() {
+        assert_eq!(
+            utc("1900-02-28").expect("a real day"),
+            "1900-02-28T00:00:00Z"
+        );
+        for written in [
+            "1900-02-29",
+            "2026-13-01",
+            "2026-09-11T24:00:00",
+            "2026-09-11T10:60:00",
+            "2026-9-1",
+            "2026-09-11T10:00:00+01:00",
+            "44813",
+            "yesterday",
+            "",
+        ] {
+            let err = utc(written).expect_err(written);
+            assert_eq!(err.code(), crate::error::ErrorCode::Usage, "{written}");
+        }
     }
 }

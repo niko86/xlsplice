@@ -23,13 +23,21 @@
 //! workbook open, so a batch is a document a caller can write as readily as
 //! the command line can build one.
 //!
-//! One operation exists so far, `set`, and it writes a value into a cell that
-//! is already there. A cell the sheet does not hold is
+//! Two operations write a cell, `set` and `clear`, and both want one that is
+//! already there: a cell the sheet does not hold is
 //! [`not_found`](crate::error::ErrorCode::NotFound) until the insertion
 //! ticket, and a cell holding a formula is
-//! [`refused`](crate::error::ErrorCode::Refused) until the flag that licenses
-//! replacing one exists: a mis-addressed write must not quietly destroy a
-//! template's formula.
+//! [`refused`](crate::error::ErrorCode::Refused) unless the caller says it may
+//! be replaced, so a mis-addressed write cannot quietly destroy a template's
+//! formula. The rest write no cell at all: `calc` sets a flag on the workbook,
+//! and `props.set` and `props.unset` write the properties a package carries
+//! about itself.
+//!
+//! A few things a batch does have no per-operation answer, because one
+//! snapshot is what every operation sees: whether an emptied calc chain still
+//! belongs in the package, and how many properties are being added and which
+//! identifiers they take. Those are settled once, for the part, after the
+//! operations' edits are merged and before anything is written.
 //!
 //! A batch that would change nothing writes nothing. The container is rebuilt
 //! rather than copied byte for byte (ADR-0001), so rebuilding a package whose
@@ -49,8 +57,9 @@ use crate::date;
 use crate::declared;
 use crate::error::{Error, Result};
 use crate::package::{Content, Package};
+use crate::properties;
 use crate::reference::Address;
-use crate::relationships::{Relationships, part_or_conventional};
+use crate::relationships::{PACKAGE_ROOT, Relationships, part_or_conventional};
 use crate::splice::{self, Splice};
 use crate::target::{Resolution, resolve};
 use crate::workbook::{DateSystem, Workbook};
@@ -74,12 +83,10 @@ pub enum Operation {
         /// The value, exactly as the caller spelled it.
         value: String,
         /// Whether the caller says a formula in the cell may be replaced.
-        ///
-        /// Carried, not yet honoured: #10 is the ticket that replaces a
-        /// formula and clears its calc chain entry, and until then a cell
-        /// holding one is refused whatever this says. It is in the schema now
-        /// so that a caller writing a batch writes the same document before
-        /// and after that ticket.
+        /// Without it a cell holding one is refused, so that a mis-addressed
+        /// write cannot silently destroy it; a shared formula's master is
+        /// refused even with it, because overwriting one orphans its
+        /// children.
         #[serde(default)]
         replace_formula: bool,
     },
@@ -98,17 +105,35 @@ pub enum Operation {
         /// changes nothing and writes nothing.
         full_calc_on_load: bool,
     },
+    /// Give a custom document property a value, adding it where the package
+    /// has none of that name.
+    #[serde(rename = "props.set")]
+    PropsSet {
+        /// The property, by the name the package spells it with. Matched
+        /// exactly: two names differing in case are two properties.
+        name: String,
+        /// What the value is to become.
+        #[serde(rename = "type")]
+        write_type: WriteType,
+        /// The value, exactly as the caller spelled it.
+        value: String,
+    },
+    /// Take a custom document property out.
+    #[serde(rename = "props.unset")]
+    PropsUnset {
+        /// The property, by the name the package spells it with.
+        name: String,
+    },
 }
 
 impl Operation {
     /// Every operation kind, spelled as a batch spells it, in the order a
     /// caller is offered them.
     ///
-    /// `clear`, `props.set`, `props.unset` and `calc` join these as their
-    /// tickets land. A batch naming a kind that is not here is refused with
-    /// this list, so a caller writing one against a later version and running
-    /// it against this one is told what this one knows.
-    pub const KINDS: [&'static str; 3] = ["set", "clear", "calc"];
+    /// A batch naming a kind that is not here is refused with this list, so
+    /// a caller writing one against a later version and running it against
+    /// this one is told what this one knows.
+    pub const KINDS: [&'static str; 5] = ["set", "clear", "calc", "props.set", "props.unset"];
 
     /// The kind this operation is, as a batch spells it.
     pub fn kind(&self) -> &'static str {
@@ -116,6 +141,8 @@ impl Operation {
             Operation::Set { .. } => "set",
             Operation::Clear { .. } => "clear",
             Operation::Calc { .. } => "calc",
+            Operation::PropsSet { .. } => "props.set",
+            Operation::PropsUnset { .. } => "props.unset",
         }
     }
 
@@ -129,16 +156,24 @@ impl Operation {
             | Operation::Clear {
                 replace_formula, ..
             } => *replace_formula,
-            Operation::Calc { .. } => false,
+            Operation::Calc { .. } | Operation::PropsSet { .. } | Operation::PropsUnset { .. } => {
+                false
+            }
         }
     }
 
-    /// The target the operation names, or `None` for an operation that names
-    /// none. A target is a cell, and not everything a batch does is done to
-    /// one: the calculation flag is the workbook's.
+    /// What the operation is pointed at, or `None` where it is pointed at
+    /// nothing in particular.
+    ///
+    /// A cell for one that writes a cell, and a property for one that writes
+    /// a property; the calculation flag is the workbook's, so it is pointed
+    /// at nothing. This is what the report puts in its target column and what
+    /// a failure names the operation by, so it is what the caller wrote
+    /// rather than anything resolved from it.
     pub fn target(&self) -> Option<&str> {
         match self {
             Operation::Set { target, .. } | Operation::Clear { target, .. } => Some(target),
+            Operation::PropsSet { name, .. } | Operation::PropsUnset { name } => Some(name),
             Operation::Calc { .. } => None,
         }
     }
@@ -167,9 +202,13 @@ impl Operation {
     /// before a single part comes out of the container, which is what lets
     /// two operations on one cell be refused rather than spliced.
     pub fn at(&self, opened: &Opened) -> Result<Option<Resolution>> {
-        match self.target() {
-            Some(target) => opened.resolve(target).map(Some),
-            None => Ok(None),
+        match self {
+            Operation::Set { target, .. } | Operation::Clear { target, .. } => {
+                opened.resolve(target).map(Some)
+            }
+            Operation::Calc { .. } | Operation::PropsSet { .. } | Operation::PropsUnset { .. } => {
+                Ok(None)
+            }
         }
     }
 
@@ -184,6 +223,43 @@ impl Operation {
         match self {
             Operation::Calc { full_calc_on_load } => calculated(*full_calc_on_load, opened),
             Operation::Set { .. } | Operation::Clear { .. } => self.written_into(at, opened),
+            Operation::PropsSet { name, .. } => {
+                // The value is read here, so that a value that is not one
+                // fails against the operation that gave it even though it is
+                // the batch that adds a property the part does not hold.
+                let value = self.property_value()?;
+                property_written(name, &value, opened)
+            }
+            Operation::PropsUnset { name } => property_withdrawn(name, opened),
+        }
+    }
+
+    /// What this operation puts on the property it names, read the way it
+    /// says to.
+    ///
+    /// A property holds a moment rather than a serial, so a date here is not
+    /// the number a cell would hold and the workbook's date system has no say
+    /// in it.
+    fn property_value(&self) -> Result<properties::Value> {
+        let Operation::PropsSet {
+            write_type, value, ..
+        } = self
+        else {
+            return Err(Error::internal(
+                "only props.set has a property value to read".to_owned(),
+            ));
+        };
+        match write_type {
+            WriteType::Text => Ok(properties::Value::Text(value.clone())),
+            WriteType::Number => match read_number(value)? {
+                Written::Number(number) => Ok(properties::Value::number(number)),
+                other => Err(Error::internal(format!("a number was read as {other:?}"))),
+            },
+            WriteType::Bool => match read_boolean(value)? {
+                Written::Bool(yes) => Ok(properties::Value::Bool(yes)),
+                other => Err(Error::internal(format!("a boolean was read as {other:?}"))),
+            },
+            WriteType::Date => date::utc(value).map(properties::Value::Moment),
         }
     }
 
@@ -226,11 +302,11 @@ impl Operation {
                 write_type, value, ..
             } => write_type.read(value, dates),
             Operation::Clear { .. } => Ok(Written::Nothing),
-            // Only a cell-writing operation asks what it writes, and the
-            // calculation flag is the workbook's, not a cell's.
-            Operation::Calc { .. } => Err(Error::internal(
-                "the calculation flag was asked what it writes into a cell".to_owned(),
-            )),
+            // Only a cell-writing operation asks what it writes into a cell.
+            other => Err(Error::internal(format!(
+                "a {} was asked what it writes into a cell, and it writes into none",
+                other.kind()
+            ))),
         }
     }
 }
@@ -476,6 +552,15 @@ impl Opened {
         self.workbook.part()
     }
 
+    /// Where the package's custom document properties are, and whether it
+    /// holds them at all.
+    ///
+    /// A package with none still answers with a path: it is where the part
+    /// would go, which is what a batch adding a property needs to know.
+    pub fn properties(&mut self) -> Result<(String, bool)> {
+        properties::part_of(&mut self.package)
+    }
+
     /// The package itself, for the declarations a part removed has to be
     /// taken out of. Nothing else reaches past this into the container.
     fn package(&mut self) -> &mut Package {
@@ -658,6 +743,7 @@ pub fn run(path: &Path, batch: &Batch, destination: &Destination, dry_run: bool)
         })
         .collect::<Result<_>>()?;
     refuse_a_repeated_cell(&land_at)?;
+    refuse_a_repeated_property(&batch.operations)?;
 
     // Every operation is then asked what it wants before anything is done to
     // a part, so a batch that fails on its last operation has changed nothing
@@ -674,7 +760,7 @@ pub fn run(path: &Path, batch: &Batch, destination: &Destination, dry_run: bool)
         })
         .collect::<Result<_>>()?;
 
-    let applied = apply(&mut opened, &asked)?;
+    let applied = apply(&mut opened, &batch.operations, &asked)?;
 
     let output = destination.path(path).to_owned();
     if !dry_run {
@@ -723,6 +809,40 @@ fn refuse_a_repeated_cell(land_at: &[Option<Resolution>]) -> Result<()> {
     Ok(())
 }
 
+/// Refuse a batch that names one custom document property twice.
+///
+/// The rule is the cell rule and the reason is the same one: a batch is a set
+/// of edits over the package as it was read, so two operations on one
+/// property are not a first write and then a second but two answers to one
+/// question (ADR-0004). Setting a property and then unsetting it in one batch
+/// is the same contradiction as setting it twice, so both are refused
+/// together, on the name rather than on what either meant to do with it.
+fn refuse_a_repeated_property(operations: &[Operation]) -> Result<()> {
+    let named: Vec<Option<&str>> = operations
+        .iter()
+        .map(|operation| match operation {
+            Operation::PropsSet { name, .. } | Operation::PropsUnset { name } => {
+                Some(name.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    for (later, one) in named.iter().enumerate() {
+        let Some(one) = one else { continue };
+        for (earlier, other) in named[..later].iter().enumerate() {
+            if other == &Some(*one) {
+                return Err(Error::usage(format!(
+                    "the operations at index {earlier} and {later} both name the custom \
+                     document property '{one}'; a batch is applied to the package as it \
+                     was read, so one property cannot be asked two things at once. Give \
+                     one operation per property."
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// One result per operation, in the order the operations were given.
 ///
 /// What an operation resolved to is what it answered with rather than
@@ -758,19 +878,20 @@ struct Applied {
 /// read once, spliced once with all of their splices, and written once. The
 /// parts are taken in path order, which is the order the report lists them
 /// in.
-fn apply(opened: &mut Opened, asked: &[Asked]) -> Result<Applied> {
+fn apply(opened: &mut Opened, operations: &[Operation], asked: &[Asked]) -> Result<Applied> {
     let by_part = by_part(asked);
     let mut wanted: BTreeMap<String, PartEdit> = BTreeMap::new();
     for (part, edits) in &by_part {
         wanted.insert(part.clone(), merged(part, edits)?);
     }
-    withdraw_an_emptied_calc_chain(opened, &mut wanted)?;
-
     let mut applied = Applied {
         content: BTreeMap::new(),
         changed: vec![false; asked.len()],
         parts: Parts::default(),
     };
+    withdraw_an_emptied_calc_chain(opened, &mut wanted)?;
+    add_the_new_properties(opened, operations, &mut wanted, &mut applied.changed)?;
+
     for (part, edit) in wanted {
         let edits = by_part.get(&part).map_or(&[][..], Vec::as_slice);
         match edit {
@@ -839,19 +960,117 @@ fn withdraw_an_emptied_calc_chain(
 
     let owner = opened.workbook_part().to_owned();
     for (declaring, splices) in declared::withdrawn(opened.package(), &owner, &part)? {
-        let edit = PartEdit::Splice(splices);
-        let merged = match wanted.remove(&declaring) {
-            None => edit,
-            Some(already) => already.and(&edit).ok_or_else(|| {
-                Error::internal(format!(
-                    "part '{declaring}' is being edited two ways at once while the calc \
-                     chain is withdrawn"
-                ))
-            })?,
-        };
-        wanted.insert(declaring, merged);
+        merge_into(
+            wanted,
+            declaring,
+            PartEdit::Splice(splices),
+            "the emptied calc chain",
+        )?;
     }
     wanted.insert(part, PartEdit::Remove);
+    Ok(())
+}
+
+/// Add the properties the package does not already hold.
+///
+/// How many properties are being added is a question about the part rather
+/// than about any one operation: each is added after the last one there and
+/// takes the next identifier free, and over one snapshot two operations
+/// adding one would both add it in the same place and both call it the same
+/// thing. So it is asked once, of the part as the whole batch leaves it, the
+/// way an emptied calc chain is.
+///
+/// Where the package has no custom properties part at all, one is written
+/// holding them, and its content type and the relationship reaching it go in
+/// with it, because a package holding a part it does not declare is the sort
+/// of inconsistency Excel offers to repair.
+fn add_the_new_properties(
+    opened: &mut Opened,
+    operations: &[Operation],
+    wanted: &mut BTreeMap<String, PartEdit>,
+    changed: &mut [bool],
+) -> Result<()> {
+    let (part, held) = opened.properties()?;
+    let mut adding: Vec<(usize, &str, properties::Value)> = Vec::new();
+    for (index, operation) in operations.iter().enumerate() {
+        let Operation::PropsSet { name, .. } = operation else {
+            continue;
+        };
+        let there = match held {
+            false => false,
+            true => {
+                let xml = opened.text(&part)?;
+                properties::holds(xml, name).map_err(|err| err.within(&part))?
+            }
+        };
+        if !there {
+            let value = operation
+                .property_value()
+                .map_err(|err| err.within(operation.within(index)))?;
+            adding.push((index, name, value));
+        }
+    }
+    if adding.is_empty() {
+        return Ok(());
+    }
+
+    let new: Vec<(&str, &properties::Value)> = adding
+        .iter()
+        .map(|(_, name, value)| (*name, value))
+        .collect();
+    let edit = match held {
+        true => {
+            let xml = opened.text(&part)?;
+            PartEdit::Splice(properties::added(xml, &new).map_err(|err| err.within(&part))?)
+        }
+        false => {
+            let declarations = declared::declared(
+                opened.package(),
+                PACKAGE_ROOT,
+                &part,
+                properties::CONTENT_TYPE,
+                properties::CUSTOM_PROPERTIES,
+            )?;
+            let declaring_the_part = format!("the declaration of {part}");
+            for (declaring, splices) in declarations {
+                merge_into(
+                    wanted,
+                    declaring,
+                    PartEdit::Splice(splices),
+                    &declaring_the_part,
+                )?;
+            }
+            PartEdit::Create(properties::part_holding(&new))
+        }
+    };
+    merge_into(wanted, part, edit, "the custom document properties")?;
+    for (index, _, _) in adding {
+        changed[index] = true;
+    }
+    Ok(())
+}
+
+/// Fold `edit` into what the batch already wants of `declaring`.
+///
+/// Two edits that disagree about what is being done to one part are a fault
+/// in how they were worked out rather than something the package can be wrong
+/// about, so the failure says which batch-level question was being answered
+/// when they met.
+fn merge_into(
+    wanted: &mut BTreeMap<String, PartEdit>,
+    declaring: String,
+    edit: PartEdit,
+    over: &str,
+) -> Result<()> {
+    let merged = match wanted.remove(&declaring) {
+        None => edit,
+        Some(already) => already.and(&edit).ok_or_else(|| {
+            Error::internal(format!(
+                "part '{declaring}' is being edited two ways at once, settling {over}"
+            ))
+        })?,
+    };
+    wanted.insert(declaring, merged);
     Ok(())
 }
 
@@ -964,6 +1183,85 @@ fn calculated(full_calc_on_load: bool, opened: &mut Opened) -> Result<Asked> {
         at: None,
         parts: vec![(part, PartEdit::Splice(splices))],
     })
+}
+
+/// The edit that writes `value` onto the property `name`.
+///
+/// A property the part already holds is written over where it stands, which
+/// keeps its identifier and moves nothing else. One the part does not hold is
+/// added by the batch instead — see [`add_the_new_properties`] — so this asks
+/// for nothing and the batch marks the operation as having changed something.
+fn property_written(name: &str, value: &properties::Value, opened: &mut Opened) -> Result<Asked> {
+    let (part, held) = opened.properties()?;
+    if !held {
+        return Ok(nothing_asked());
+    }
+    let written = {
+        let xml = opened.text(&part)?;
+        properties::written(xml, name, value).map_err(|err| err.within(&part))?
+    };
+    Ok(match written {
+        None => nothing_asked(),
+        Some(splices) => Asked {
+            at: None,
+            parts: vec![(part, PartEdit::Splice(splices))],
+        },
+    })
+}
+
+/// The edit that takes the property `name` out.
+///
+/// A property that is not there is the caller pointing at something the
+/// package does not have, which is the one thing an unset can be wrong about.
+fn property_withdrawn(name: &str, opened: &mut Opened) -> Result<Asked> {
+    let (part, held) = opened.properties()?;
+    let splices = match held {
+        false => None,
+        true => {
+            let xml = opened.text(&part)?;
+            properties::unset(xml, name).map_err(|err| err.within(&part))?
+        }
+    };
+    let splices = splices.ok_or_else(|| no_such_property(name, opened))?;
+    Ok(Asked {
+        at: None,
+        parts: vec![(part, PartEdit::Splice(splices))],
+    })
+}
+
+/// An operation that wants nothing done to any part.
+fn nothing_asked() -> Asked {
+    Asked {
+        at: None,
+        parts: Vec::new(),
+    }
+}
+
+/// Why there is no property called `name` to take out, and what is there
+/// instead.
+fn no_such_property(name: &str, opened: &mut Opened) -> Error {
+    let held = (|| -> Result<Vec<String>> {
+        let (part, held) = opened.properties()?;
+        match held {
+            false => Ok(Vec::new()),
+            true => {
+                let xml = opened.text(&part)?;
+                Ok(properties::read(xml)?
+                    .into_iter()
+                    .map(|property| property.name)
+                    .collect::<Vec<String>>())
+            }
+        }
+    })()
+    .unwrap_or_default();
+    let names = match held.is_empty() {
+        true => "the package has no custom document properties at all".to_owned(),
+        false => format!("the package has {}", held.join(", ")),
+    };
+    Error::not_found(format!(
+        "there is no custom document property called '{name}': {names}. A name is \
+         matched exactly, so check its spelling and its case."
+    ))
 }
 
 /// The edit that takes the cell `at` names out of the calc chain, where the
@@ -1217,15 +1515,15 @@ mod tests {
             // Every field any kind takes, so that one document serves them
             // all: a field an operation does not know is ignored.
             let json = format!(
-                r#"[{{"op": "{kind}", "target": "A1", "type": "text", "value": "",
-                      "full_calc_on_load": true}}]"#
+                r#"[{{"op": "{kind}", "target": "A1", "name": "P", "type": "text",
+                      "value": "", "full_calc_on_load": true}}]"#
             );
             let batch = Batch::parse(&json).unwrap_or_else(|err| panic!("{kind}: {err}"));
             assert_eq!(batch.operations[0].kind(), kind);
         }
         assert_eq!(
             Operation::KINDS,
-            ["set", "clear", "calc"],
+            ["set", "clear", "calc", "props.set", "props.unset"],
             "a kind with no list entry"
         );
     }

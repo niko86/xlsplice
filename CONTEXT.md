@@ -163,6 +163,23 @@ The number a workbook stores a date as, whole days from the day its _date
 system_ counts from, with a time of day as the fraction after the point.
 _Avoid_: date value, timestamp
 
+**Custom property**:
+One of the named, typed values a package carries about itself, in
+`docProps/custom.xml`, beside the author and title Excel fills in. A property
+carries a name, matched exactly, and one child element naming its _variant
+type_ and holding the value. Every property also carries an identifier, unique
+within the part and counting from 2; one replaced keeps the identifier it had.
+_Avoid_: metadata, tag, attribute
+
+**Variant type**:
+What a _custom property_ says its value is, spelled as the package spells it:
+`lpwstr` for text, `i4` for a whole number, `r8` for one that is not, `bool`,
+`filetime` for a moment. Not a _write type_, which is what a caller asks for:
+a write type of `number` becomes `i4` or `r8` depending on the value, and one
+of `date` becomes a `filetime` holding a moment in UTC rather than the _serial_
+a cell would hold.
+_Avoid_: property type, vt type
+
 **Dry run**:
 A batch done in full and put nowhere. It writes no file at all, and reports
 what a real run would have changed.

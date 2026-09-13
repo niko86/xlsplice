@@ -16,6 +16,7 @@ use xlsplice::batch::{self, Batch, Operation};
 use xlsplice::calculation;
 use xlsplice::error::Error;
 use xlsplice::package::Package;
+use xlsplice::properties;
 use xlsplice::workbook::Workbook;
 
 use crate::cli::Landing;
@@ -58,6 +59,28 @@ pub fn calc(
     let flag = calculation::full_calc_on_load(package.read_part_text(&part)?)
         .map_err(|err| err.within(&part))?;
     answer::calculation(flag)
+}
+
+/// The `props get` verb: every custom document property the package holds.
+///
+/// A package holding none answers with an empty list rather than a failure:
+/// having no custom properties is a thing a package is, not something wrong
+/// with it.
+pub fn props(file: &Path, out: &Out) -> xlsplice::Result<Answer> {
+    out.trace(&format!(
+        "reading the custom document properties of {}",
+        file.display()
+    ));
+    let mut package = Package::open(file)?;
+    let (part, held) = properties::part_of(&mut package)?;
+    let found = match held {
+        false => Vec::new(),
+        true => {
+            properties::read(package.read_part_text(&part)?).map_err(|err| err.within(&part))?
+        }
+    };
+    out.trace(&format!("{} propert(ies) in {part}", found.len()));
+    answer::properties(&found)
 }
 
 /// The `apply` verb: read the batch the operand names, and run it.

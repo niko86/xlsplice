@@ -31,6 +31,7 @@ pub mod declared;
 pub mod envelope;
 pub mod error;
 pub mod package;
+pub mod properties;
 pub mod reference;
 pub mod relationships;
 pub mod render;

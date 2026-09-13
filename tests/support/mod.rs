@@ -610,6 +610,22 @@ pub mod verb {
         Operation::Calc { full_calc_on_load }
     }
 
+    /// One `props.set` operation, for a batch built by [`batch`].
+    pub fn stamping(name: &str, write_type: WriteType, value: &str) -> Operation {
+        Operation::PropsSet {
+            name: name.to_owned(),
+            write_type,
+            value: value.to_owned(),
+        }
+    }
+
+    /// One `props.unset` operation, for a batch built by [`batch`].
+    pub fn unstamping(name: &str) -> Operation {
+        Operation::PropsUnset {
+            name: name.to_owned(),
+        }
+    }
+
     /// One `clear` operation, for a batch built by [`batch`].
     pub fn clearing(target: &str) -> Operation {
         Operation::Clear {

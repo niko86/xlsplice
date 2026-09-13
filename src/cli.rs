@@ -185,6 +185,17 @@ pub enum Command {
         landing: Landing,
     },
 
+    /// Read, write or take out the package's custom document properties.
+    ///
+    /// These are the named, typed values a package carries about itself,
+    /// alongside the author and the title Excel fills in. A property is
+    /// whatever a caller wants to stamp on a package: which template it came
+    /// from, when it was filled in, which run produced it.
+    Props {
+        #[command(subcommand)]
+        action: PropsAction,
+    },
+
     /// Apply a batch of operations to a package, all of them or none.
     ///
     /// The batch is a JSON array of operations. It is validated whole before
@@ -222,6 +233,62 @@ pub enum Command {
     },
 }
 
+/// What `props` does.
+#[derive(Debug, Subcommand)]
+pub enum PropsAction {
+    /// List every custom document property with its type and its value, in
+    /// the order the package holds them.
+    Get {
+        /// The package to read.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
+
+    /// Give a custom document property a value.
+    ///
+    /// A property of that name is written over, keeping the identifier it
+    /// had; one that is not there is added. A package holding no custom
+    /// properties at all gets the part they live in, declared as Excel
+    /// declares it.
+    Set {
+        /// The package to write. Written in place unless `--out` is given.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+
+        /// The property, by name. Matched exactly: two names differing in
+        /// case are two properties.
+        #[arg(value_name = "NAME")]
+        name: String,
+
+        /// The value, read according to `--type`.
+        #[arg(value_name = "VALUE")]
+        value: String,
+
+        /// How to read VALUE and store it. A date is stored as a moment in
+        /// UTC rather than as the serial a cell would hold.
+        #[arg(long = "type", value_name = "TYPE", value_parser = write_type())]
+        kind: WriteType,
+
+        #[command(flatten)]
+        landing: Landing,
+    },
+
+    /// Take a custom document property out. A property that is not there is
+    /// not found.
+    Unset {
+        /// The package to write. Written in place unless `--out` is given.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+
+        /// The property, by name.
+        #[arg(value_name = "NAME")]
+        name: String,
+
+        #[command(flatten)]
+        landing: Landing,
+    },
+}
+
 /// What `--type` accepts: the write types the library offers, under the names
 /// and descriptions it gives them, so a type outside them is clap's to refuse
 /// and the help lists them without this module keeping its own copy of them.
@@ -244,6 +311,11 @@ impl Command {
             Command::Set { .. } => "set",
             Command::Clear { .. } => "clear",
             Command::Calc { .. } => "calc",
+            Command::Props { action } => match action {
+                PropsAction::Get { .. } => "props get",
+                PropsAction::Set { .. } => "props set",
+                PropsAction::Unset { .. } => "props unset",
+            },
             Command::Apply { .. } => "apply",
             Command::Version => "version",
             #[cfg(debug_assertions)]

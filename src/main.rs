@@ -92,6 +92,35 @@ fn run(command: Command, out: &Out) -> ExitCode {
             full_calc_on_load,
             landing,
         } => write::calc(&file, full_calc_on_load, &landing, out),
+        Command::Props { action } => match action {
+            cli::PropsAction::Get { file } => write::props(&file, out),
+            cli::PropsAction::Set {
+                file,
+                name,
+                value,
+                kind,
+                landing,
+            } => write::run(
+                &file,
+                &Batch::of(Operation::PropsSet {
+                    name,
+                    write_type: kind,
+                    value,
+                }),
+                &landing,
+                out,
+            ),
+            cli::PropsAction::Unset {
+                file,
+                name,
+                landing,
+            } => write::run(
+                &file,
+                &Batch::of(Operation::PropsUnset { name }),
+                &landing,
+                out,
+            ),
+        },
         Command::Apply {
             file,
             batch,

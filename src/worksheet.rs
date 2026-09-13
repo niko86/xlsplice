@@ -21,7 +21,7 @@ use crate::relationships::Relationships;
 use crate::splice::{Element, Splice};
 use crate::strings::string_item_text;
 use crate::workbook::Workbook;
-use crate::xml::{children, text_of};
+use crate::xml::{children, escape, number_text, text_of};
 
 /// The type a cell's value is stored as, spelled as the part spells it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -389,22 +389,6 @@ impl Written {
     }
 }
 
-/// A number in the shortest form that reads back as itself.
-///
-/// Rust's own form is that: the fewest decimal digits that parse back to the
-/// same double, and no decimal point when the value is integral, which is how
-/// a package spells a whole number. It is always positional, so a value at the
-/// far end of the range is written out in full rather than with an exponent.
-/// Excel writes an exponent there and both read back the same, so whether to
-/// follow it is a question for the oracle suite rather than a guess here.
-///
-/// Negative zero is written as zero: a cell has one zero, and it is not
-/// spelled with a sign.
-fn number_text(number: f64) -> String {
-    let number = if number == 0.0 { 0.0 } else { number };
-    number.to_string()
-}
-
 /// `xml:space="preserve"`, where the text has whitespace at an end that a
 /// reader would otherwise be free to drop. Excel writes the attribute under
 /// the same rule, so text written back unchanged is written back byte for
@@ -416,25 +400,6 @@ fn space_attribute(text: &str) -> &'static str {
     } else {
         ""
     }
-}
-
-/// Text as XML character data.
-///
-/// The three characters that would otherwise be markup are escaped. So is a
-/// carriage return, which a parser is required to turn into a line feed when
-/// it reads the part back: written as itself it would not survive the trip.
-fn escape(text: &str) -> String {
-    let mut escaped = String::with_capacity(text.len());
-    for ch in text.chars() {
-        match ch {
-            '&' => escaped.push_str("&amp;"),
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            '\r' => escaped.push_str("&#13;"),
-            _ => escaped.push(ch),
-        }
-    }
-    escaped
 }
 
 /// The formula the cell element carries, if it carries one.

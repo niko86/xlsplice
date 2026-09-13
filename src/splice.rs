@@ -186,6 +186,12 @@ impl<'a, 'input> Element<'a, 'input> {
         }
     }
 
+    /// The source between the element's tags, exactly as the part spells it.
+    /// A self-closing element holds nothing, so it is the empty string.
+    pub fn content_text(&self) -> &'input str {
+        &self.source[self.content.clone()]
+    }
+
     /// Replace everything between the element's tags with `text`, opening a
     /// self-closing element to do it.
     pub fn content_splice(&self, text: &str) -> Splice {
@@ -302,6 +308,27 @@ impl<'a, 'input> Element<'a, 'input> {
             node.tag_name().name()
         ))
     }
+}
+
+/// The splice that puts `text` after the last child element of `parent`,
+/// separated from it the way the children already there are separated from
+/// each other.
+///
+/// A part Excel wrote is one long line and takes the new element hard against
+/// the one before it; a part something else pretty-printed takes it on a line
+/// of its own with the same indent. Either way what comes out looks like the
+/// part it went into, which is the whole point of splicing rather than
+/// re-serialising. A parent with no children at all takes it as the first,
+/// opening a self-closing element to do it.
+pub fn appended(parent: Node, source: &str, text: &str) -> Result<Splice> {
+    let element = Element::of(parent, source)?;
+    let Some(last) = parent.children().rfind(Node::is_element) else {
+        return Ok(element.first_child_splice(text));
+    };
+    let at = last.range().end;
+    let separator = &source[..last.range().start];
+    let indent = &separator[separator.trim_end_matches(char::is_whitespace).len()..];
+    Ok(Splice::new(at..at, format!("{indent}{text}")))
 }
 
 #[cfg(test)]
@@ -526,5 +553,41 @@ mod tests {
             &source[element(&document, source).content.clone()],
             "<v>1</v>"
         );
+    }
+
+    /// A part written on one line takes the new element hard against the one
+    /// before it, and a pretty-printed one takes it on a line of its own.
+    #[test]
+    fn an_appended_element_is_separated_the_way_the_others_are() {
+        for (xml, expected) in [
+            (
+                "<Types><Override A=\"1\"/><Override B=\"2\"/></Types>",
+                "<Types><Override A=\"1\"/><Override B=\"2\"/><Override C=\"3\"/></Types>",
+            ),
+            (
+                "<Types>\n  <Override A=\"1\"/>\n  <Override B=\"2\"/>\n</Types>",
+                "<Types>\n  <Override A=\"1\"/>\n  <Override B=\"2\"/>\n  <Override C=\"3\"/>\n</Types>",
+            ),
+        ] {
+            let document = Document::parse(xml).expect("the test part must parse");
+            let splice = appended(document.root_element(), xml, "<Override C=\"3\"/>")
+                .expect("the parent must be spliceable");
+
+            assert_eq!(apply(xml, &[splice]).expect("the splice applies"), expected);
+        }
+    }
+
+    #[test]
+    fn an_element_appended_to_a_parent_with_no_children_becomes_its_first() {
+        for (xml, expected) in [
+            ("<Types/>", "<Types><Override C=\"3\"/></Types>"),
+            ("<Types></Types>", "<Types><Override C=\"3\"/></Types>"),
+        ] {
+            let document = Document::parse(xml).expect("the test part must parse");
+            let splice = appended(document.root_element(), xml, "<Override C=\"3\"/>")
+                .expect("the parent must be spliceable");
+
+            assert_eq!(apply(xml, &[splice]).expect("the splice applies"), expected);
+        }
     }
 }

@@ -1,9 +1,15 @@
-//! The two things every part reader wants from roxmltree.
+//! The small things every part reader and writer wants: two around
+//! roxmltree, and two for putting a value back.
 //!
-//! Both exist because a part in the wild is not the tidy shape a reader would
-//! like. A re-serialising tool writes every element with a namespace prefix,
-//! so only the local name may be compared; and an entity reference splits an
-//! element's text into several nodes, so only their concatenation is the text.
+//! The readers exist because a part in the wild is not the tidy shape a
+//! reader would like. A re-serialising tool writes every element with a
+//! namespace prefix, so only the local name may be compared; and an entity
+//! reference splits an element's text into several nodes, so only their
+//! concatenation is the text.
+//!
+//! The writers exist because every part xlsplice puts a value into owes the
+//! reader the same escaping and the same spelling of a number, and it is the
+//! same question whichever part is being written.
 
 use roxmltree::Node;
 
@@ -30,10 +36,51 @@ pub fn text_of(node: Node) -> String {
         .collect()
 }
 
+/// Text as XML character data.
+///
+/// The three characters that would otherwise be markup are escaped. So is a
+/// carriage return, which a parser is required to turn into a line feed when
+/// it reads the part back: written as itself it would not survive the trip.
+pub fn escape(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '\r' => escaped.push_str("&#13;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+/// A number in the shortest form that reads back as itself.
+///
+/// Rust's own form is that: the fewest decimal digits that parse back to the
+/// same double, and no decimal point when the value is integral, which is how
+/// a package spells a whole number. It is always positional, so a value at the
+/// far end of the range is written out in full rather than with an exponent.
+/// Excel writes an exponent there and both read back the same, so whether to
+/// follow it is a question for the oracle suite rather than a guess here.
+///
+/// Negative zero is written as zero: a part has one zero, and it is not
+/// spelled with a sign.
+pub fn number_text(number: f64) -> String {
+    let number = if number == 0.0 { 0.0 } else { number };
+    number.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use roxmltree::Document;
+
+    #[test]
+    fn text_that_would_be_markup_is_escaped_and_a_carriage_return_with_it() {
+        assert_eq!(escape("a<b&c>d\re"), "a&lt;b&amp;c&gt;d&#13;e");
+        assert_eq!(escape("plain"), "plain");
+    }
 
     #[test]
     fn only_direct_children_of_the_asked_for_name_come_back() {

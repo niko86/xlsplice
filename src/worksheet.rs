@@ -10,7 +10,9 @@
 //! Two absences are not the same absence. A row the part holds, with no cell
 //! element for the column asked for, is an absent cell and reads as empty; a
 //! row the part does not hold at all means the cell lies outside every row
-//! there is, and the caller has nothing to report.
+//! there is, and the caller has nothing to report. To a write the difference
+//! is what has to be put in and where: a cell into its row, or a row holding
+//! it into the sheet data.
 
 use roxmltree::{Document, Node};
 
@@ -18,7 +20,7 @@ use crate::error::{Error, Result};
 use crate::package::Package;
 use crate::reference::Cell;
 use crate::relationships::Relationships;
-use crate::splice::{Element, Splice};
+use crate::splice::{Element, Splice, appended, inserted_before};
 use crate::strings::string_item_text;
 use crate::workbook::Workbook;
 use crate::xml::{children, escape, number_text, text_of};
@@ -185,24 +187,34 @@ pub enum Found {
     NoRow,
 }
 
-/// The same three answers, in terms of the element rather than its contents.
+/// The same answers, in terms of the element rather than its contents.
 ///
 /// A write needs the element, because a splice is taken from where the
-/// element sits in the part; a read needs only what it holds.
+/// element sits in the part; a read needs only what it holds. Where the cell
+/// is not there, what comes back is the element a new one would go into, so
+/// that a write has somewhere to put it without looking twice.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Located<'a, 'input> {
     /// The cell element.
     Cell(Node<'a, 'input>),
-    /// The row is there; the cell is not.
-    Absent,
-    /// The part holds no row of that number.
-    NoRow,
+    /// The row is there and the cell is not: the row is what a new cell goes
+    /// into.
+    InRow(Node<'a, 'input>),
+    /// The part holds no row of that number: the sheet data is what a new row
+    /// goes into.
+    InSheetData(Node<'a, 'input>),
+    /// The part has no sheet data element, so there is nowhere for a cell to
+    /// be and nowhere to put one.
+    Nowhere,
 }
 
 /// The cells of one sheet, ready to be looked in.
 #[derive(Debug)]
 pub struct Worksheet<'a, 'input> {
     data: Option<Node<'a, 'input>>,
+    /// The column definitions, which say what style a column gives the cells
+    /// in it that carry none of their own.
+    cols: Option<Node<'a, 'input>>,
 }
 
 impl<'a, 'input> Worksheet<'a, 'input> {
@@ -221,6 +233,7 @@ impl<'a, 'input> Worksheet<'a, 'input> {
         }
         Ok(Worksheet {
             data: children(root, "sheetData").next(),
+            cols: children(root, "cols").next(),
         })
     }
 
@@ -228,20 +241,56 @@ impl<'a, 'input> Worksheet<'a, 'input> {
     pub fn cell(&self, cell: Cell) -> Result<Found> {
         Ok(match self.locate(cell)? {
             Located::Cell(node) => Found::Cell(stored(node, cell)?),
-            Located::Absent => Found::Absent,
-            Located::NoRow => Found::NoRow,
+            Located::InRow(_) => Found::Absent,
+            // A part with no sheet data has no rows, which to a read is the
+            // same answer as having none of that number.
+            Located::InSheetData(_) | Located::Nowhere => Found::NoRow,
         })
     }
 
-    /// Find the element `cell` sits in, without reading it.
+    /// Find the element `cell` sits in, or the one it would go into, without
+    /// reading either.
     pub fn locate(&self, cell: Cell) -> Result<Located<'a, 'input>> {
+        let Some(data) = self.data else {
+            return Ok(Located::Nowhere);
+        };
         let Some(row) = self.row(cell.row())? else {
-            return Ok(Located::NoRow);
+            return Ok(Located::InSheetData(data));
         };
         Ok(match cell_in(row, cell)? {
             Some(node) => Located::Cell(node),
-            None => Located::Absent,
+            None => Located::InRow(row),
         })
+    }
+
+    /// The style Excel would give a cell at `at` that the part does not hold.
+    ///
+    /// A row declaring a custom format gives its style to every cell in it,
+    /// whatever the columns say; failing that, a column definition covering
+    /// the column gives its style; failing both, the cell carries none and
+    /// takes the default format, as every cell declaring no style does.
+    pub fn style_of_an_absent_cell(&self, at: Cell) -> Result<Option<u32>> {
+        if let Some(row) = self.row(at.row())?
+            && truthy(row.attribute("customFormat"))
+            && let Some(style) = number(row.attribute("s"))
+        {
+            return Ok(Some(style));
+        }
+        Ok(self.column_style(at.column()))
+    }
+
+    /// The style the column definitions give `column`, if any covers it.
+    fn column_style(&self, column: u32) -> Option<u32> {
+        let cols = self.cols?;
+        children(cols, "col")
+            .find(|col| {
+                let (min, max) = (number(col.attribute("min")), number(col.attribute("max")));
+                match (min, max) {
+                    (Some(min), Some(max)) => (min..=max).contains(&column),
+                    _ => false,
+                }
+            })
+            .and_then(|col| number(col.attribute("style")))
     }
 
     /// The row element numbered `wanted`. A row declares its number; one that
@@ -266,6 +315,138 @@ impl<'a, 'input> Worksheet<'a, 'input> {
         }
         Ok(None)
     }
+}
+
+/// A whole number an attribute spells, or nothing where it spells none or
+/// spells something that is not one. A part disagreeing with itself about a
+/// style index is not worth refusing a write over: the cell simply takes no
+/// style from it, which is what a cell carrying none takes anyway.
+fn number(attribute: Option<&str>) -> Option<u32> {
+    attribute?.parse().ok()
+}
+
+/// Whether an attribute says yes, in the two spellings the schema's boolean
+/// allows.
+fn truthy(attribute: Option<&str>) -> bool {
+    matches!(attribute, Some("1" | "true"))
+}
+
+/// The element for a cell the part does not hold, written the way Excel
+/// writes one: `r`, then `s`, then `t`, which is the order the schema gives
+/// its attributes.
+fn cell_element(at: Cell, style: Option<u32>, written: &Written, prefix: &str) -> String {
+    let style = match style {
+        Some(index) => format!(r#" s="{index}""#),
+        None => String::new(),
+    };
+    let kind = match written.declares() {
+        Some(kind) => format!(r#" t="{kind}""#),
+        None => String::new(),
+    };
+    let content = written.content(prefix);
+    let opening = format!(r#"<{prefix}c r="{}"{style}{kind}"#, at.a1());
+    match content.is_empty() {
+        true => format!("{opening}/>"),
+        false => format!("{opening}>{content}</{prefix}c>"),
+    }
+}
+
+/// The splice that puts a cell for `at` into `row`, before the first cell of
+/// a greater column and after every cell of a lesser one.
+///
+/// `source` must be the text the row's document was parsed from.
+pub fn cell_inserted(
+    row: Node,
+    source: &str,
+    at: Cell,
+    style: Option<u32>,
+    written: &Written,
+) -> Result<Splice> {
+    let element = cell_element(at, style, written, Element::of(row, source)?.prefix());
+    let splice = match first_cell_after(row, at)? {
+        Some(next) => inserted_before(next, source, &element),
+        None => appended(row, source, &element)?,
+    };
+    // Two cells put into one row go in front of the same cell, so the row
+    // reads in column order because they say so and not because of the order
+    // the batch happened to name them in.
+    Ok(splice.ordered(at.column()))
+}
+
+/// The splice that puts a row holding one cell for `at` into `data`, before
+/// the first row of a greater number and after every row of a lesser one.
+///
+/// The row carries its number and nothing else. `spans` is a hint about which
+/// columns a row holds, and Excel neither needs it nor minds a row without
+/// one; the rows already there keep the spans they have, because a splice
+/// changes what it was told to and nothing else.
+///
+/// `source` must be the text the sheet data's document was parsed from.
+pub fn row_inserted(
+    data: Node,
+    source: &str,
+    at: Cell,
+    style: Option<u32>,
+    written: &Written,
+) -> Result<Splice> {
+    let prefix = Element::of(data, source)?.prefix();
+    let element = format!(
+        r#"<{prefix}row r="{}">{}</{prefix}row>"#,
+        at.row(),
+        cell_element(at, style, written, prefix)
+    );
+    let splice = match first_row_after(data, at.row())? {
+        Some(next) => inserted_before(next, source, &element),
+        None => appended(data, source, &element)?,
+    };
+    Ok(splice.ordered(at.row()))
+}
+
+/// The first cell of `row` in a column greater than `wanted`'s, which is the
+/// cell a new one goes in front of. Counted the way [`cell_in`] counts, so a
+/// cell declaring no address is where the same rule puts it.
+fn first_cell_after<'a, 'input>(
+    row: Node<'a, 'input>,
+    wanted: Cell,
+) -> Result<Option<Node<'a, 'input>>> {
+    let mut column = 0;
+    for node in children(row, "c") {
+        let at = match node.attribute("r") {
+            Some(r) => Cell::parse(r).ok_or_else(|| {
+                Error::unreadable(format!("a cell is addressed '{r}', which is not a cell"))
+            })?,
+            None => match Cell::new(column + 1, wanted.row()) {
+                Some(at) => at,
+                None => return Ok(None),
+            },
+        };
+        column = at.column();
+        if column > wanted.column() {
+            return Ok(Some(node));
+        }
+    }
+    Ok(None)
+}
+
+/// The first row of `data` numbered above `wanted`, which is the row a new one
+/// goes in front of. Counted the way [`Worksheet::row`] counts.
+fn first_row_after<'a, 'input>(
+    data: Node<'a, 'input>,
+    wanted: u32,
+) -> Result<Option<Node<'a, 'input>>> {
+    let mut number = 0;
+    for row in children(data, "row") {
+        number = match row.attribute("r") {
+            None => number + 1,
+            Some(r) => r.parse().map_err(|_| {
+                Error::unreadable(format!("a row is numbered '{r}', which is not a row"))
+            })?,
+        };
+        if number > wanted {
+            return Ok(Some(row));
+        }
+    }
+    Ok(None)
 }
 
 /// The cell element for `wanted` within `row`. A cell declares its address;
@@ -831,5 +1012,196 @@ mod tests {
             let err = at(&sheet(body), "A1").expect_err(body);
             assert_eq!(err.code(), ErrorCode::Unreadable, "{body}");
         }
+    }
+
+    /// A whole worksheet, with column definitions before its sheet data.
+    fn sheet_with_cols(cols: &str, body: &str) -> String {
+        format!(
+            r#"<worksheet xmlns="{NS}"><cols>{cols}</cols><sheetData>{body}</sheetData></worksheet>"#
+        )
+    }
+
+    /// The part with a cell for `a1` holding `written` put into it.
+    fn inserted(xml: &str, a1: &str, written: &Written) -> String {
+        let document = Document::parse(xml).expect("the test part must parse");
+        let sheet = Worksheet::of(&document).expect("the test part is a worksheet");
+        let cell = Cell::parse(a1).expect("the test asks for a cell");
+        let style = sheet
+            .style_of_an_absent_cell(cell)
+            .expect("the styles must be readable");
+        let splice = match sheet.locate(cell).expect("the cell must be locatable") {
+            Located::InRow(row) => {
+                cell_inserted(row, xml, cell, style, written).expect("the row is spliceable")
+            }
+            Located::InSheetData(data) => {
+                row_inserted(data, xml, cell, style, written).expect("the sheet data is spliceable")
+            }
+            other => panic!("{a1} is {other:?}, not an absence"),
+        };
+        crate::splice::apply(xml, &[splice]).expect("the splice applies")
+    }
+
+    /// The three places a cell can go in a row it is missing from.
+    #[test]
+    fn a_cell_goes_into_its_row_in_column_order() {
+        let row = r#"<row r="1"><c r="B1"><v>1</v></c><c r="D1"><v>2</v></c></row>"#;
+        let xml = sheet(row);
+
+        for (a1, expected) in [
+            (
+                "A1",
+                r#"<row r="1"><c r="A1"><v>9</v></c><c r="B1"><v>1</v></c><c r="D1"><v>2</v></c></row>"#,
+            ),
+            (
+                "C1",
+                r#"<row r="1"><c r="B1"><v>1</v></c><c r="C1"><v>9</v></c><c r="D1"><v>2</v></c></row>"#,
+            ),
+            (
+                "E1",
+                r#"<row r="1"><c r="B1"><v>1</v></c><c r="D1"><v>2</v></c><c r="E1"><v>9</v></c></row>"#,
+            ),
+        ] {
+            assert_eq!(
+                inserted(&xml, a1, &Written::Number(9.0)),
+                sheet(expected),
+                "{a1} went in the wrong place, or moved something else"
+            );
+        }
+    }
+
+    /// A row goes into the sheet data in row order, and carries its number
+    /// and nothing else.
+    #[test]
+    fn a_row_goes_into_the_sheet_data_in_row_order() {
+        let xml = sheet(
+            r#"<row r="2"><c r="A2"><v>1</v></c></row><row r="4"><c r="A4"><v>2</v></c></row>"#,
+        );
+
+        for (a1, expected) in [
+            (
+                "A1",
+                r#"<sheetData><row r="1"><c r="A1"><v>9</v></c></row><row r="2">"#,
+            ),
+            (
+                "B3",
+                r#"</row><row r="3"><c r="B3"><v>9</v></c></row><row r="4">"#,
+            ),
+            (
+                "A9",
+                r#"</row><row r="9"><c r="A9"><v>9</v></c></row></sheetData>"#,
+            ),
+        ] {
+            let written = inserted(&xml, a1, &Written::Number(9.0));
+
+            assert!(written.contains(expected), "{a1}: {written}");
+        }
+    }
+
+    #[test]
+    fn the_first_row_of_an_empty_sheet_data_element_opens_it() {
+        for empty in ["<sheetData/>", "<sheetData></sheetData>"] {
+            let xml = format!(r#"<worksheet xmlns="{NS}">{empty}</worksheet>"#);
+
+            let written = inserted(&xml, "B2", &Written::text("hello"));
+
+            assert_eq!(
+                written,
+                format!(
+                    r#"<worksheet xmlns="{NS}"><sheetData><row r="2"><c r="B2" t="inlineStr">"#,
+                ) + r#"<is><t>hello</t></is></c></row></sheetData></worksheet>"#,
+                "{empty}"
+            );
+        }
+    }
+
+    /// A row declaring a custom format gives its style to the cells in it,
+    /// and it wins over a column definition covering the same cell.
+    #[test]
+    fn a_cell_in_a_row_with_a_custom_format_takes_the_rows_style() {
+        let xml = sheet_with_cols(
+            r#"<col min="1" max="3" style="7"/>"#,
+            r#"<row r="1" s="4" customFormat="1"><c r="C1"><v>1</v></c></row>"#,
+        );
+
+        assert!(
+            inserted(&xml, "A1", &Written::Number(9.0)).contains(r#"<c r="A1" s="4">"#),
+            "the row's style wins over the column's"
+        );
+    }
+
+    #[test]
+    fn a_cell_under_a_styled_column_takes_the_columns_style() {
+        let xml = sheet_with_cols(
+            r#"<col min="2" max="4" style="7"/>"#,
+            r#"<row r="1"><c r="A1"><v>1</v></c></row>"#,
+        );
+
+        assert!(inserted(&xml, "C1", &Written::Number(9.0)).contains(r#"<c r="C1" s="7">"#));
+        assert!(
+            inserted(&xml, "E1", &Written::Number(9.0)).contains(r#"<c r="E1">"#),
+            "a column outside every definition gives no style"
+        );
+    }
+
+    /// A row carrying a style but not saying it is custom-formatted is a row
+    /// whose style Excel does not apply to its cells.
+    #[test]
+    fn a_row_style_without_a_custom_format_gives_the_cell_nothing() {
+        let xml = sheet(r#"<row r="1" s="4"><c r="C1"><v>1</v></c></row>"#);
+
+        assert!(inserted(&xml, "A1", &Written::Number(9.0)).contains(r#"<c r="A1">"#));
+    }
+
+    /// The style comes from the row a new row would have, which is no row at
+    /// all, so only the columns have anything to say.
+    #[test]
+    fn a_cell_in_a_row_that_is_not_there_takes_only_the_columns_style() {
+        let xml = sheet_with_cols(
+            r#"<col min="1" max="1" style="7"/>"#,
+            r#"<row r="1"><c r="A1"><v>1</v></c></row>"#,
+        );
+
+        assert!(inserted(&xml, "A5", &Written::Number(9.0)).contains(r#"<c r="A5" s="7">"#));
+    }
+
+    #[test]
+    fn a_part_with_no_sheet_data_element_is_nowhere_to_put_a_cell() {
+        let xml = format!(r#"<worksheet xmlns="{NS}"><dimension ref="A1"/></worksheet>"#);
+        let document = Document::parse(&xml).expect("the test part must parse");
+        let sheet = Worksheet::of(&document).expect("the test part is a worksheet");
+
+        assert_eq!(
+            sheet
+                .locate(Cell::parse("A1").expect("a cell"))
+                .expect("locating must not fail"),
+            Located::Nowhere
+        );
+        assert_eq!(
+            sheet
+                .cell(Cell::parse("A1").expect("a cell"))
+                .expect("readable"),
+            Found::NoRow,
+            "to a read it is the same absence as a row that is not there"
+        );
+    }
+
+    /// A part a re-serialising tool prefixed takes cells and rows prefixed
+    /// the same way.
+    #[test]
+    fn what_is_written_in_takes_the_prefix_the_part_uses() {
+        let xml = format!(
+            r#"<x:worksheet xmlns:x="{NS}"><x:sheetData><x:row r="1"><x:c r="B1"><x:v>1</x:v></x:c></x:row></x:sheetData></x:worksheet>"#
+        );
+
+        assert!(
+            inserted(&xml, "A1", &Written::Number(9.0))
+                .contains(r#"<x:c r="A1"><x:v>9</x:v></x:c>"#),
+            "{}",
+            inserted(&xml, "A1", &Written::Number(9.0))
+        );
+        assert!(
+            inserted(&xml, "A2", &Written::Number(9.0))
+                .contains(r#"<x:row r="2"><x:c r="A2"><x:v>9</x:v></x:c></x:row>"#)
+        );
     }
 }

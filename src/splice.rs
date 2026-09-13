@@ -28,6 +28,8 @@ pub struct Splice {
     pub range: Range<usize>,
     /// What goes there.
     pub text: String,
+    /// Where this goes among the splices inserting at the same byte.
+    order: u32,
 }
 
 impl Splice {
@@ -36,7 +38,21 @@ impl Splice {
         Splice {
             range,
             text: text.into(),
+            order: 0,
         }
+    }
+
+    /// This splice, placed at `order` among the splices inserting at the same
+    /// byte as it.
+    ///
+    /// Two insertions at one byte do not overlap and neither is wrong, so the
+    /// part cannot say which comes first: whatever worked them out has to.
+    /// Two cells put into one row both go in front of the cell that follows
+    /// them, and a row must read in column order however the batch was
+    /// written, so the cells order themselves by their column. Rows put into
+    /// one sheet order themselves by their number the same way.
+    pub fn ordered(self, order: u32) -> Self {
+        Splice { order, ..self }
     }
 
     /// Whether applying this splice to `source` would change a byte. A splice
@@ -52,7 +68,9 @@ impl Splice {
 /// Order does not matter to the caller: the splices are ordered here and
 /// applied from the end backwards. Where two start at the same byte, the
 /// shorter goes first, so that an insertion at the front of a replaced range
-/// lands before it rather than inside it.
+/// lands before it rather than inside it; where they are the same length as
+/// well, which is what two insertions at one byte are, [`Splice::ordered`] is
+/// what decides, and 0 for both means the order they were given in.
 ///
 /// The overlap guard is an assertion about byte ranges, not a check on what
 /// the operations behind them named. Two operations on one cell are refused
@@ -64,7 +82,7 @@ impl Splice {
 /// never been able to stand in for that check.
 pub fn apply(source: &str, splices: &[Splice]) -> Result<String> {
     let mut ordered: Vec<&Splice> = splices.iter().collect();
-    ordered.sort_by_key(|splice| (splice.range.start, splice.range.end));
+    ordered.sort_by_key(|splice| (splice.range.start, splice.range.end, splice.order));
 
     let mut reached = 0;
     for splice in &ordered {
@@ -331,6 +349,19 @@ pub fn appended(parent: Node, source: &str, text: &str) -> Result<Splice> {
     Ok(Splice::new(at..at, format!("{indent}{text}")))
 }
 
+/// The splice that puts `text` in front of `before`, separated from it the
+/// way the children already there are separated from each other.
+///
+/// The counterpart of [`appended`], and the same rule: the whitespace in
+/// front of `before` is what goes between the two afterwards, so a part
+/// written on one line stays on one line and a pretty-printed one keeps its
+/// indent.
+pub fn inserted_before(before: Node, source: &str, text: &str) -> Splice {
+    let at = before.range().start;
+    let indent = &source[..at][source[..at].trim_end_matches(char::is_whitespace).len()..];
+    Splice::new(at..at, format!("{text}{indent}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,5 +620,49 @@ mod tests {
 
             assert_eq!(apply(xml, &[splice]).expect("the splice applies"), expected);
         }
+    }
+
+    #[test]
+    fn an_element_put_in_front_of_another_is_separated_the_way_the_others_are() {
+        for (xml, expected) in [
+            (
+                "<row><c r=\"A1\"/><c r=\"C1\"/></row>",
+                "<row><c r=\"A1\"/><c r=\"B1\"/><c r=\"C1\"/></row>",
+            ),
+            (
+                "<row>\n  <c r=\"A1\"/>\n  <c r=\"C1\"/>\n</row>",
+                "<row>\n  <c r=\"A1\"/>\n  <c r=\"B1\"/>\n  <c r=\"C1\"/>\n</row>",
+            ),
+        ] {
+            let document = Document::parse(xml).expect("the test part must parse");
+            let third = document
+                .root_element()
+                .children()
+                .rfind(Node::is_element)
+                .expect("the row has cells");
+            let splice = inserted_before(third, xml, "<c r=\"B1\"/>");
+
+            assert_eq!(apply(xml, &[splice]).expect("the splice applies"), expected);
+        }
+    }
+
+    /// In front of the first child, the whitespace that separated it from its
+    /// parent's tag is what separates the two afterwards.
+    #[test]
+    fn an_element_put_in_front_of_the_first_child_keeps_the_parents_own_indent() {
+        let xml = "<row>\n  <c r=\"B1\"/>\n</row>";
+        let document = Document::parse(xml).expect("the test part must parse");
+        let first = document
+            .root_element()
+            .children()
+            .find(Node::is_element)
+            .expect("the row has a cell");
+
+        let splice = inserted_before(first, xml, "<c r=\"A1\"/>");
+
+        assert_eq!(
+            apply(xml, &[splice]).expect("the splice applies"),
+            "<row>\n  <c r=\"A1\"/>\n  <c r=\"B1\"/>\n</row>"
+        );
     }
 }

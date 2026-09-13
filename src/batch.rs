@@ -23,21 +23,24 @@
 //! workbook open, so a batch is a document a caller can write as readily as
 //! the command line can build one.
 //!
-//! Two operations write a cell, `set` and `clear`, and both want one that is
-//! already there: a cell the sheet does not hold is
-//! [`not_found`](crate::error::ErrorCode::NotFound) until the insertion
-//! ticket, and a cell holding a formula is
-//! [`refused`](crate::error::ErrorCode::Refused) unless the caller says it may
-//! be replaced, so a mis-addressed write cannot quietly destroy a template's
-//! formula. The rest write no cell at all: `calc` sets a flag on the workbook,
-//! and `props.set` and `props.unset` write the properties a package carries
-//! about itself.
+//! Two operations write a cell, `set` and `clear`. A cell the sheet does not
+//! hold is put there by a `set`, and the row it sits in with it, because a
+//! template carries an element only for the cells something is already in; a
+//! `clear` puts nothing in, because an absent cell already holds nothing. A
+//! cell holding a formula is [`refused`](crate::error::ErrorCode::Refused)
+//! unless the caller says it may be replaced, so a mis-addressed write cannot
+//! quietly destroy a template's formula. The rest write no cell at all:
+//! `calc` sets a flag on the workbook, and `props.set` and `props.unset`
+//! write the properties a package carries about itself.
 //!
 //! A few things a batch does have no per-operation answer, because one
 //! snapshot is what every operation sees: whether an emptied calc chain still
 //! belongs in the package, and how many properties are being added and which
 //! identifiers they take. Those are settled once, for the part, after the
-//! operations' edits are merged and before anything is written.
+//! operations' edits are merged and before anything is written. One more is
+//! not settled yet and is refused instead: two operations writing cells of a
+//! row the sheet does not hold would each put the row in, and #27 is where
+//! one row holding both of them is worked out.
 //!
 //! A batch that would change nothing writes nothing. The container is rebuilt
 //! rather than copied byte for byte (ADR-0001), so rebuilding a package whose
@@ -63,7 +66,7 @@ use crate::relationships::{PACKAGE_ROOT, Relationships, part_or_conventional};
 use crate::splice::{self, Splice};
 use crate::target::{Resolution, resolve};
 use crate::workbook::{DateSystem, Workbook};
-use crate::worksheet::{FormulaRole, Located, Worksheet, Written, formula_of, value_splices};
+use crate::worksheet::{self, FormulaRole, Located, Worksheet, Written, formula_of, value_splices};
 
 /// One thing to do to a package.
 ///
@@ -271,17 +274,18 @@ impl Operation {
                 let written = self.written(opened.dates())?;
                 // The borrow of the part's text ends here, because taking a
                 // formula's entry out of the calc chain reads another part.
-                let (splices, replaced) = {
+                let wrote = {
                     let xml = opened.text(&at.part)?;
                     splices_of(xml, &at, &written, self.replaces_a_formula())?
                 };
-                let mut parts = vec![(at.part.clone(), PartEdit::Splice(splices))];
-                if replaced {
+                let mut parts = vec![(at.part.clone(), PartEdit::Splice(wrote.splices))];
+                if wrote.replaced {
                     parts.extend(uncalculated(opened, &at)?);
                 }
                 Ok(Asked {
                     parts,
                     at: Some(at),
+                    inserts_row: wrote.row,
                 })
             }
             None => Err(Error::internal(format!(
@@ -482,6 +486,13 @@ pub struct Asked {
     pub at: Option<Resolution>,
     /// What each part is to have done to it, named by part path.
     pub parts: Vec<(String, PartEdit)>,
+    /// The row this operation puts into the sheet, where it puts one in.
+    ///
+    /// Carried so the batch can refuse to put one row in twice: two
+    /// operations writing cells of a row the sheet does not hold would each
+    /// put the row in, and a sheet with the same row twice is one Excel
+    /// offers to repair.
+    pub inserts_row: Option<u32>,
 }
 
 /// A package open for writing, with the models an operation reads it through.
@@ -760,6 +771,8 @@ pub fn run(path: &Path, batch: &Batch, destination: &Destination, dry_run: bool)
         })
         .collect::<Result<_>>()?;
 
+    refuse_one_row_put_in_twice(&asked)?;
+
     let applied = apply(&mut opened, &batch.operations, &asked)?;
 
     let output = destination.path(path).to_owned();
@@ -802,6 +815,39 @@ fn refuse_a_repeated_cell(land_at: &[Option<Resolution>]) -> Result<()> {
                      a batch is applied to the package as it was read, so one cell \
                      cannot be asked two things at once. Give one operation per cell.",
                     one.address
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Refuse a batch that would put one row into one sheet twice.
+///
+/// Two operations writing cells of a row the sheet does not hold each put the
+/// row in, because over one snapshot neither can see the other's (ADR-0004),
+/// and a sheet holding the same row twice is one Excel offers to repair. What
+/// they want is one row holding both cells, which is a question about the
+/// part rather than about either operation, and #27 is where it is settled.
+/// Until then the batch is refused rather than the sheet quietly broken.
+fn refuse_one_row_put_in_twice(asked: &[Asked]) -> Result<()> {
+    let put_in: Vec<Option<(&str, u32)>> = asked
+        .iter()
+        .map(|edits| {
+            let row = edits.inserts_row?;
+            Some((edits.at.as_ref()?.part.as_str(), row))
+        })
+        .collect();
+    for (later, one) in put_in.iter().enumerate() {
+        let Some(one) = one else { continue };
+        for (earlier, other) in put_in[..later].iter().enumerate() {
+            if other == &Some(*one) {
+                return Err(Error::usage(format!(
+                    "the operations at index {earlier} and {later} both write a cell of row \
+                     {}, which sheet part '{}' does not hold; each would put the row in, and \
+                     a sheet cannot hold one row twice. Write them in separate batches until \
+                     one batch can put a row in holding several cells.",
+                    one.1, one.0
                 )));
             }
         }
@@ -1137,36 +1183,77 @@ fn mark(changed: &mut [bool], edits: &[(usize, &PartEdit)]) {
 /// are byte ranges of the text handed in: the same text every other operation
 /// on this part is handed, so their ranges all mean the same thing.
 ///
+/// A cell the part does not hold is put there, and the row it would sit in
+/// with it. There is nothing to replace in a cell that was not there, so a
+/// formula never is.
+///
 /// `licensed` is whether the operation said a formula may be replaced. A
 /// formula that is replaced goes with the value that replaces it, because
 /// what goes between the cell's tags is written whole, and its calc chain
 /// entry goes with it, which is what the second half of the answer is for.
-fn splices_of(
-    xml: &str,
-    at: &Resolution,
-    written: &Written,
-    licensed: bool,
-) -> Result<(Vec<Splice>, bool)> {
+fn splices_of(xml: &str, at: &Resolution, written: &Written, licensed: bool) -> Result<Wrote> {
     let document = Document::parse(xml)
         .map_err(|err| Error::unreadable(format!("not valid XML: {err}")).within(&at.part))?;
     let sheet = Worksheet::of(&document).map_err(|err| err.within(&at.part))?;
-    let node = match sheet
-        .locate(at.address.cell)
-        .map_err(|err| err.within(&at.part))?
-    {
+    let cell = at.address.cell;
+    let located = sheet.locate(cell).map_err(|err| err.within(&at.part))?;
+    let node = match located {
         Located::Cell(node) => node,
-        // Inserting the cell, and the row it would sit in, is the next
-        // ticket; until then a write has nothing to write into.
-        Located::Absent | Located::NoRow => {
+        // Clearing a cell that is not there would put an empty one where
+        // there was nothing, which is a change with nothing behind it: an
+        // absent cell already holds nothing and already shows the format its
+        // row or its column gives it.
+        _ if written == &Written::Nothing => return Ok(Wrote::default()),
+        Located::InRow(row) => {
+            let style = sheet
+                .style_of_an_absent_cell(cell)
+                .map_err(|err| err.within(&at.part))?;
+            let splice = worksheet::cell_inserted(row, xml, cell, style, written)
+                .map_err(|err| err.within(&at.part))?;
+            return Ok(Wrote {
+                splices: vec![splice],
+                ..Wrote::default()
+            });
+        }
+        Located::InSheetData(data) => {
+            let style = sheet
+                .style_of_an_absent_cell(cell)
+                .map_err(|err| err.within(&at.part))?;
+            let splice = worksheet::row_inserted(data, xml, cell, style, written)
+                .map_err(|err| err.within(&at.part))?;
+            return Ok(Wrote {
+                splices: vec![splice],
+                row: Some(cell.row()),
+                ..Wrote::default()
+            });
+        }
+        Located::Nowhere => {
             return Err(Error::not_found(format!(
-                "no cell {} to write to: sheet '{}' does not hold it. \
-                 Writing a cell that is not there is not yet supported.",
+                "no cell {} to write to: sheet '{}' has no sheet data element, so it holds \
+                 no rows and there is nowhere to put one. A worksheet part without one is \
+                 not a sheet Excel wrote.",
                 at.address, at.address.sheet
-            )));
+            ))
+            .within(&at.part));
         }
     };
-    let replaced = formula_to_replace(node, at, licensed)?;
-    Ok((value_splices(node, xml, written)?, replaced))
+    Ok(Wrote {
+        replaced: formula_to_replace(node, at, licensed)?,
+        splices: value_splices(node, xml, written)?,
+        row: None,
+    })
+}
+
+/// What a write to one cell came to.
+#[derive(Debug, Default)]
+struct Wrote {
+    /// The splices that put the value where it goes.
+    splices: Vec<Splice>,
+    /// Whether a formula was replaced to make room for it, so that its calc
+    /// chain entry goes too.
+    replaced: bool,
+    /// The row put into the sheet to hold the cell, where one was put in.
+    row: Option<u32>,
 }
 
 /// The edit that makes the workbook say whether it recalculates fully on
@@ -1182,6 +1269,7 @@ fn calculated(full_calc_on_load: bool, opened: &mut Opened) -> Result<Asked> {
     Ok(Asked {
         at: None,
         parts: vec![(part, PartEdit::Splice(splices))],
+        inserts_row: None,
     })
 }
 
@@ -1205,6 +1293,7 @@ fn property_written(name: &str, value: &properties::Value, opened: &mut Opened) 
         Some(splices) => Asked {
             at: None,
             parts: vec![(part, PartEdit::Splice(splices))],
+            inserts_row: None,
         },
     })
 }
@@ -1226,6 +1315,7 @@ fn property_withdrawn(name: &str, opened: &mut Opened) -> Result<Asked> {
     Ok(Asked {
         at: None,
         parts: vec![(part, PartEdit::Splice(splices))],
+        inserts_row: None,
     })
 }
 
@@ -1234,6 +1324,7 @@ fn nothing_asked() -> Asked {
     Asked {
         at: None,
         parts: Vec::new(),
+        inserts_row: None,
     }
 }
 
@@ -1680,10 +1771,12 @@ mod tests {
                     "xl/worksheets/sheet1.xml".to_owned(),
                     PartEdit::Splice(vec![splice()]),
                 )],
+                inserts_row: None,
             },
             Asked {
                 at: None,
                 parts: vec![("xl/workbook.xml".to_owned(), PartEdit::Splice(Vec::new()))],
+                inserts_row: None,
             },
         ];
 

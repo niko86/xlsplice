@@ -187,17 +187,24 @@ fn a_batch_may_clear_one_cell_and_write_another() {
     assert_only_these_differ(&fixture("plain.xlsx"), &package, &[SHEET1]);
 }
 
+/// A `set` puts a cell that is not there into the sheet; a `clear` does not,
+/// because an absent cell already holds nothing and already shows whatever
+/// format its row or its column gives it. Putting an empty element there
+/// would be a change with nothing behind it.
 #[test]
-fn a_cell_the_sheet_does_not_hold_is_not_found_and_the_package_is_untouched() {
+fn clearing_a_cell_the_sheet_does_not_hold_changes_nothing() {
     let (_workspace, package) = copy("absent", "plain.xlsx");
 
-    let out = under_json(verb::clear(&package, "Sheet1!Z99", None, false));
+    for target in ["Sheet1!Z1", "Sheet1!A9"] {
+        let out = under_json(verb::clear(&package, target, None, false));
 
-    assert_eq!(out.exit, 3);
-    assert_eq!(
-        envelope(&out)["error"]["code"],
-        serde_json::json!("not_found")
-    );
+        assert_eq!(out.exit, 0, "{target}: {}", out.stdout);
+        assert_eq!(
+            envelope(&out)["operations"][0]["changed"],
+            serde_json::json!(false),
+            "{target}"
+        );
+    }
     assert_same_bytes(&fixture("plain.xlsx"), &package);
 }
 

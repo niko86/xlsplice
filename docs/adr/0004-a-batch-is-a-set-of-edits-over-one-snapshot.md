@@ -59,6 +59,18 @@ XX `internal_error`.
   and are refused the same way, on the name rather than on what either
   operation meant to do with it — so setting a property and then unsetting it
   in one batch is the same contradiction as setting it twice.
+- Where two edits insert at one byte, neither overlaps the other and the part
+  cannot say which comes first, so whatever worked them out says:
+  `Splice::ordered` carries the key. Two cells put into one row by #1 both go
+  in front of the cell that follows them, and a row must read in column order
+  however the batch was written, so they order themselves by column. This is
+  the same gap the overlap guard was never able to cover, answered rather than
+  guarded against.
+- Two operations writing cells of a row the sheet does not hold would each put
+  the row in, and a sheet holding one row twice is one Excel offers to repair.
+  Ordering cannot fix that — the row's own tags would still be written twice —
+  so it is refused with exit 2 naming both operations and the row, and #27 is
+  where one row holding several cells is settled.
 - A question with no per-operation answer is answered once, for the part, after
   every operation's edits are merged and before anything is written: whether
   an emptied calc chain still belongs in the package (#10), and how many

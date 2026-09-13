@@ -508,8 +508,11 @@ fn a_destination_that_cannot_be_replaced_leaves_no_temporary_file_behind() {
     );
 }
 
+/// A cell the sheet does not hold is put there, and so is the row it sits in.
+/// What the bytes come out as is `insert.rs`'s to assert; that a `set` reaches
+/// it at all is this one's.
 #[test]
-fn a_cell_the_sheet_does_not_hold_is_not_found_and_the_package_is_untouched() {
+fn a_cell_the_sheet_does_not_hold_is_written_in() {
     let (_workspace, package) = copy("absent", "plain.xlsx");
 
     for target in ["Sheet1!Z1", "Sheet1!A9"] {
@@ -522,13 +525,14 @@ fn a_cell_the_sheet_does_not_hold_is_not_found_and_the_package_is_untouched() {
             false,
         ));
 
-        assert_eq!(out.exit, 3, "{target}");
+        assert_eq!(out.exit, 0, "{target}: {}", out.stdout);
         assert_eq!(
-            envelope(&out)["error"]["code"],
-            serde_json::json!("not_found")
+            envelope(&out)["operations"][0]["changed"],
+            serde_json::json!(true),
+            "{target}"
         );
     }
-    assert_same_bytes(&fixture("plain.xlsx"), &package);
+    assert_only_these_differ(&fixture("plain.xlsx"), &package, &[SHEET1]);
 }
 
 #[test]

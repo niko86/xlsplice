@@ -180,6 +180,17 @@ of `date` becomes a `filetime` holding a moment in UTC rather than the _serial_
 a cell would hold.
 _Avoid_: property type, vt type
 
+**Insertion**:
+A cell or a row put into a worksheet because a write named one the part does
+not hold. A template carries an element only for the cells something is
+already in, so writing into one is ordinary rather than exceptional. A cell
+goes into its row before the first cell of a greater column; a row goes into
+the sheet data before the first row of a greater number. An inserted cell
+takes the _style index_ Excel would show it under: its row's, where the row
+declares a custom format, else the one a column definition covering it gives,
+else none.
+_Avoid_: creation, add, append
+
 **Dry run**:
 A batch done in full and put nowhere. It writes no file at all, and reports
 what a real run would have changed.

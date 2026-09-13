@@ -35,6 +35,11 @@
 //! created custom properties part; a created calculation element; and a
 //! macro-enabled package written into.
 //!
+//! Then the four shapes the per-verb suites write that none of those reach: a
+//! cell cleared to its style, a custom property taken out from between two
+//! that stay, a write through a defined name into a merged anchor, and a
+//! mixed batch landing in one rebuild.
+//!
 //! Then the fixed operation set of [`support::corpus`] over every fixture,
 //! and over every corpus package where there is a corpus. That set is what
 //! the byte-preservation suite in `corpus.rs` puts a whole package through;
@@ -65,7 +70,7 @@ const SHEET1: &str = "xl/worksheets/sheet1.xml";
 /// How many cases put a package in front of Excel. Counted rather than
 /// bounded, so that a case which stopped reaching Excel is as much a failure
 /// as one added without the `--ignored` gate.
-const CASES: usize = 18;
+const CASES: usize = 22;
 
 /// A writable copy of a fixture, and the workspace holding it alive.
 ///
@@ -438,6 +443,108 @@ fn a_write_into_a_macro_enabled_package_opens_clean() {
     );
 }
 
+/// A cell cleared keeps its element and its style and loses everything else,
+/// which is how Excel leaves an empty formatted cell. C1 of the plain fixture
+/// is Excel's own date cell, so what is left is a cell carrying a date format
+/// and no date.
+#[test]
+#[ignore = "drives Excel"]
+fn a_cleared_cell_opens_clean() {
+    let (_workspace, path) = copy("oracle-clear", "plain.xlsx");
+    verb::clear(&path, "Sheet1!C1", None, false).expect("a clear must land");
+    assert!(
+        part_text(&path, SHEET1).contains(r#"<c r="C1" s="1"/>"#),
+        "the cell must have kept its element and its style for this to be the case it is"
+    );
+
+    assert_verdict(&path, Verdict::Clean, "a cell cleared to its style");
+}
+
+/// A property taken out leaves the identifiers of the ones around it where
+/// they were, so the part comes back with a gap in them — 2, 3, 5 where the
+/// fixture had 2, 3, 4, 5. Nothing renumbers, because renumbering would move
+/// bytes nothing asked to move; whether Excel minds the gap is this case.
+#[test]
+#[ignore = "drives Excel"]
+fn a_property_taken_out_opens_clean() {
+    let (_workspace, path) = copy("oracle-unset", "feature.xlsx");
+    verb::batch(&path, vec![verb::unstamping("Stamp.Flag")], None, false)
+        .expect("a property removed must land");
+    let written = part_text(&path, "docProps/custom.xml");
+    assert!(
+        !written.contains("Stamp.Flag"),
+        "the property must have gone"
+    );
+    assert!(
+        written.contains(r#"pid="3""#) && written.contains(r#"pid="5""#),
+        "and the identifiers around it must have stayed: {written}"
+    );
+
+    assert_verdict(&path, Verdict::Clean, "a custom property removed");
+}
+
+/// The write a hydration actually makes: through a defined name, into a range
+/// that is merged. `MergedInput` refers to `Inputs!$B$2:$C$3`, so the write
+/// lands in B2, the anchor, and the cell keeps the style the merge is drawn
+/// with. A merged range is something Excel is particular about, and the cell
+/// it is anchored at now holds a value it did not.
+#[test]
+#[ignore = "drives Excel"]
+fn a_write_through_a_name_into_a_merged_anchor_opens_clean() {
+    let (_workspace, path) = copy("oracle-merged", "feature.xlsx");
+    verb::set(
+        &path,
+        "MergedInput",
+        WriteType::Text,
+        "hydrated",
+        None,
+        false,
+    )
+    .expect("a write through a name must land");
+    assert!(
+        part_text(&path, SHEET1)
+            .contains(r#"<c r="B2" s="4" t="inlineStr"><is><t>hydrated</t></is></c>"#),
+        "the write must have landed in the anchor with its style kept"
+    );
+
+    assert_verdict(&path, Verdict::Clean, "a name resolving to a merged anchor");
+}
+
+/// The one invocation the wrapper makes in anger: several cell writes, a
+/// property and the flag, landing in one rebuild. Each of them is a case of
+/// its own above; what is new is that Excel opens a package where all of them
+/// happened at once, across three parts.
+#[test]
+#[ignore = "drives Excel"]
+fn a_mixed_batch_opens_clean() {
+    let (_workspace, path) = copy("oracle-batch", "feature.xlsx");
+    verb::batch(
+        &path,
+        vec![
+            verb::writing("Inputs!A1", WriteType::Number, "100"),
+            verb::writing("Inputs!B1", WriteType::Text, "put in"),
+            verb::writing("Inputs!C6", WriteType::Date, "2026-09-11"),
+            verb::clearing("Inputs!A2"),
+            verb::stamping("Run.At", WriteType::Date, "2026-09-13"),
+            verb::calculating(true),
+        ],
+        None,
+        false,
+    )
+    .expect("a mixed batch must land");
+    let written = part_text(&path, SHEET1);
+    assert!(written.contains(r#"<c r="A1"><v>100</v></c>"#), "{written}");
+    assert!(written.contains(r#"<c r="B1" t="inlineStr">"#), "{written}");
+    assert!(written.contains(r#"<row r="6">"#), "{written}");
+    assert!(written.contains(r#"<c r="A2"/>"#), "{written}");
+    assert!(
+        part_text(&path, "xl/workbook.xml").contains(r#"fullCalcOnLoad="1""#),
+        "the flag must have been set"
+    );
+
+    assert_verdict(&path, Verdict::Clean, "a mixed batch in one rebuild");
+}
+
 /// Every output of the byte-preservation cases, put in front of Excel: the
 /// fixed operation set of `support::corpus`, over the three fixtures. What
 /// those suites assert is that nothing outside the target moved; what this
@@ -448,6 +555,17 @@ fn every_output_of_the_fixed_operation_set_over_the_fixtures_opens_clean() {
     for name in FIXTURES {
         opens_clean_after_the_fixed_set(&fixture(name));
     }
+}
+
+/// What a case of this suite does about there being no corpus, said apart
+/// from Excel so that it can be held to without one.
+///
+/// It is a skip, not a failure: a machine with no corpus has not failed. But
+/// the case passes either way, so a green run is not evidence the corpus was
+/// opened, and the count it prints under `--nocapture` is.
+#[test]
+fn no_corpus_is_a_skip_and_the_run_says_which_it_was() {
+    assert_eq!(corpus::named(None), None, "unset is no corpus to open");
 }
 
 /// The same, over the real templates, which is the pair of cases the spec
@@ -461,20 +579,29 @@ fn every_output_of_the_fixed_operation_set_over_the_corpus_opens_clean() {
         return;
     };
 
+    let mut opened = 0;
     for package in &packages {
-        opens_clean_after_the_fixed_set(package);
+        opened += opens_clean_after_the_fixed_set(package);
     }
+    // Said out loud, because this case passes by skipping when there is no
+    // corpus, and a green run says nothing about which of the two happened.
+    // `--nocapture` is what shows it.
+    eprintln!(
+        "the corpus: {opened} output(s) of {} package(s) opened clean",
+        packages.len()
+    );
 }
 
 /// Put one package through the fixed set, a case at a time, and ask Excel
 /// about each result. What the case did to the package is asserted by the
 /// byte-preservation suite over the same set; what is asked here is only
 /// whether Excel opens it.
-fn opens_clean_after_the_fixed_set(package: &Path) {
-    for case in corpus::cases(package) {
+fn opens_clean_after_the_fixed_set(package: &Path) -> usize {
+    let cases = corpus::cases(package);
+    for case in &cases {
         let workspace = Workspace::new("oracle-set");
 
-        let (copy, _) = corpus::applied(&workspace, package, &case);
+        let (copy, _) = corpus::applied(&workspace, package, case);
 
         assert_verdict(
             &copy,
@@ -482,6 +609,7 @@ fn opens_clean_after_the_fixed_set(package: &Path) {
             &format!("{}: {}", package.display(), case.label),
         );
     }
+    cases.len()
 }
 
 /// The skip is a behaviour, not an accident, so it is asserted rather than

@@ -1,0 +1,117 @@
+# The only workflow that builds for more than one platform, and the only one
+# that runs on a tag. Actions minutes on this private repository are limited
+# and a macOS runner spends them ten times over, so nothing here runs on a push
+# to a branch, on a pull request, or on a schedule: `test.yml` is what guards
+# those, and this runs when a version is being cut and at no other time.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # One target failing should not hide what the other two would have said.
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            archive: zip
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            archive: tar.gz
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # A tag that disagrees with the manifest would publish a release whose
+      # binaries report a different version from their own archive names, so
+      # it is caught before anything is built.
+      - name: The tag and the manifest must agree
+        shell: bash
+        run: |
+          set -euo pipefail
+          tagged="${GITHUB_REF_NAME#v}"
+          manifest="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          if [ "$tagged" != "$manifest" ]; then
+            echo "tag ${GITHUB_REF_NAME} says $tagged, Cargo.toml says $manifest" >&2
+            exit 1
+          fi
+
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # The binary and the skill file, together: a release the agent cannot
+      # read is half a release.
+      - name: Pack the binary and the skill file
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="xlsplice-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p "staging/$name"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            cp "target/${{ matrix.target }}/release/xlsplice.exe" "staging/$name/"
+          else
+            cp "target/${{ matrix.target }}/release/xlsplice" "staging/$name/"
+          fi
+          cp SKILL.md LICENSE "staging/$name/"
+          cd staging
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            7z a "../$name.zip" "$name"
+          else
+            tar --create --gzip --file "../$name.tar.gz" "$name"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xlsplice-${{ matrix.target }}
+          path: xlsplice-*.tar.gz
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xlsplice-${{ matrix.target }}-zip
+          path: xlsplice-*.zip
+          if-no-files-found: ignore
+
+  publish:
+    name: publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      # One job publishes, rather than three racing to create the same
+      # release.
+      - uses: actions/download-artifact@v4
+        with:
+          path: archives
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ls -l archives
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            archives/*

@@ -544,6 +544,28 @@ pub mod verb {
         answer::cells(&cells::read(&mut package, &workbook, &targets)?)
     }
 
+    /// A batch of more than one operation, run the way a writing verb runs
+    /// one. The `apply` verb that will carry such a batch from the command
+    /// line is #8's; this is the library call it will make.
+    pub fn batch(
+        path: &Path,
+        operations: Vec<Operation>,
+        out: Option<PathBuf>,
+        dry_run: bool,
+    ) -> Result<Answer> {
+        let batch = Batch { operations };
+        answer::written(&batch::run(path, &batch, &Destination::from(out), dry_run)?)
+    }
+
+    /// One `set` operation, for a batch built by [`batch`].
+    pub fn writing(target: &str, write_type: WriteType, value: &str) -> Operation {
+        Operation::Set {
+            target: target.to_owned(),
+            write_type,
+            value: value.to_owned(),
+        }
+    }
+
     /// `xlsplice set FILE TARGET VALUE --type TYPE [--out PATH] [--dry-run]`.
     pub fn set(
         path: &Path,

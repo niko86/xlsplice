@@ -80,18 +80,37 @@ impl Operation {
         }
     }
 
-    /// The edits this operation wants made, named by the part each lands in,
-    /// and the cell it resolved to for the report.
+    /// The cell this operation names, resolved, or `None` where it names no
+    /// cell.
     ///
+    /// Answering reads nothing: a target is resolved against the workbook
+    /// model and the relationships, which are in hand the moment the package
+    /// is opened. So the batch can hold its operations up against each other
+    /// before a single part comes out of the container, which is what lets
+    /// two operations on one cell be refused rather than spliced.
+    pub fn at(&self, opened: &Opened) -> Result<Option<Resolution>> {
+        match self {
+            Operation::Set { target, .. } => opened.resolve(target).map(Some),
+        }
+    }
+
+    /// The edits this operation wants made, named by the part each lands in.
+    ///
+    /// `at` is what the operation answered to [`Operation::at`], handed back
+    /// so that the cell the batch checked is the cell the operation acts on.
     /// The operation reads whatever parts it needs out of `opened`, which
     /// memoises them, and answers without changing anything: a batch is
     /// applied only once every operation has answered. `index` is the place
     /// the operation has in the batch, which is what a failure names it by.
-    pub fn edits(&self, index: usize, opened: &mut Opened) -> Result<Asked> {
-        match self {
-            Operation::Set { target, .. } => {
+    pub fn edits(
+        &self,
+        index: usize,
+        at: Option<Resolution>,
+        opened: &mut Opened,
+    ) -> Result<Asked> {
+        match (self, at) {
+            (Operation::Set { .. }, Some(at)) => {
                 let written = self.written(index)?;
-                let at = opened.resolve(target)?;
                 let xml = opened.text(&at.part)?;
                 let splices = splices_of(xml, &at, &written)?;
                 Ok(Asked {
@@ -99,6 +118,10 @@ impl Operation {
                     at: Some(at),
                 })
             }
+            (Operation::Set { target, .. }, None) => Err(Error::internal(format!(
+                "the set of {target} was handed no cell to write to, and every \
+                 set names one"
+            ))),
         }
     }
 
@@ -456,14 +479,26 @@ pub struct Report {
 pub fn run(path: &Path, batch: &Batch, destination: &Destination, dry_run: bool) -> Result<Report> {
     let mut opened = Opened::open(path)?;
 
-    // Every operation is asked what it wants before anything is done to a
-    // part, so a batch that fails on its last operation has changed nothing
+    // Where every operation lands is settled before any part is read, both
+    // because the operations are held up against each other there and because
+    // a batch naming a sheet the package does not have is wrong whatever is
+    // in its parts.
+    let land_at: Vec<Option<Resolution>> = batch
+        .operations
+        .iter()
+        .map(|operation| operation.at(&opened))
+        .collect::<Result<_>>()?;
+    refuse_a_repeated_cell(&land_at)?;
+
+    // Every operation is then asked what it wants before anything is done to
+    // a part, so a batch that fails on its last operation has changed nothing
     // for its first.
     let asked: Vec<Asked> = batch
         .operations
         .iter()
+        .zip(land_at)
         .enumerate()
-        .map(|(index, operation)| operation.edits(index, &mut opened))
+        .map(|(index, (operation, at))| operation.edits(index, at, &mut opened))
         .collect::<Result<_>>()?;
 
     let applied = apply(&mut opened, &asked)?;
@@ -479,6 +514,40 @@ pub fn run(path: &Path, batch: &Batch, destination: &Destination, dry_run: bool)
         output,
         dry_run,
     })
+}
+
+/// Refuse a batch that names one cell twice.
+///
+/// A batch is a set of edits over the package as it was read, not a sequence
+/// over a document that changes under it: every operation computes its edits
+/// against the same text, and ADR-0002's one-parse rule is what makes that
+/// so. Two operations on one cell are therefore not a first write and then a
+/// second, but two answers to one question, and xlsplice cannot tell a
+/// deliberate overwrite from a mis-addressed one because a `set` asserts
+/// nothing about what it expects to find. So the batch is refused whole,
+/// before a part is read, and the message names both operations and the cell
+/// they agree on (ADR-0004).
+///
+/// The two are compared on what they resolved to rather than on what they
+/// said, so a batch naming one cell by its address and again by a defined
+/// name that anchors there is the same contradiction and is refused the same
+/// way.
+fn refuse_a_repeated_cell(land_at: &[Option<Resolution>]) -> Result<()> {
+    for (later, one) in land_at.iter().enumerate() {
+        let Some(one) = one else { continue };
+        for (earlier, other) in land_at[..later].iter().enumerate() {
+            let Some(other) = other else { continue };
+            if other.part == one.part && other.address == one.address {
+                return Err(Error::usage(format!(
+                    "the operations at index {earlier} and {later} both name cell {}; \
+                     a batch is applied to the package as it was read, so one cell \
+                     cannot be asked two things at once. Give one operation per cell.",
+                    one.address
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// One result per operation, in the order the operations were given.

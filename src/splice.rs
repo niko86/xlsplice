@@ -53,6 +53,15 @@ impl Splice {
 /// applied from the end backwards. Where two start at the same byte, the
 /// shorter goes first, so that an insertion at the front of a replaced range
 /// lands before it rather than inside it.
+///
+/// The overlap guard is an assertion about byte ranges, not a check on what
+/// the operations behind them named. Two operations on one cell are refused
+/// by the batch, on the cell they resolved to and before a part is read
+/// (ADR-0004); by the time splices reach here, whatever they overlap over is
+/// a fault in how they were computed. Ranges can also fail to overlap while
+/// still being two answers to one question — two empty ranges at one byte,
+/// which is what a cell written `<c r="A1"></c>` gives — so this guard has
+/// never been able to stand in for that check.
 pub fn apply(source: &str, splices: &[Splice]) -> Result<String> {
     let mut ordered: Vec<&Splice> = splices.iter().collect();
     ordered.sort_by_key(|splice| (splice.range.start, splice.range.end));

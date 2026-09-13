@@ -7,10 +7,16 @@ use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
 use clap::{Parser, Subcommand};
 
 use xlsplice::batch::{Destination, WriteType};
+use xlsplice::help::Topic;
 
 /// Surgical edits to Excel packages.
 #[derive(Debug, Parser)]
+// clap offers a `help` subcommand of its own that prints another subcommand's
+// help. This one takes a topic instead, because what an agent reading the tool
+// for the first time is missing is not a verb's flags — `--help` has those —
+// but what everything that comes back means.
 #[command(name = "xlsplice", version, about, long_about = None)]
+#[command(disable_help_subcommand = true)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -83,6 +89,7 @@ pub struct Formulas {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// List the package's sheets with their state, in workbook order.
+    #[command(after_help = "Example:\n  xlsplice sheets book.xlsx")]
     Sheets {
         /// The package to read.
         #[arg(value_name = "FILE")]
@@ -91,6 +98,7 @@ pub enum Command {
 
     /// List the package's defined names with their scope, what each refers
     /// to, and the cell each resolves to.
+    #[command(after_help = "Example:\n  xlsplice names book.xlsx")]
     Names {
         /// The package to read.
         #[arg(value_name = "FILE")]
@@ -98,6 +106,7 @@ pub enum Command {
     },
 
     /// Read one or more cells, each named by an address or a defined name.
+    #[command(after_help = "Example:\n  xlsplice get book.xlsx Inputs!A1 MergedInput")]
     Get {
         /// The package to read.
         #[arg(value_name = "FILE")]
@@ -114,6 +123,7 @@ pub enum Command {
     ///
     /// The cell must already be there, and must not hold a formula. Every
     /// part of the package outside the cell is copied byte for byte.
+    #[command(after_help = "Example:\n  xlsplice set book.xlsx Inputs!A1 42 --type number")]
     Set {
         /// The package to write. Written in place unless `--out` is given.
         #[arg(value_name = "FILE")]
@@ -146,6 +156,7 @@ pub enum Command {
     /// The cell keeps its element and its style and loses its value, its type
     /// and any inline string, which is how Excel leaves a cell whose contents
     /// were deleted. A cell holding a formula is refused.
+    #[command(after_help = "Example:\n  xlsplice clear book.xlsx Inputs!A1")]
     Clear {
         /// The package to write. Written in place unless `--out` is given.
         #[arg(value_name = "FILE")]
@@ -171,6 +182,7 @@ pub enum Command {
     /// `--full-calc-on-load` it sets the flag, so that Excel works the
     /// workbook's values out again on the way in rather than trusting what
     /// the cache says.
+    #[command(after_help = "Example:\n  xlsplice calc book.xlsx --full-calc-on-load")]
     Calc {
         /// The package. Read unless the flag is given; then written in place
         /// unless `--out` is.
@@ -191,6 +203,7 @@ pub enum Command {
     /// alongside the author and the title Excel fills in. A property is
     /// whatever a caller wants to stamp on a package: which template it came
     /// from, when it was filled in, which run produced it.
+    #[command(after_help = "Example:\n  xlsplice props get book.xlsx")]
     Props {
         #[command(subcommand)]
         action: PropsAction,
@@ -202,6 +215,7 @@ pub enum Command {
     /// a byte is written and applied whole afterwards, so a failure anywhere
     /// leaves the package as it was, and the failure names the operation it
     /// came from by its place in the array.
+    #[command(after_help = "Example:\n  xlsplice apply book.xlsx batch.json --json")]
     Apply {
         /// The package to write. Written in place unless `--out` is given.
         #[arg(value_name = "FILE")]
@@ -222,6 +236,7 @@ pub enum Command {
     /// differently, or whether only one of them holds it at all. Part-level
     /// only: nothing here says what inside a part moved. Neither package is
     /// written to.
+    #[command(after_help = "Example:\n  xlsplice diff book.xlsx other.xlsx --exit-code")]
     Diff {
         /// The package to compare from.
         #[arg(value_name = "A")]
@@ -238,7 +253,17 @@ pub enum Command {
         exit_code: bool,
     },
 
+    /// Explain part of the contract at length: what the JSON envelope
+    /// carries, or what the exit codes mean.
+    #[command(after_help = "Example:\n  xlsplice help json")]
+    Help {
+        /// What to explain.
+        #[arg(value_name = "TOPIC", value_parser = topic())]
+        topic: Topic,
+    },
+
     /// Print the version of xlsplice.
+    #[command(after_help = "Example:\n  xlsplice version --json")]
     Version,
 
     /// Crash, so the contract tests can reach the panic hook. Every other
@@ -260,6 +285,7 @@ pub enum Command {
 pub enum PropsAction {
     /// List every custom document property with its type and its value, in
     /// the order the package holds them.
+    #[command(after_help = "Example:\n  xlsplice props get book.xlsx")]
     Get {
         /// The package to read.
         #[arg(value_name = "FILE")]
@@ -272,6 +298,9 @@ pub enum PropsAction {
     /// had; one that is not there is added. A package holding no custom
     /// properties at all gets the part they live in, declared as Excel
     /// declares it.
+    #[command(
+        after_help = "Example:\n  xlsplice props set book.xlsx Stamp.Text hydrated --type text"
+    )]
     Set {
         /// The package to write. Written in place unless `--out` is given.
         #[arg(value_name = "FILE")]
@@ -297,6 +326,7 @@ pub enum PropsAction {
 
     /// Take a custom document property out. A property that is not there is
     /// not found.
+    #[command(after_help = "Example:\n  xlsplice props unset book.xlsx Stamp.Flag")]
     Unset {
         /// The package to write. Written in place unless `--out` is given.
         #[arg(value_name = "FILE")]
@@ -309,6 +339,16 @@ pub enum PropsAction {
         #[command(flatten)]
         landing: Landing,
     },
+}
+
+/// What `help` accepts: the topics the library carries, under the names and
+/// descriptions it gives them, so the help lists them without this module
+/// keeping its own copy of them.
+fn topic() -> impl TypedValueParser<Value = Topic> {
+    PossibleValuesParser::new(
+        Topic::ALL.map(|topic| PossibleValue::new(topic.as_str()).help(topic.description())),
+    )
+    .map(|name| Topic::named(&name).expect("clap offers only the names it was given"))
 }
 
 /// What `--type` accepts: the write types the library offers, under the names
@@ -340,6 +380,7 @@ impl Command {
             },
             Command::Apply { .. } => "apply",
             Command::Diff { .. } => "diff",
+            Command::Help { .. } => "help",
             Command::Version => "version",
             #[cfg(debug_assertions)]
             Command::Selftest { .. } => "selftest",

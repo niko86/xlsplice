@@ -31,6 +31,7 @@ pub mod declared;
 pub mod diff;
 pub mod envelope;
 pub mod error;
+pub mod help;
 pub mod package;
 pub mod properties;
 pub mod reference;

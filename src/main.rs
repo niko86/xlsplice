@@ -138,6 +138,7 @@ fn run(command: Command, out: &Out) -> ExitCode {
             batch,
             landing,
         } => write::apply(&file, &batch, &landing, out),
+        Command::Help { topic } => answer::topic(topic),
         Command::Version => answer::version(),
         #[cfg(debug_assertions)]
         Command::Selftest { .. } => panic!("selftest was asked to panic"),

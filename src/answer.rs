@@ -22,6 +22,7 @@ use crate::batch::{OperationReport, Report};
 use crate::cells::{CellReport, Value};
 use crate::diff::{Difference, PartStatus};
 use crate::error::{Error, Result};
+use crate::help::Topic;
 use crate::properties::{self, Property};
 use crate::workbook::{DefinedName, Resolved, Scope, Sheet, Workbook};
 use crate::worksheet::Formula;
@@ -686,6 +687,28 @@ pub fn difference(found: &Difference) -> Result<Answer> {
         },
         &DifferenceEntry::HEADERS,
         rows,
+    )
+}
+
+/// The payload of `help --json`.
+#[derive(Serialize)]
+struct HelpTopic {
+    /// The topic asked for, as it is asked for.
+    topic: &'static str,
+    /// The whole of what it says, newlines and all.
+    text: String,
+}
+
+/// What `help` answers: the topic's text, which is the same text in both
+/// shapes because a topic is prose rather than a list of things.
+pub fn topic(topic: Topic) -> Result<Answer> {
+    let text = topic.text();
+    Answer::line(
+        HelpTopic {
+            topic: topic.as_str(),
+            text: text.clone(),
+        },
+        text.trim_end(),
     )
 }
 

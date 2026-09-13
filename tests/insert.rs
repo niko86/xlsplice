@@ -349,32 +349,119 @@ fn two_cells_put_into_one_row_land_in_column_order() {
     );
 }
 
-/// Two cells of a row the sheet does not hold would each put the row in, and
-/// a sheet cannot hold one row twice; over one snapshot neither operation can
-/// see the other's, so the batch is refused rather than the sheet broken.
+/// Two cells of a row the sheet does not hold go into one row, in column
+/// order whatever order the batch named them in, because that is the order a
+/// row has to read in.
 #[test]
-fn two_cells_of_one_row_the_sheet_does_not_hold_are_refused() {
-    let (_workspace, package) = copy("row-twice", "feature.xlsx");
+fn two_cells_of_one_row_the_sheet_does_not_hold_go_into_the_one_row() {
+    let (_workspace, package) = copy("row-once", "feature.xlsx");
 
     let out = under_json(verb::batch(
         &package,
         vec![
+            verb::writing("Inputs!C6", WriteType::Number, "3"),
             verb::writing("Inputs!A6", WriteType::Number, "1"),
-            verb::writing("Inputs!B6", WriteType::Number, "2"),
         ],
         None,
         false,
     ));
 
-    assert_eq!(out.exit, 2, "{}", out.stdout);
+    assert_eq!(out.exit, 0, "{}", out.stdout);
     let body = envelope(&out);
-    assert_eq!(body["error"]["code"], json!("usage"));
-    let message = body["error"]["message"]
-        .as_str()
-        .expect("a failed envelope carries a message");
-    assert!(message.contains("index 0 and 1"), "{message}");
-    assert!(message.contains("row 6"), "{message}");
-    assert_same_bytes(&fixture("feature.xlsx"), &package);
+    assert_eq!(body["operations"][0]["changed"], json!(true));
+    assert_eq!(body["operations"][1]["changed"], json!(true));
+    assert_spliced(
+        &part_text(&fixture("feature.xlsx"), SHEET1),
+        &part_text(&package, SHEET1),
+        r#"<row r="7""#,
+        concat!(
+            r#"<row r="6"><c r="A6"><v>1</v></c><c r="C6"><v>3</v></c></row>"#,
+            r#"<row r="7""#
+        ),
+    );
+    assert_only_these_differ(&fixture("feature.xlsx"), &package, &[SHEET1]);
+}
+
+/// Each cell takes the style it would have taken alone: a row being put in
+/// has no custom format, so only the columns have anything to say.
+#[test]
+fn each_cell_of_a_row_being_put_in_takes_its_own_style() {
+    let (_workspace, package) = copy("row-styles", "feature.xlsx");
+
+    let out = under_json(verb::batch(
+        &package,
+        vec![
+            verb::writing("Inputs!G9", WriteType::Number, "7"),
+            verb::writing("Inputs!A9", WriteType::Number, "1"),
+        ],
+        None,
+        false,
+    ));
+
+    assert_eq!(out.exit, 0, "{}", out.stdout);
+    assert!(
+        part_text(&package, SHEET1)
+            .contains(r#"<row r="9"><c r="A9"><v>1</v></c><c r="G9" s="2"><v>7</v></c></row>"#),
+        "{}",
+        part_text(&package, SHEET1)
+    );
+}
+
+/// Cells of several rows the sheet does not hold put each row in once, in row
+/// order.
+#[test]
+fn cells_of_several_rows_the_sheet_does_not_hold_put_each_row_in_once() {
+    let (_workspace, package) = copy("rows-once", "feature.xlsx");
+
+    let out = under_json(verb::batch(
+        &package,
+        vec![
+            verb::writing("Inputs!B9", WriteType::Number, "9"),
+            verb::writing("Inputs!A8", WriteType::Number, "8"),
+            verb::writing("Inputs!A9", WriteType::Number, "7"),
+        ],
+        None,
+        false,
+    ));
+
+    assert_eq!(out.exit, 0, "{}", out.stdout);
+    assert_spliced(
+        &part_text(&fixture("feature.xlsx"), SHEET1),
+        &part_text(&package, SHEET1),
+        r#"<c r="G7" s="3"/></row></sheetData>"#,
+        concat!(
+            r#"<c r="G7" s="3"/></row>"#,
+            r#"<row r="8"><c r="A8"><v>8</v></c></row>"#,
+            r#"<row r="9"><c r="A9"><v>7</v></c><c r="B9"><v>9</v></c></row>"#,
+            r#"</sheetData>"#
+        ),
+    );
+}
+
+/// A cell put into a row that is there and a cell put into a row that is not
+/// both land, in the one part.
+#[test]
+fn a_new_row_and_a_cell_in_an_existing_row_land_together() {
+    let (_workspace, package) = copy("mixed-rows", "feature.xlsx");
+
+    let out = under_json(verb::batch(
+        &package,
+        vec![
+            verb::writing("Inputs!B1", WriteType::Number, "1"),
+            verb::writing("Inputs!A6", WriteType::Number, "6"),
+        ],
+        None,
+        false,
+    ));
+
+    assert_eq!(out.exit, 0, "{}", out.stdout);
+    let written = part_text(&package, SHEET1);
+    assert!(written.contains(r#"<c r="B1"><v>1</v></c>"#), "{written}");
+    assert!(
+        written.contains(r#"<row r="6"><c r="A6"><v>6</v></c></row>"#),
+        "{written}"
+    );
+    assert_only_these_differ(&fixture("feature.xlsx"), &package, &[SHEET1]);
 }
 
 /// Two cells of two different rows the sheet does not hold are two rows, and

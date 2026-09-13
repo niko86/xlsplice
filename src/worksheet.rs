@@ -373,33 +373,49 @@ pub fn cell_inserted(
     Ok(splice.ordered(at.column()))
 }
 
-/// The splice that puts a row holding one cell for `at` into `data`, before
-/// the first row of a greater number and after every row of a lesser one.
+/// A cell to go into a row that is being put into the sheet.
 ///
-/// The row carries its number and nothing else. `spans` is a hint about which
-/// columns a row holds, and Excel neither needs it nor minds a row without
-/// one; the rows already there keep the spans they have, because a splice
-/// changes what it was told to and nothing else.
+/// A cell going into a row that is already there is spliced straight in by
+/// [`cell_inserted`]; this is what a cell answers with instead when the row
+/// itself has to be put in, because how many cells the new row holds is not
+/// something one cell can know.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewCell {
+    /// Where it goes.
+    pub at: Cell,
+    /// The style Excel would show it under, or none.
+    pub style: Option<u32>,
+    /// What goes in it.
+    pub written: Written,
+}
+
+/// The splice that puts a row numbered `row` and holding `cells` into `data`,
+/// before the first row of a greater number and after every row of a lesser
+/// one.
+///
+/// The cells go in in column order whatever order they are given in, which is
+/// the order a row has to read in. The row carries its number and nothing
+/// else: `spans` is a hint about which columns a row holds, and Excel neither
+/// needs it nor minds a row without one; the rows already there keep the spans
+/// they have, because a splice changes what it was told to and nothing else.
 ///
 /// `source` must be the text the sheet data's document was parsed from.
-pub fn row_inserted(
-    data: Node,
-    source: &str,
-    at: Cell,
-    style: Option<u32>,
-    written: &Written,
-) -> Result<Splice> {
+pub fn row_inserted(data: Node, source: &str, row: u32, cells: &[NewCell]) -> Result<Splice> {
     let prefix = Element::of(data, source)?.prefix();
-    let element = format!(
-        r#"<{prefix}row r="{}">{}</{prefix}row>"#,
-        at.row(),
-        cell_element(at, style, written, prefix)
-    );
-    let splice = match first_row_after(data, at.row())? {
+    let mut ordered: Vec<&NewCell> = cells.iter().collect();
+    ordered.sort_by_key(|cell| cell.at.column());
+    let mut written = String::new();
+    for cell in ordered {
+        written.push_str(&cell_element(cell.at, cell.style, &cell.written, prefix));
+    }
+    let element = format!(r#"<{prefix}row r="{row}">{written}</{prefix}row>"#);
+    let splice = match first_row_after(data, row)? {
         Some(next) => inserted_before(next, source, &element),
         None => appended(data, source, &element)?,
     };
-    Ok(splice.ordered(at.row()))
+    // Two rows put into one sheet go in at the same byte where both follow
+    // the same row, so they order themselves by number.
+    Ok(splice.ordered(row))
 }
 
 /// The first cell of `row` in a column greater than `wanted`'s, which is the
@@ -1033,9 +1049,17 @@ mod tests {
             Located::InRow(row) => {
                 cell_inserted(row, xml, cell, style, written).expect("the row is spliceable")
             }
-            Located::InSheetData(data) => {
-                row_inserted(data, xml, cell, style, written).expect("the sheet data is spliceable")
-            }
+            Located::InSheetData(data) => row_inserted(
+                data,
+                xml,
+                cell.row(),
+                &[NewCell {
+                    at: cell,
+                    style,
+                    written: written.clone(),
+                }],
+            )
+            .expect("the sheet data is spliceable"),
             other => panic!("{a1} is {other:?}, not an absence"),
         };
         crate::splice::apply(xml, &[splice]).expect("the splice applies")

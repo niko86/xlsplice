@@ -66,16 +66,19 @@ XX `internal_error`.
   however the batch was written, so they order themselves by column. This is
   the same gap the overlap guard was never able to cover, answered rather than
   guarded against.
-- Two operations writing cells of a row the sheet does not hold would each put
-  the row in, and a sheet holding one row twice is one Excel offers to repair.
-  Ordering cannot fix that — the row's own tags would still be written twice —
-  so it is refused with exit 2 naming both operations and the row, and #27 is
-  where one row holding several cells is settled.
+- Ordering does not stretch to a row that is being put in: two operations
+  writing cells of a row the sheet does not hold would each write the row's own
+  tags, and a sheet holding one row twice is one Excel offers to repair. So
+  that one is not ordered but answered, by the batch, in the paragraph below
+  (#27). It was refused with exit 2 in between, which is what a gap in this
+  rule should look like while it is open.
 - A question with no per-operation answer is answered once, for the part, after
   every operation's edits are merged and before anything is written: whether
-  an emptied calc chain still belongs in the package (#10), and how many
-  properties are being added and which identifiers they take (#12). Both are
-  questions one snapshot makes unanswerable per operation — two operations each
-  removing a chain entry cannot see the other's, and two adding a property
-  would both add it in the same place and both call it the same thing — so the
-  batch, which can see all of them, is where they belong.
+  an emptied calc chain still belongs in the package (#10), how many properties
+  are being added and which identifiers they take (#12), and which cells a row
+  being put into a sheet holds (#27). All three are questions one snapshot
+  makes unanswerable per operation — two operations each removing a chain entry
+  cannot see the other's, two adding a property would both add it in the same
+  place and both call it the same thing, and two writing cells of one absent
+  row would each put the row in — so the batch, which can see all of them, is
+  where they belong.

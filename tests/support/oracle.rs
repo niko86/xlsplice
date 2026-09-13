@@ -19,7 +19,9 @@
 //! screen away from whoever is using the machine. It also needs Accessibility
 //! permission for whatever runs the tests, because the verdict is read off the
 //! screen: without it System Events reports no windows for any application at
-//! all and every package looks like a timeout. Setting `XLSPLICE_ORACLE_TRACE`
+//! all and every package looks like a timeout. So the permission is asked
+//! about before Excel is launched, and its absence is a skip that says what to
+//! grant rather than a suite of timeouts. Setting `XLSPLICE_ORACLE_TRACE`
 //! prints what Excel was seen to do, which is where to start when one does.
 //!
 //! ## Why Excel is driven the way it is
@@ -103,6 +105,9 @@ pub fn opened_by(excel: &Path, package: &Path) -> Verdict {
     if !excel.exists() {
         return Verdict::Unavailable(format!("Excel is not installed: no {}", excel.display()));
     }
+    if let Some(refusal) = reads_the_screen() {
+        return Verdict::Unavailable(refusal);
+    }
     if let Some(refusal) = readied() {
         return Verdict::Unavailable(refusal);
     }
@@ -152,6 +157,35 @@ fn required() -> bool {
 /// say what each setting means without setting anything.
 pub fn requires(set_to: Option<&str>) -> bool {
     set_to == Some("require")
+}
+
+/// Whether System Events will say what is on the screen, and why not when it
+/// will not.
+///
+/// The verdict is read off the screen, so the backend needs Accessibility
+/// permission for whatever runs the tests. Without it System Events does not
+/// refuse the question so much as answer nothing to it: no windows, for any
+/// application, with no error — so Excel opens the package, draws its window,
+/// and the watcher sits there for ninety seconds seeing nothing and calls it a
+/// timeout. Every package then looks broken, and nothing says the permission
+/// is what is missing.
+///
+/// Asked in the form that errors rather than the form that quietly answers
+/// none, it says so, and the run says so in one second instead of ninety.
+/// Only that refusal is read as one: any other trouble with System Events is
+/// left to the watcher, which has a better view of it.
+fn reads_the_screen() -> Option<String> {
+    let asked = run(
+        r#"tell application "System Events" to return (count of windows of every process whose visible is true) as text"#,
+    );
+    let Err(why) = asked else { return None };
+    (why.contains("assistive access") || why.contains("-25211")).then(|| {
+        format!(
+            "whatever runs the tests has no Accessibility permission, and the verdict \
+             is read off the screen. Grant it in System Settings, Privacy & \
+             Security, Accessibility: {why}"
+        )
+    })
 }
 
 /// Get Excel into the state the oracle needs, or say why it cannot be had.

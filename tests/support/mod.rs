@@ -19,6 +19,9 @@
 
 #![allow(dead_code)]
 
+/// The corpus, and the fixed operation set every package in it is put
+/// through.
+pub mod corpus;
 /// A real Excel, for the one question the tool must not answer about itself.
 pub mod oracle;
 
@@ -141,12 +144,65 @@ impl Workspace {
         )
     }
 
+    /// A package of one sheet holding `cells` and a calc chain holding
+    /// `entries`, with the relationship that reaches the chain and its
+    /// content-type override.
+    ///
+    /// No fixture carries a chain short enough to empty, so the packages that
+    /// say what happens when one does are written out here: what a test
+    /// asserts goes is what the test put there.
+    ///
+    /// Its declarations name the parts it holds and no others, because this
+    /// package is also put in front of a real Excel, and a package naming a
+    /// part it does not hold is what Excel offers to repair.
+    pub fn chained_package(&self, name: &str, cells: &str, entries: &str) -> PathBuf {
+        const NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+        let sheet = format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="{NS}"><sheetData><row r="1" spans="1:2">{cells}</row></sheetData></worksheet>"#
+        );
+        let chain = format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<calcChain xmlns="{NS}">{entries}</calcChain>"#
+        );
+        self.zip(
+            name,
+            &[
+                (CONTENT_TYPES_PART, CHAINED_CONTENT_TYPES),
+                (ROOT_RELS_PART, ROOT_RELS),
+                (
+                    WORKBOOK_PART,
+                    &workbook_xml(
+                        r#"<sheets><sheet name="Inputs" sheetId="1" r:id="rId1"/></sheets>"#,
+                    ),
+                ),
+                (WORKBOOK_RELS_PART, CHAINED_WORKBOOK_RELS),
+                (SHEET1_PART, &sheet),
+                (CALC_CHAIN_PART, &chain),
+            ],
+        )
+    }
+
     /// A writable copy of the committed fixture called `name`, so that a test
     /// may write to it without touching the baseline its bytes are.
     pub fn copy_of(&self, name: &str) -> PathBuf {
-        let path = self.dir.join(name);
-        fs::copy(fixture(name), &path).expect("a fixture must be copyable into a test");
-        path
+        self.copy_from(&fixture(name))
+    }
+
+    /// A writable copy of the package at `path`, under its own name.
+    ///
+    /// What a corpus suite writes to: a corpus package is vendor material
+    /// that is read and never written, and a workspace is under the
+    /// temporary directory, so neither the corpus nor the repository is
+    /// anywhere near what a case writes.
+    pub fn copy_from(&self, path: &Path) -> PathBuf {
+        let name = path
+            .file_name()
+            .unwrap_or_else(|| panic!("{} must name a file", path.display()));
+        let copy = self.dir.join(name);
+        fs::copy(path, &copy)
+            .unwrap_or_else(|err| panic!("{} must be copyable into a test: {err}", path.display()));
+        copy
     }
 
     /// The directory itself, for a test that needs to name a path in it.
@@ -347,6 +403,43 @@ pub fn assert_only_these_differ(before: &Path, after: &Path, expected: &[&str]) 
     assert!(comparison.order_kept, "the parts were reordered");
 }
 
+/// Assert that nothing outside `allowed` moved: every part that differs or
+/// was added is one of them, none was removed, the order was kept, and every
+/// other part is byte for byte what it was.
+///
+/// The loose half of [`assert_only_these_differ`], for a package whose parts
+/// are not known in advance: a corpus template is not a fixture whose bytes a
+/// test can spell out, so what is asserted of it is what the operation was
+/// allowed to touch rather than what it did touch. A part inside `allowed`
+/// need not have moved, because a write of the value already there moves
+/// nothing.
+pub fn assert_nothing_outside(before: &Path, after: &Path, allowed: &[String], what: &str) {
+    let comparison = compare(before, after);
+
+    for part in comparison.differs.iter().chain(comparison.added.iter()) {
+        assert!(
+            allowed.contains(part),
+            "{what}: {part} moved, and only {allowed:?} may"
+        );
+    }
+    assert_eq!(
+        comparison.removed,
+        Vec::<String>::new(),
+        "{what}: a part was removed"
+    );
+    assert!(comparison.order_kept, "{what}: the parts were reordered");
+
+    let untouched: Vec<String> = parts(before)
+        .into_iter()
+        .map(|part| part.path)
+        .filter(|path| !comparison.differs.contains(path))
+        .collect();
+    assert_eq!(
+        comparison.identical, untouched,
+        "{what}: a part outside the operation did not survive"
+    );
+}
+
 /// Assert that the two packages hold the same parts, in the same order, with
 /// the same bytes.
 pub fn assert_same_parts(before: &Path, after: &Path) {
@@ -402,6 +495,25 @@ pub const SHEET1_PART: &str = "xl/worksheets/sheet1.xml";
 pub const SHEET2_PART: &str = "xl/worksheets/sheet2.xml";
 pub const SHEET3_PART: &str = "xl/worksheets/sheet3.xml";
 pub const SHARED_STRINGS_PART: &str = "xl/sharedStrings.xml";
+pub const CALC_CHAIN_PART: &str = "xl/calcChain.xml";
+
+/// The content types of a [`Workspace::chained_package`]: the three parts it
+/// holds, and nothing that is not there.
+pub const CHAINED_CONTENT_TYPES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/calcChain.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.calcChain+xml"/>
+</Types>"#;
+
+/// What that package's workbook reaches: its one sheet, and the chain.
+pub const CHAINED_WORKBOOK_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/calcChain" Target="calcChain.xml"/>
+</Relationships>"#;
 
 pub const CONTENT_TYPES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">

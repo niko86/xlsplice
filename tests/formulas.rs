@@ -32,10 +32,11 @@ fn copy(label: &str) -> (Workspace, PathBuf) {
 }
 
 /// A package holding one formula, with a calc chain of one entry, the
-/// relationship that reaches it and its content-type override.
+/// relationship that reaches it and its content-type override. Built in
+/// `support`, because the oracle suite puts one in front of Excel as well.
 fn one_chained_formula(workspace: &Workspace) -> PathBuf {
-    chained(
-        workspace,
+    workspace.chained_package(
+        "chained.xlsx",
         r#"<c r="A1"><f>1+1</f><v>2</v></c>"#,
         r#"<c r="A1" i="1"/>"#,
     )
@@ -44,57 +45,10 @@ fn one_chained_formula(workspace: &Workspace) -> PathBuf {
 /// The same, with two formulas and two entries, so that emptying the chain
 /// takes two operations.
 fn two_chained_formulas(workspace: &Workspace) -> PathBuf {
-    chained(
-        workspace,
+    workspace.chained_package(
+        "chained.xlsx",
         r#"<c r="A1"><f>1+1</f><v>2</v></c><c r="B1"><f>2+2</f><v>4</v></c>"#,
         r#"<c r="A1" i="1"/><c r="B1" i="1"/>"#,
-    )
-}
-
-/// A package of one sheet and a calc chain, every part of it written out
-/// here: what the test asserts goes is what the test put there.
-fn chained(workspace: &Workspace, cells: &str, entries: &str) -> PathBuf {
-    const NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
-    let sheet = format!(
-        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="{NS}"><sheetData><row r="1" spans="1:2">{cells}</row></sheetData></worksheet>"#
-    );
-    let chain = format!(
-        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<calcChain xmlns="{NS}">{entries}</calcChain>"#
-    );
-    workspace.zip(
-        "chained.xlsx",
-        &[
-            (
-                support::CONTENT_TYPES_PART,
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-  <Override PartName="/xl/calcChain.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.calcChain+xml"/>
-</Types>"#,
-            ),
-            (support::ROOT_RELS_PART, support::ROOT_RELS),
-            (
-                support::WORKBOOK_PART,
-                &support::workbook_xml(
-                    r#"<sheets><sheet name="Inputs" sheetId="1" r:id="rId1"/></sheets>"#,
-                ),
-            ),
-            (
-                support::WORKBOOK_RELS_PART,
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/calcChain" Target="calcChain.xml"/>
-</Relationships>"#,
-            ),
-            (support::SHEET1_PART, &sheet),
-            ("xl/calcChain.xml", &chain),
-        ],
     )
 }
 

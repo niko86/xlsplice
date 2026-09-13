@@ -20,19 +20,52 @@
 //! On a machine with no Excel, or an operating system with no backend, they
 //! skip and say so. `XLSPLICE_ORACLE=require` turns a skip into a failure,
 //! for the machine where the oracle is meant to run.
+//!
+//! ## What is put in front of Excel
+//!
+//! The three fixtures Excel saved, which must open clean, and a package whose
+//! worksheet envelope has been put out of order, which must not — the pair
+//! that says a clean verdict means something.
+//!
+//! Then every shape the spec names: each write type over a cell that was
+//! there; a cell and a row that were not; a date serial in an inserted cell
+//! taking a date style from its column and, separately, from its row; a
+//! shared-string cell overwritten with inline text; a replaced formula with
+//! its chain entry removed; the chain part removed when it became empty; a
+//! created custom properties part; a created calculation element; and a
+//! macro-enabled package written into.
+//!
+//! Then the fixed operation set of [`support::corpus`] over every fixture,
+//! and over every corpus package where there is a corpus. That set is what
+//! the byte-preservation suite in `corpus.rs` puts a whole package through;
+//! the per-operation suites go further over the fixtures, and what they write
+//! reaches Excel through the named cases above rather than through this.
+//!
+//! Three of the shapes no fixture has, because Excel saved none like them: a
+//! row whose custom format is a date format, a workbook with no calculation
+//! element, and a chain short enough to empty. Each is built or derived by
+//! the case that needs it, and each such case asks Excel about the package it
+//! starts from as well as the one xlsplice wrote, so that a repair is never
+//! ambiguous about which of the two Excel objected to.
 
 mod support;
 
 use std::path::{Path, PathBuf};
 
+use support::corpus;
 use support::oracle::{Verdict, asked, decided, opened_by, requires};
-use support::{Workspace, part_text, verb};
+use support::{Workspace, fixture, part_text, verb};
 use xlsplice::batch::WriteType;
 
 /// The three fixtures, which Excel saved and so must open clean.
 const FIXTURES: [&str; 3] = ["plain.xlsx", "macros.xlsm", "feature.xlsx"];
 
 const SHEET1: &str = "xl/worksheets/sheet1.xml";
+
+/// How many cases put a package in front of Excel. Counted rather than
+/// bounded, so that a case which stopped reaching Excel is as much a failure
+/// as one added without the `--ignored` gate.
+const CASES: usize = 18;
 
 /// A writable copy of a fixture, and the workspace holding it alive.
 ///
@@ -135,6 +168,322 @@ fn a_shared_string_cell_overwritten_inline_opens_clean() {
     assert_verdict(&path, Verdict::Clean, "an orphaned shared string");
 }
 
+/// A date is a number under a format, so what lands in the cell is a serial
+/// and what says it is a date is the style the cell already carried. C1 of
+/// the plain fixture is Excel's own date cell, which is the one to write into
+/// for the question to be about the serial rather than about the format.
+#[test]
+#[ignore = "drives Excel"]
+fn a_date_write_opens_clean() {
+    let (_workspace, path) = copy("oracle-date", "plain.xlsx");
+    verb::set(
+        &path,
+        "Sheet1!C1",
+        WriteType::Date,
+        "2026-12-25",
+        None,
+        false,
+    )
+    .expect("a date write must land");
+
+    assert_verdict(&path, Verdict::Clean, "a serial written over a serial");
+}
+
+/// A template carries an element only for the cells something is already in,
+/// so a hydration writes into cells the part does not hold. Row 1 of the
+/// feature fixture holds A1, D1 and E1, so B1 goes in between two of them.
+#[test]
+#[ignore = "drives Excel"]
+fn an_inserted_cell_opens_clean() {
+    let (_workspace, path) = copy("oracle-cell", "feature.xlsx");
+    verb::set(&path, "Inputs!B1", WriteType::Number, "9", None, false)
+        .expect("a write to an absent cell must land");
+    assert!(
+        part_text(&path, SHEET1).contains(r#"<c r="B1"><v>9</v></c>"#),
+        "the cell must have gone in for this to be the case it is"
+    );
+
+    assert_verdict(&path, Verdict::Clean, "a cell put into a row");
+}
+
+/// The same, one level up: the sheet holds rows 1 to 5 and row 7, and the
+/// row put in after the last of them takes the cell with it. The dimension
+/// element still says `A1:G7`, which is what this case is really asking Excel
+/// about: a sheet holding a cell outside the range it declares.
+#[test]
+#[ignore = "drives Excel"]
+fn an_inserted_row_opens_clean() {
+    let (_workspace, path) = copy("oracle-row", "feature.xlsx");
+    verb::set(&path, "Inputs!A9", WriteType::Number, "9", None, false)
+        .expect("a write to an absent row must land");
+    let written = part_text(&path, SHEET1);
+    assert!(
+        written.contains(r#"<row r="9"><c r="A9"><v>9</v></c></row>"#),
+        "the row must have gone in for this to be the case it is"
+    );
+    assert!(
+        written.contains(r#"<dimension ref="A1:G7"/>"#),
+        "and the dimension must still be the one the fixture declared"
+    );
+
+    assert_verdict(&path, Verdict::Clean, "a row put into the sheet data");
+}
+
+/// A cell that was not there has no style of its own, so it takes the one
+/// Excel would show it under. Column G of the feature fixture is styled with
+/// a date format, so a date written into G1 renders as a date only if the
+/// inherited style came with it.
+#[test]
+#[ignore = "drives Excel"]
+fn a_date_inheriting_a_date_style_from_its_column_opens_clean() {
+    let (_workspace, path) = copy("oracle-date-column", "feature.xlsx");
+    verb::set(
+        &path,
+        "Inputs!G1",
+        WriteType::Date,
+        "2026-09-11",
+        None,
+        false,
+    )
+    .expect("a date written into an absent cell must land");
+    assert!(
+        part_text(&path, SHEET1).contains(r#"<c r="G1" s="2"><v>46276</v></c>"#),
+        "the cell must have taken the column's date style for this to be the case it is"
+    );
+
+    assert_verdict(&path, Verdict::Clean, "a date under a column's style");
+}
+
+/// The other half of the inheritance, which no fixture can be asked for as it
+/// stands: row 7 declares a custom format, but the format it declares is a
+/// bold one rather than a date one. So the case derives the package it needs,
+/// moving that row to the date style the row's own cell already carries —
+/// which is to say, to a style Excel itself wrote into that row. The package
+/// it derived is put to Excel too, so a repair says which of the two Excel
+/// minded.
+///
+/// A fixture saved with such a row would take the derivation out of it, and
+/// #28 asks for one.
+#[test]
+#[ignore = "drives Excel"]
+fn a_date_inheriting_a_date_style_from_its_row_opens_clean() {
+    let (workspace, path) = copy("oracle-date-row", "feature.xlsx");
+    let sheet = part_text(&path, SHEET1);
+    let dated = sheet.replacen(r#"s="1" customFormat="1""#, r#"s="3" customFormat="1""#, 1);
+    assert_ne!(
+        dated, sheet,
+        "the test must have moved the row to a date style"
+    );
+    let derived = workspace.dir().join("dated-row.xlsx");
+    rewritten(&path, &derived, SHEET1, &dated);
+    assert_verdict(&derived, Verdict::Clean, "the package this case derives");
+
+    verb::set(
+        &derived,
+        "Inputs!B7",
+        WriteType::Date,
+        "2026-09-11",
+        None,
+        false,
+    )
+    .expect("a date written into an absent cell must land");
+
+    assert!(
+        part_text(&derived, SHEET1).contains(r#"<c r="B7" s="3"><v>46276</v></c>"#),
+        "the cell must have taken the row's date style for this to be the case it is"
+    );
+    assert_verdict(&derived, Verdict::Clean, "a date under a row's style");
+}
+
+/// A formula replaced by a value leaves its entry in the calc chain naming a
+/// cell that no longer holds a formula, which is the inconsistency the chain
+/// maintenance exists to prevent. D1 of the feature fixture is a plain
+/// formula with an entry of its own, and both go in the one operation.
+#[test]
+#[ignore = "drives Excel"]
+fn a_replaced_formula_and_the_chain_entry_it_took_with_it_open_clean() {
+    let (_workspace, path) = copy("oracle-formula", "feature.xlsx");
+    verb::batch(
+        &path,
+        vec![verb::replacing(verb::writing(
+            "Inputs!D1",
+            WriteType::Number,
+            "15",
+        ))],
+        None,
+        false,
+    )
+    .expect("a licensed write over a formula must land");
+    assert!(
+        !part_text(&path, "xl/calcChain.xml").contains(r#"r="D1""#),
+        "the entry must have gone for this to be the case it is"
+    );
+
+    assert_verdict(&path, Verdict::Clean, "a formula replaced by its value");
+}
+
+/// The last formula of a package takes the whole chain with it: the part
+/// goes, and so do the relationship that reached it and the content-type
+/// override that named it, because a package naming a part it does not hold
+/// is exactly what Excel offers to repair. No fixture carries a chain short
+/// enough to empty, so the package is built for the case, and Excel is asked
+/// about it before it is written into as well as after.
+#[test]
+#[ignore = "drives Excel"]
+fn a_package_whose_calc_chain_became_empty_opens_clean() {
+    let workspace = Workspace::new("oracle-chain");
+    let path = workspace.chained_package(
+        "chained.xlsx",
+        r#"<c r="A1"><f>1+1</f><v>2</v></c>"#,
+        r#"<c r="A1" i="1"/>"#,
+    );
+    assert_verdict(&path, Verdict::Clean, "the package this case starts from");
+
+    verb::batch(
+        &path,
+        vec![verb::replacing(verb::writing(
+            "Inputs!A1",
+            WriteType::Number,
+            "2",
+        ))],
+        None,
+        false,
+    )
+    .expect("a licensed write over the one formula must land");
+
+    assert!(
+        !support::parts(&path)
+            .iter()
+            .any(|part| part.path == "xl/calcChain.xml"),
+        "the chain must have gone for this to be the case it is"
+    );
+    assert_verdict(&path, Verdict::Clean, "a package whose chain was emptied");
+}
+
+/// A template with no custom properties gets the part, its relationship and
+/// its content-type override, all three at once. The plain fixture carries
+/// none, so it is the one to stamp.
+#[test]
+#[ignore = "drives Excel"]
+fn a_created_custom_properties_part_opens_clean() {
+    let (_workspace, path) = copy("oracle-props", "plain.xlsx");
+    assert!(
+        !support::parts(&path)
+            .iter()
+            .any(|part| part.path == "docProps/custom.xml"),
+        "the plain fixture carries no custom properties, which is why it is this case"
+    );
+
+    verb::batch(
+        &path,
+        vec![verb::stamping(
+            "Stamp.Text",
+            WriteType::Text,
+            "xlsplice was here",
+        )],
+        None,
+        false,
+    )
+    .expect("a property set must land");
+
+    assert_verdict(&path, Verdict::Clean, "a created custom properties part");
+}
+
+/// A workbook with no calculation element gets one, after its sheets. Every
+/// fixture carries the element Excel writes, so the case derives a package
+/// without it — the element is optional, and a package Excel saved without
+/// one is a package Excel opens — and asks Excel about that as well.
+#[test]
+#[ignore = "drives Excel"]
+fn a_created_calculation_element_opens_clean() {
+    let (workspace, path) = copy("oracle-calc", "plain.xlsx");
+    let workbook = part_text(&path, "xl/workbook.xml");
+    let without = workbook.replacen(r#"<calcPr calcId="181029"/>"#, "", 1);
+    assert_ne!(
+        without, workbook,
+        "the test must have taken the element out"
+    );
+    let derived = workspace.dir().join("no-calc.xlsx");
+    rewritten(&path, &derived, "xl/workbook.xml", &without);
+    assert_verdict(&derived, Verdict::Clean, "the package this case derives");
+
+    verb::batch(&derived, vec![verb::calculating(true)], None, false).expect("the flag must land");
+
+    assert!(
+        part_text(&derived, "xl/workbook.xml").contains(r#"<calcPr fullCalcOnLoad="1"/>"#),
+        "the element must have been created for this to be the case it is"
+    );
+    assert_verdict(&derived, Verdict::Clean, "a created calculation element");
+}
+
+/// A macro-enabled package passes through with its VBA project untouched, and
+/// Excel is the one that says whether a project it did not write the
+/// container around still loads.
+#[test]
+#[ignore = "drives Excel"]
+fn a_write_into_a_macro_enabled_package_opens_clean() {
+    let (_workspace, path) = copy("oracle-macros", "macros.xlsm");
+    verb::set(&path, "Sheet1!A1", WriteType::Number, "42", None, false)
+        .expect("a write into a macro-enabled package must land");
+    assert_eq!(
+        support::part(&path, "xl/vbaProject.bin"),
+        support::part(&fixture("macros.xlsm"), "xl/vbaProject.bin"),
+        "the project must have been copied raw for this to be the case it is"
+    );
+
+    assert_verdict(
+        &path,
+        Verdict::Clean,
+        "a macro-enabled package written into",
+    );
+}
+
+/// Every output of the byte-preservation cases, put in front of Excel: the
+/// fixed operation set of `support::corpus`, over the three fixtures. What
+/// those suites assert is that nothing outside the target moved; what this
+/// asserts is that Excel opens the result of each.
+#[test]
+#[ignore = "drives Excel"]
+fn every_output_of_the_fixed_operation_set_over_the_fixtures_opens_clean() {
+    for name in FIXTURES {
+        opens_clean_after_the_fixed_set(&fixture(name));
+    }
+}
+
+/// The same, over the real templates, which is the pair of cases the spec
+/// asks for: every output of the byte-preservation suites, over the corpus
+/// and over the fixtures. Absent the corpus variable there is no corpus, and
+/// this skips whether or not there is an Excel.
+#[test]
+#[ignore = "drives Excel"]
+fn every_output_of_the_fixed_operation_set_over_the_corpus_opens_clean() {
+    let Some(packages) = corpus::packages() else {
+        return;
+    };
+
+    for package in &packages {
+        opens_clean_after_the_fixed_set(package);
+    }
+}
+
+/// Put one package through the fixed set, a case at a time, and ask Excel
+/// about each result. What the case did to the package is asserted by the
+/// byte-preservation suite over the same set; what is asked here is only
+/// whether Excel opens it.
+fn opens_clean_after_the_fixed_set(package: &Path) {
+    for case in corpus::cases(package) {
+        let workspace = Workspace::new("oracle-set");
+
+        let (copy, _) = corpus::applied(&workspace, package, &case);
+
+        assert_verdict(
+            &copy,
+            Verdict::Clean,
+            &format!("{}: {}", package.display(), case.label),
+        );
+    }
+}
+
 /// The skip is a behaviour, not an accident, so it is asserted rather than
 /// left to be noticed. A machine with no Excel is simulated by pointing the
 /// oracle somewhere Excel is not, which is the whole of what absence means to
@@ -193,14 +542,18 @@ fn only_require_requires_an_oracle() {
 /// held to rather than trusted: every case here that puts a package in front
 /// of Excel carries the attribute. The suite reads itself to say so, because
 /// the thing that goes wrong is a case added without it. A case reaches Excel
-/// when it calls `assert_verdict` on a package, which is what is looked for.
+/// when it calls `assert_verdict` on a package, or the one thing that does
+/// that for it, and both are what is looked for.
 #[test]
 fn every_case_that_reaches_excel_is_ignored_by_default() {
     let source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(file!()))
         .expect("the suite must be able to read itself");
-    // The call that puts a package in front of Excel, spelled in two halves
-    // so that this test does not go off on its own source.
-    let reaches = format!("{}{}", "assert_verdict", "(&");
+    // The two calls that put a package in front of Excel, each spelled in
+    // halves so that this test does not go off on its own source.
+    let reaches = [
+        format!("{}{}", "assert_verdict", "("),
+        format!("{}{}", "opens_clean_after_the_fixed_set", "("),
+    ];
     let mut reaching = 0;
 
     for case in source.split("\n#[test]").skip(1) {
@@ -209,7 +562,7 @@ fn every_case_that_reaches_excel_is_ignored_by_default() {
             .and_then(|(_, rest)| rest.split_once('('))
             .map(|(name, _)| name)
             .expect("a test has a name");
-        if !case.contains(&reaches) {
+        if !reaches.iter().any(|call| case.contains(call)) {
             continue;
         }
         reaching += 1;
@@ -219,9 +572,9 @@ fn every_case_that_reaches_excel_is_ignored_by_default() {
         );
     }
 
-    assert!(
-        reaching >= 6,
-        "the oracle cases must be the ones counted: {reaching}"
+    assert_eq!(
+        reaching, CASES,
+        "the oracle cases must be the ones counted, and there are {CASES} of them"
     );
 }
 

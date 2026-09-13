@@ -45,8 +45,18 @@ nothing on screen.
   rather than closing someone's work or taking their screen. An Excel showing
   nothing is nobody's, and is quit, or killed if it is already wedged.
 - Reading the screen means the backend needs Accessibility permission for
-  whatever runs the tests. Without it System Events reports no windows for any
-  application, and every package would look like a timeout.
+  whatever runs the tests — the terminal the tests were started from, not the
+  test binary. Without it System Events reports no windows for any
+  application, so Excel opens the package, draws its window, and the watcher
+  sees nothing for ninety seconds and calls it a timeout: every package looks
+  broken and nothing says why. So the permission is asked about before Excel
+  is launched, in the form that errors rather than the form that quietly
+  answers none, and its absence is an `Unavailable` naming what to grant. A
+  grant the list shows as enabled can still deny — an operating system update
+  on 2026-09-13 left one looking on and refusing every request, through a
+  reboot and a re-grant — so the probe is what says whether the oracle can
+  answer, never the checkbox. Another terminal, with no entry of its own to go
+  stale, is the way back.
 - A Windows backend (#15) answers the same question and will not answer it this
   way: nothing here about sandboxes, LaunchServices or System Events crosses
   over, which is why the interface is one operation returning clean, repair or

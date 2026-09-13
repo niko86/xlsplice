@@ -78,6 +78,42 @@ Unset, the wrapper resolves `xlsplice` the way any other command is resolved.
 
 `CONTEXT.md` carries the vocabulary and `docs/adr/` the decisions.
 
+## Testing
+
+`cargo test` runs everywhere and needs nothing: the suites work over three
+small fixtures committed to `tests/fixtures/`, and hold every write to the
+byte-level guarantee with a comparator that reads both containers itself.
+
+Two suites want more than a checkout, and both are off unless they are asked
+for.
+
+**The corpus.** Point `XLSPLICE_CORPUS` at a directory of real templates and
+the same fixed operation set runs over every `.xlsx` and `.xlsm` under it. The
+templates are vendor material: they are read, never written, and never enter
+this repository. Each package is put through what it can take — a template
+whose sheets start empty takes a row but no write over a cell — and the run
+says how many cases each answered. Absent the variable, those cases skip and
+the rest of the suite is unaffected.
+
+```
+XLSPLICE_CORPUS=~/templates cargo test --test corpus
+```
+
+**The oracle.** A real Excel, asked whether a package opens clean or demands a
+repair. It drives the application through the screen, so it is ignored by
+default and asked for by name, one case at a time:
+
+```
+cargo test --test oracle -- --ignored --test-threads=1
+```
+
+On a machine with no Excel each case skips and says why;
+`XLSPLICE_ORACLE=require` turns that skip into a failure, for the machine the
+oracle is meant to run on. The verdict is read off the screen, so it needs
+Accessibility permission for the terminal the tests are started from — without
+it every case skips saying so — and `XLSPLICE_ORACLE_TRACE=1` prints what Excel
+was seen to do. See ADR-0006.
+
 ## Origin
 
 Grilled out of the findings of an OfficeCLI trial in `the-reference-implementation` on

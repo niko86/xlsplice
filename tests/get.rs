@@ -162,6 +162,66 @@ fn an_absent_cell_is_empty_and_carries_neither_value_nor_style() {
     assert_eq!(absent["address"], json!("Inputs!Z1"));
 }
 
+/// The sheet data of the feature package holds rows 1, 2, 3 and 6, so row 4
+/// is one the sheet does not hold at all. A cell there is as absent as one in
+/// a row that is there, and reads the same: `SKILL.md` promises that a cell
+/// the sheet does not hold reads as `empty` rather than as a failure, and
+/// which of the two reasons it is not there is no business of the caller's.
+#[test]
+fn a_cell_in_a_row_the_sheet_does_not_hold_is_empty_too() {
+    let (_workspace, package) = feature("no-row");
+
+    let absent = cell(&package, "Inputs!C4");
+
+    assert_eq!(absent["type"], json!("empty"));
+    assert_eq!(absent["value"], json!(null));
+    assert_eq!(absent["raw"], json!(null));
+    assert_eq!(absent["style"], json!(null));
+    assert_eq!(absent["address"], json!("Inputs!C4"));
+}
+
+/// And a sheet whose part holds no sheet data element holds no cells at all,
+/// so every cell of it is absent. A write there is still refused — there is
+/// nowhere to put a row — but that is a question about writing.
+#[test]
+fn a_cell_on_a_sheet_holding_no_sheet_data_at_all_is_empty() {
+    let workspace = Workspace::new("dataless");
+    let package = dataless(&workspace);
+
+    let absent = cell(&package, "Inputs!A1");
+
+    assert_eq!(absent["type"], json!("empty"));
+    assert_eq!(absent["value"], json!(null));
+    assert_eq!(absent["style"], json!(null));
+}
+
+/// A package of one sheet whose worksheet part has no sheet data element,
+/// which no fixture has because Excel writes one whether or not the sheet
+/// holds anything.
+fn dataless(workspace: &Workspace) -> PathBuf {
+    let bare = workspace.sheet_package("bare.xlsx", "", r#"<c r="A1"><v>1</v></c>"#);
+    workspace.zip(
+        "dataless.xlsx",
+        &[
+            (support::CONTENT_TYPES_PART, support::FEATURE_CONTENT_TYPES),
+            (support::ROOT_RELS_PART, support::ROOT_RELS),
+            (
+                support::WORKBOOK_PART,
+                &support::part_text(&bare, support::WORKBOOK_PART),
+            ),
+            (support::WORKBOOK_RELS_PART, support::WORKBOOK_RELS),
+            (
+                support::SHEET1_PART,
+                &format!(
+                    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="{}"><dimension ref="A1"/></worksheet>"#,
+                    "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+                ),
+            ),
+        ],
+    )
+}
+
 #[test]
 fn a_cell_holding_a_style_and_no_value_is_empty_and_still_reports_the_style() {
     let (_workspace, package) = feature("styled-empty");
@@ -414,24 +474,26 @@ fn a_name_that_is_not_a_reference_is_refused_with_what_it_refers_to() {
     }
 }
 
+/// A cell outside every row the sheet holds, and a cell on a sheet holding no
+/// rows at all, are both absent rather than missing. `not_found` is for what
+/// is genuinely not there to be found — a sheet the package does not have, a
+/// name it does not declare — and a cell a template has no element for is the
+/// ordinary case rather than one of those: a template carries an element only
+/// for the cells something is already in, which is why a write to such a cell
+/// puts one there.
 #[test]
-fn a_cell_outside_every_row_the_sheet_holds_is_not_found() {
+fn a_cell_outside_every_row_the_sheet_holds_is_empty_rather_than_missing() {
     let (_workspace, package) = feature("no-row");
 
     for target in ["Inputs!A99", "Parameters!A1"] {
         let out = under_json(verb::get(&package, &[target]));
 
-        assert_eq!(out.exit, 3, "{target}");
-        let message = error_message(&out);
-        assert_eq!(
-            envelope(&out)["error"]["code"],
-            json!("not_found"),
-            "{target}"
-        );
-        assert!(
-            message.contains("row"),
-            "{target}: {message} must say what was searched"
-        );
+        assert_eq!(out.exit, 0, "{target}: {}", out.stderr);
+        let cell = &envelope(&out)["cells"][0];
+        assert_eq!(cell["type"], json!("empty"), "{target}");
+        assert_eq!(cell["value"], json!(null), "{target}");
+        assert_eq!(cell["style"], json!(null), "{target}");
+        assert_eq!(cell["address"], json!(target), "{target}");
     }
 }
 

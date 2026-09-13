@@ -175,16 +175,21 @@ pub struct Stored {
 }
 
 /// What looking for a cell in a worksheet part turned up.
+///
+/// Two answers, not three: a cell is there or it is not. Why it is not —
+/// the row holds no such cell, the sheet data holds no such row, the part
+/// holds no sheet data at all — is a distinction a read has no use for, and
+/// one a caller cannot act on either, since a template carries an element
+/// only for the cells something is already in. The write path does need it,
+/// and takes it from [`Located`], where the element a new cell would go into
+/// is the answer rather than an afterthought.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Found {
     /// The cell element, and what it stores.
     Cell(Stored),
-    /// The row is there; the cell is not. An absent cell stores nothing and
-    /// carries no style of its own.
+    /// The cell is not there. An absent cell stores nothing and carries no
+    /// style of its own.
     Absent,
-    /// The part holds no row of that number, so the cell lies outside every
-    /// row the sheet has.
-    NoRow,
 }
 
 /// The same answers, in terms of the element rather than its contents.
@@ -241,10 +246,10 @@ impl<'a, 'input> Worksheet<'a, 'input> {
     pub fn cell(&self, cell: Cell) -> Result<Found> {
         Ok(match self.locate(cell)? {
             Located::Cell(node) => Found::Cell(stored(node, cell)?),
-            Located::InRow(_) => Found::Absent,
-            // A part with no sheet data has no rows, which to a read is the
-            // same answer as having none of that number.
-            Located::InSheetData(_) | Located::Nowhere => Found::NoRow,
+            // The row holds no such cell, the sheet data holds no such row,
+            // or the part holds no sheet data: three ways of not being there,
+            // and one answer to a read.
+            Located::InRow(_) | Located::InSheetData(_) | Located::Nowhere => Found::Absent,
         })
     }
 
@@ -824,19 +829,23 @@ mod tests {
         );
     }
 
+    /// A cell the row does not hold and a cell whose row is not there are
+    /// both absent, because the difference is one a read cannot use and a
+    /// caller cannot act on. Where the difference matters is a write, and a
+    /// write asks [`Worksheet::locate`], which keeps all three answers apart.
     #[test]
-    fn a_cell_the_row_does_not_hold_is_absent_and_one_with_no_row_is_outside_them_all() {
+    fn a_cell_is_absent_whether_its_row_holds_no_such_cell_or_there_is_no_such_row() {
         let xml = sheet(r#"<row r="1"><c r="A1"><v>1</v></c></row>"#);
 
         assert_eq!(found(&xml, "Z1"), Found::Absent);
-        assert_eq!(found(&xml, "A9"), Found::NoRow);
+        assert_eq!(found(&xml, "A9"), Found::Absent);
     }
 
     #[test]
     fn a_part_with_no_sheet_data_has_no_rows_at_all() {
         let xml = format!(r#"<worksheet xmlns="{NS}"/>"#);
 
-        assert_eq!(found(&xml, "A1"), Found::NoRow);
+        assert_eq!(found(&xml, "A1"), Found::Absent);
     }
 
     #[test]
@@ -1204,7 +1213,7 @@ mod tests {
             sheet
                 .cell(Cell::parse("A1").expect("a cell"))
                 .expect("readable"),
-            Found::NoRow,
+            Found::Absent,
             "to a read it is the same absence as a row that is not there"
         );
     }

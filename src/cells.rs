@@ -118,15 +118,6 @@ fn read_cells(package: &mut Package, resolved: &[Resolution]) -> Result<Vec<Opti
             {
                 Found::Cell(cell) => Some(cell),
                 Found::Absent => None,
-                Found::NoRow => {
-                    return Err(Error::not_found(format!(
-                        "no cell {} in {}: sheet '{}' has no row {}",
-                        at.address,
-                        package.path().display(),
-                        at.address.sheet,
-                        at.address.cell.row()
-                    )));
-                }
             };
         }
     }

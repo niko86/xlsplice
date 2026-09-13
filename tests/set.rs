@@ -610,17 +610,17 @@ fn the_help_lists_every_operand_and_flag_set_takes() {
     }
 }
 
-/// clap reads `--type` before a verb is reached, so a type outside the three
+/// clap reads `--type` before a verb is reached, so a type it does not offer
 /// never becomes a write at all, and only a real argv can say so.
 #[test]
-fn a_type_outside_the_three_is_rejected_before_the_package_is_opened() {
+fn a_type_outside_the_ones_offered_is_rejected_before_the_package_is_opened() {
     let out = run(&[
         "set",
         "no-such-file.xlsx",
         "A1",
         "1",
         "--type",
-        "date",
+        "datetime",
         "--json",
     ]);
 

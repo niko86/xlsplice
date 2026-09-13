@@ -340,6 +340,10 @@ pub enum Written {
     Text(String),
     /// A boolean, stored as `1` or `0`.
     Bool(bool),
+    /// Nothing at all: the cell keeps its element and its style and loses its
+    /// value, its type and its formula. What `clear` writes, and what Excel
+    /// leaves behind when a cell's contents are deleted.
+    Nothing,
 }
 
 impl Written {
@@ -349,17 +353,28 @@ impl Written {
     }
 
     /// The `t` attribute the cell carries once this is in it, or `None` for a
-    /// number, which declares no type.
+    /// number, which declares no type, and for nothing at all, which has none
+    /// to declare.
     fn declares(&self) -> Option<&'static str> {
         match self {
-            Written::Number(_) => None,
+            Written::Number(_) | Written::Nothing => None,
             Written::Text(_) => Some(StoredType::InlineString.as_str()),
             Written::Bool(_) => Some(StoredType::Bool.as_str()),
         }
     }
 
+    /// The splice that puts this between the cell's tags, or closes them over
+    /// nothing where there is nothing to put there.
+    fn between(&self, element: &Element) -> Option<Splice> {
+        match self {
+            Written::Nothing => element.empty_splice(),
+            _ => Some(element.content_splice(&self.content(element.prefix()))),
+        }
+    }
+
     /// What goes between the cell's tags, written with the same namespace
-    /// prefix the cell itself carries.
+    /// prefix the cell itself carries. Nothing at all goes between no tags,
+    /// which is [`Written::between`]'s business rather than this one's.
     fn content(&self, prefix: &str) -> String {
         match self {
             Written::Number(number) => format!("<{prefix}v>{}</{prefix}v>", number_text(*number)),
@@ -369,6 +384,7 @@ impl Written {
                 space_attribute(text),
                 escape(text)
             ),
+            Written::Nothing => String::new(),
         }
     }
 }
@@ -434,7 +450,8 @@ pub fn formula_of(node: Node, at: Cell) -> Result<Option<Formula>> {
 /// Two at most, and both inside the element: the type attribute the value
 /// needs, added, changed or taken away, and everything between the tags. Every
 /// other attribute the cell carries is left where it is, because nothing here
-/// touches a byte outside those two places.
+/// touches a byte outside those two places. So a cleared cell keeps its style,
+/// and a cell already saying what it is asked for takes no splice at all.
 ///
 /// `source` must be the text the node's document was parsed from.
 pub fn value_splices(node: Node<'_, '_>, source: &str, written: &Written) -> Result<Vec<Splice>> {
@@ -445,7 +462,7 @@ pub fn value_splices(node: Node<'_, '_>, source: &str, written: &Written) -> Res
     if let Some(splice) = element.attribute_splice("t", written.declares(), &["r", "s"]) {
         splices.push(splice);
     }
-    splices.push(element.content_splice(&written.content(element.prefix())));
+    splices.extend(written.between(&element));
     Ok(splices)
 }
 

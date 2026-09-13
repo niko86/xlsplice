@@ -122,6 +122,26 @@ pub enum Command {
         landing: Landing,
     },
 
+    /// Empty one cell, named by an address or a defined name.
+    ///
+    /// The cell keeps its element and its style and loses its value, its type
+    /// and any inline string, which is how Excel leaves a cell whose contents
+    /// were deleted. A cell holding a formula is refused.
+    Clear {
+        /// The package to write. Written in place unless `--out` is given.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+
+        /// The cell to empty: `Sheet!A1`, a workbook-scoped defined name, or
+        /// `Sheet!Name` for one scoped to a sheet. A name resolves to its
+        /// anchor.
+        #[arg(value_name = "TARGET")]
+        target: String,
+
+        #[command(flatten)]
+        landing: Landing,
+    },
+
     /// Apply a batch of operations to a package, all of them or none.
     ///
     /// The batch is a JSON array of operations. It is validated whole before
@@ -179,6 +199,7 @@ impl Command {
             Command::Names { .. } => "names",
             Command::Get { .. } => "get",
             Command::Set { .. } => "set",
+            Command::Clear { .. } => "clear",
             Command::Apply { .. } => "apply",
             Command::Version => "version",
             #[cfg(debug_assertions)]

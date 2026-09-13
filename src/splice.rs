@@ -198,6 +198,19 @@ impl<'a, 'input> Element<'a, 'input> {
         Splice::new(start..self.range.end, format!(">{text}</{}>", self.name))
     }
 
+    /// Close the element over nothing at all, so that
+    /// `<c r="A1" s="4"><v>2</v></c>` becomes `<c r="A1" s="4"/>`, which is
+    /// how Excel leaves a cell whose contents were deleted. An element
+    /// already written that way has nothing to do.
+    pub fn empty_splice(&self) -> Option<Splice> {
+        match self.self_closing {
+            true => None,
+            // The start tag's own `>` becomes the `/>` of a self-closing one,
+            // and everything after it goes.
+            false => Some(Splice::new(self.open.end - 1..self.range.end, "/>")),
+        }
+    }
+
     /// Give the attribute called `name` the value `value`, or take it away
     /// when `value` is `None`. `None` for an attribute the element does not
     /// have is nothing to do.

@@ -24,6 +24,7 @@ pub mod answer;
 pub mod atomic;
 pub mod batch;
 pub mod cells;
+pub mod date;
 pub mod envelope;
 pub mod error;
 pub mod package;

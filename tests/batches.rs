@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use support::{
     Workspace, assert_same_bytes, envelope, exit_code, fixture, part_text, run, stdout, under_json,
-    verb, workbook_xml,
+    verb,
 };
 use xlsplice::batch::WriteType;
 
@@ -25,25 +25,7 @@ const SHEET1: &str = "xl/worksheets/sheet1.xml";
 /// The shapes that matter here are ones Excel does not save, so no fixture
 /// carries them.
 fn package_of(workspace: &Workspace, row: &str) -> PathBuf {
-    let sheet = format!(
-        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <sheetData><row r="1" spans="1:2">{row}</row></sheetData>
-</worksheet>"#
-    );
-    workspace.zip(
-        "one-sheet.xlsx",
-        &[
-            (support::CONTENT_TYPES_PART, support::FEATURE_CONTENT_TYPES),
-            (support::ROOT_RELS_PART, support::ROOT_RELS),
-            (
-                support::WORKBOOK_PART,
-                &workbook_xml(r#"<sheets><sheet name="Inputs" sheetId="1" r:id="rId1"/></sheets>"#),
-            ),
-            (support::WORKBOOK_RELS_PART, support::WORKBOOK_RELS),
-            (support::SHEET1_PART, &sheet),
-        ],
-    )
+    workspace.sheet_package("one-sheet.xlsx", "", row)
 }
 
 /// The message of a batch that was refused, with the exit code asserted to be

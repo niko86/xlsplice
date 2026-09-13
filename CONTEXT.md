@@ -118,11 +118,26 @@ a dry run.
 _Avoid_: summary, result, log
 
 **Write type**:
-What a write says a value is to become in the cell: `number`, `text` or
-`bool`, and later `date`. Not a _stored type_, which is how the cell then
-spells it: a write type of `text` is stored as `inlineStr`, and one of
-`number` declares no type at all.
+What a write says a value is to become in the cell: `number`, `text`, `bool`
+or `date`. Not a _stored type_, which is how the cell then spells it: a write
+type of `text` is stored as `inlineStr`, and one of `number` declares no type
+at all. A `date` is a `number` too, under whatever format the cell already
+carries.
 _Avoid_: value type, data type
+
+**Date system**:
+Which day a workbook counts its date _serials_ from, declared by `date1904` in
+the workbook part: the 1900 system, where serial 1 is 1900-01-01, or the 1904
+system, where serial 0 is 1904-01-01. The two are 1462 days apart. The 1900
+system counts a 29th of February 1900 that never happened, kept for
+compatibility with Lotus 1-2-3, so no serial below 61 names the day a calendar
+would.
+_Avoid_: epoch, base date
+
+**Serial**:
+The number a workbook stores a date as, whole days from the day its _date
+system_ counts from, with a time of day as the fraction after the point.
+_Avoid_: date value, timestamp
 
 **Dry run**:
 A batch done in full and put nowhere. It writes no file at all, and reports

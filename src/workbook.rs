@@ -113,12 +113,44 @@ pub struct DefinedName {
     pub resolved: Resolved,
 }
 
-/// A package's sheets and defined names.
+/// Which day a workbook counts its date serials from.
+///
+/// A date is stored as a number, and which date a number is depends on the
+/// workbook: the two systems are 1462 days apart. Nothing but the workbook
+/// part says which is in force, which is why a date cannot be read into a
+/// serial until the package is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DateSystem {
+    /// The default, and what Excel writes unless told otherwise. Serial 1 is
+    /// 1900-01-01, and serial 60 is a 29th of February 1900 that never
+    /// happened: Lotus 1-2-3 had it and Excel kept it for compatibility, so
+    /// every serial from 61 onwards is one greater than the true count of
+    /// days.
+    #[default]
+    Date1900,
+    /// What `date1904` in the workbook part asks for, and what Excel for Mac
+    /// wrote for years. Serial 0 is 1904-01-01 and there is no phantom day.
+    Date1904,
+}
+
+impl DateSystem {
+    /// The system as the workbook part names it: the value `date1904` would
+    /// carry.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DateSystem::Date1900 => "1900",
+            DateSystem::Date1904 => "1904",
+        }
+    }
+}
+
+/// A package's sheets, defined names and date system.
 #[derive(Debug)]
 pub struct Workbook {
     part: String,
     sheets: Vec<Sheet>,
     defined_names: Vec<DefinedName>,
+    dates: DateSystem,
 }
 
 impl Workbook {
@@ -156,6 +188,7 @@ impl Workbook {
             part: part.to_owned(),
             sheets,
             defined_names,
+            dates: read_date_system(root),
         })
     }
 
@@ -169,6 +202,11 @@ impl Workbook {
     /// Every sheet, in workbook order.
     pub fn sheets(&self) -> &[Sheet] {
         &self.sheets
+    }
+
+    /// Which day the workbook counts its date serials from.
+    pub fn dates(&self) -> DateSystem {
+        self.dates
     }
 
     /// Every defined name, in the order the package declares them.
@@ -216,6 +254,23 @@ fn workbook_part_path(package: &mut Package) -> Result<String> {
             package.path().display()
         ))
     })
+}
+
+/// The date system the workbook declares.
+///
+/// A workbook that says nothing is on the 1900 system, which is what Excel
+/// writes unless the setting was changed. The flag is a boolean the schema
+/// spells `1` or `0`, and Excel also writes `true`; anything else is not the
+/// flag being set, so it is not an error, it is simply not 1904.
+fn read_date_system(root: Node) -> DateSystem {
+    let asked = children(root, "workbookPr")
+        .next()
+        .and_then(|node| node.attribute("date1904"))
+        .is_some_and(|flag| matches!(flag, "1" | "true"));
+    match asked {
+        true => DateSystem::Date1904,
+        false => DateSystem::Date1900,
+    }
 }
 
 fn read_sheets(root: Node) -> Result<Vec<Sheet>> {

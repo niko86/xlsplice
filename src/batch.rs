@@ -43,13 +43,14 @@ use roxmltree::{Document, Node};
 use serde::{Deserialize, Serialize};
 
 use crate::atomic;
+use crate::date;
 use crate::error::{Error, Result};
 use crate::package::{Content, Package};
 use crate::reference::Address;
 use crate::relationships::Relationships;
 use crate::splice::{self, Splice};
 use crate::target::{Resolution, resolve};
-use crate::workbook::Workbook;
+use crate::workbook::{DateSystem, Workbook};
 use crate::worksheet::{FormulaRole, Located, Worksheet, Written, formula_of, value_splices};
 
 /// One thing to do to a package.
@@ -79,6 +80,15 @@ pub enum Operation {
         #[serde(default)]
         replace_formula: bool,
     },
+    /// Empty the cell a target names, keeping the element and its style.
+    Clear {
+        /// The cell, by address or by defined name.
+        target: String,
+        /// Whether the caller says a formula in the cell may be replaced.
+        /// Carried, not yet honoured: see [`Operation::Set`].
+        #[serde(default)]
+        replace_formula: bool,
+    },
 }
 
 impl Operation {
@@ -89,19 +99,20 @@ impl Operation {
     /// tickets land. A batch naming a kind that is not here is refused with
     /// this list, so a caller writing one against a later version and running
     /// it against this one is told what this one knows.
-    pub const KINDS: [&'static str; 1] = ["set"];
+    pub const KINDS: [&'static str; 2] = ["set", "clear"];
 
     /// The kind this operation is, as a batch spells it.
     pub fn kind(&self) -> &'static str {
         match self {
             Operation::Set { .. } => "set",
+            Operation::Clear { .. } => "clear",
         }
     }
 
     /// The target the operation names, for resolving and for reporting.
     pub fn target(&self) -> &str {
         match self {
-            Operation::Set { target, .. } => target,
+            Operation::Set { target, .. } | Operation::Clear { target, .. } => target,
         }
     }
 
@@ -131,7 +142,9 @@ impl Operation {
     /// two operations on one cell be refused rather than spliced.
     pub fn at(&self, opened: &Opened) -> Result<Option<Resolution>> {
         match self {
-            Operation::Set { target, .. } => opened.resolve(target).map(Some),
+            Operation::Set { target, .. } | Operation::Clear { target, .. } => {
+                opened.resolve(target).map(Some)
+            }
         }
     }
 
@@ -143,9 +156,9 @@ impl Operation {
     /// memoises them, and answers without changing anything: a batch is
     /// applied only once every operation has answered.
     pub fn edits(&self, at: Option<Resolution>, opened: &mut Opened) -> Result<Asked> {
-        match (self, at) {
-            (Operation::Set { .. }, Some(at)) => {
-                let written = self.written()?;
+        match at {
+            Some(at) => {
+                let written = self.written(opened.dates())?;
                 let xml = opened.text(&at.part)?;
                 let splices = splices_of(xml, &at, &written)?;
                 Ok(Asked {
@@ -153,19 +166,27 @@ impl Operation {
                     at: Some(at),
                 })
             }
-            (Operation::Set { target, .. }, None) => Err(Error::internal(format!(
-                "the set of {target} was handed no cell to write to, and every \
-                 set names one"
+            None => Err(Error::internal(format!(
+                "the {} of {} was handed no cell, and every {} names one",
+                self.kind(),
+                self.target(),
+                self.kind()
             ))),
         }
     }
 
-    /// The value this operation writes, read the way its write type says to.
-    fn written(&self) -> Result<Written> {
-        let Operation::Set {
-            write_type, value, ..
-        } = self;
-        write_type.read(value)
+    /// What this operation puts in the cell, read the way it says to.
+    ///
+    /// `dates` is the workbook's, because a date is a number only once the
+    /// workbook's date system has had its say, and clearing a cell puts
+    /// nothing in it.
+    fn written(&self, dates: DateSystem) -> Result<Written> {
+        match self {
+            Operation::Set {
+                write_type, value, ..
+            } => write_type.read(value, dates),
+            Operation::Clear { .. } => Ok(Written::Nothing),
+        }
     }
 }
 
@@ -184,11 +205,19 @@ pub enum WriteType {
     Text,
     /// `true` or `false`, or `1` or `0`, stored as a boolean cell.
     Bool,
+    /// An ISO 8601 date or datetime, or a serial, stored as the serial the
+    /// workbook's date system gives it.
+    Date,
 }
 
 impl WriteType {
     /// Every write type, in the order a caller is offered them.
-    pub const ALL: [WriteType; 3] = [WriteType::Number, WriteType::Text, WriteType::Bool];
+    pub const ALL: [WriteType; 4] = [
+        WriteType::Number,
+        WriteType::Text,
+        WriteType::Bool,
+        WriteType::Date,
+    ];
 
     /// The type as a caller spells it, in a batch and after `--type`.
     pub fn as_str(self) -> &'static str {
@@ -196,6 +225,7 @@ impl WriteType {
             WriteType::Number => "number",
             WriteType::Text => "text",
             WriteType::Bool => "bool",
+            WriteType::Date => "date",
         }
     }
 
@@ -213,16 +243,24 @@ impl WriteType {
             WriteType::Number => "A finite decimal number, stored without a type attribute",
             WriteType::Text => "Text, stored in the cell as an inline string",
             WriteType::Bool => "`true` or `false`, or `1` or `0`, stored as a boolean cell",
+            WriteType::Date => {
+                "An ISO 8601 date or datetime, or a serial, stored as a serial in the \
+                 workbook's date system"
+            }
         }
     }
 
     /// Read `text` the way this type says to, or say why it is not of this
     /// type.
-    pub fn read(self, text: &str) -> Result<Written> {
+    ///
+    /// `dates` is the workbook's date system, which only a date needs: which
+    /// number a date is depends on the workbook, and nothing else here does.
+    pub fn read(self, text: &str, dates: DateSystem) -> Result<Written> {
         match self {
             WriteType::Number => read_number(text),
             WriteType::Text => Ok(Written::text(text)),
             WriteType::Bool => read_boolean(text),
+            WriteType::Date => date::serial(text, dates).map(Written::Number),
         }
     }
 }
@@ -369,6 +407,11 @@ impl Opened {
     /// Whether the package holds a part at `part`.
     pub fn has_part(&self, part: &str) -> bool {
         self.package.has_part(part)
+    }
+
+    /// Which day the workbook counts its date serials from.
+    pub fn dates(&self) -> DateSystem {
+        self.workbook.dates()
     }
 
     /// How many parts have been taken out of the container so far.
@@ -826,11 +869,16 @@ mod tests {
     /// fails the test. A caller spells a write type one way whatever is
     /// reading it: `--type`, a JSON batch, and whatever a batch is written
     /// back out as.
-    const NAMES: [(WriteType, &str); 3] = [
+    const NAMES: [(WriteType, &str); 4] = [
         (WriteType::Number, "number"),
         (WriteType::Text, "text"),
         (WriteType::Bool, "bool"),
+        (WriteType::Date, "date"),
     ];
+
+    /// The 1900 system, which is what a workbook that says nothing is on: the
+    /// system a test that is not about dates is reading against.
+    const DATES: DateSystem = DateSystem::Date1900;
 
     #[test]
     fn a_write_type_is_spelled_the_same_way_wherever_it_is_read() {
@@ -843,25 +891,29 @@ mod tests {
                 name
             );
         }
-        assert_eq!(WriteType::named("date"), None, "date is #9's to add");
+        assert_eq!(
+            WriteType::named("datetime"),
+            None,
+            "a name no write type carries is no write type"
+        );
     }
 
     #[test]
     fn a_value_that_is_not_of_the_type_it_names_is_a_usage_error() {
         for text in ["", "hello", "1,5", "inf", "NaN", "2 "] {
-            let err = WriteType::Number.read(text).expect_err(text);
+            let err = WriteType::Number.read(text, DATES).expect_err(text);
             assert_eq!(err.code(), ErrorCode::Usage, "{text}");
         }
         for text in ["TRUE", "False", "1", "0"] {
-            WriteType::Bool.read(text).expect(text);
+            WriteType::Bool.read(text, DATES).expect(text);
         }
         for text in ["", "yes", "2"] {
-            let err = WriteType::Bool.read(text).expect_err(text);
+            let err = WriteType::Bool.read(text, DATES).expect_err(text);
             assert_eq!(err.code(), ErrorCode::Usage, "{text}");
         }
         for text in ["", "hello", "42", "true"] {
             assert_eq!(
-                WriteType::Text.read(text).expect(text),
+                WriteType::Text.read(text, DATES).expect(text),
                 Written::text(text),
                 "any text is text"
             );
@@ -882,7 +934,7 @@ mod tests {
         };
 
         let err = operation
-            .written()
+            .written(DATES)
             .expect_err("hello is not a number")
             .within(operation.within(1));
 
@@ -981,7 +1033,11 @@ mod tests {
             let batch = Batch::parse(&json).unwrap_or_else(|err| panic!("{kind}: {err}"));
             assert_eq!(batch.operations[0].kind(), kind);
         }
-        assert_eq!(Operation::KINDS, ["set"], "a kind with no list entry");
+        assert_eq!(
+            Operation::KINDS,
+            ["set", "clear"],
+            "a kind with no list entry"
+        );
     }
 
     /// A kind this build does not know is the caller's mistake, and the
@@ -993,9 +1049,15 @@ mod tests {
             .expect_err("props.set is #12's to add");
 
         assert_eq!(err.code(), ErrorCode::Usage);
+        assert!(err.message().contains("props.set"), "{}", err.message());
+        // Derived from the list rather than transcribed, because the list
+        // itself is transcribed in the test above: what matters here is that
+        // the failure carries it.
         assert!(
-            err.message().contains("props.set")
-                && err.message().contains("The operation kinds are: set."),
+            err.message().contains(&format!(
+                "The operation kinds are: {}.",
+                Operation::KINDS.join(", ")
+            )),
             "{}",
             err.message()
         );

@@ -205,7 +205,7 @@ fn an_unknown_operation_kind_is_a_usage_error_listing_the_known_kinds() {
         .to_owned();
     assert!(message.contains("calc"), "{message}");
     assert!(
-        message.contains("The operation kinds are: set."),
+        message.contains("The operation kinds are: set, clear."),
         "the failure must say what this build knows: {message}"
     );
     assert_same_bytes(&fixture("feature.xlsx"), &package);

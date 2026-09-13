@@ -74,6 +74,21 @@ fn run(command: Command, out: &Out) -> ExitCode {
             &landing,
             out,
         ),
+        Command::Clear {
+            file,
+            target,
+            landing,
+        } => write::run(
+            &file,
+            &Batch::of(Operation::Clear {
+                target,
+                // #10 adds the flag that licenses replacing a formula; a
+                // `clear` cannot yet say so.
+                replace_formula: false,
+            }),
+            &landing,
+            out,
+        ),
         Command::Apply {
             file,
             batch,

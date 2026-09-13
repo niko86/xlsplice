@@ -109,6 +109,35 @@ impl Workspace {
         )
     }
 
+    /// A package of one visible sheet called Inputs, whose workbook part
+    /// carries `properties` before its sheets and whose sheet holds one row
+    /// of `cells`.
+    ///
+    /// For the shapes Excel cannot be made to save, or can only be made to
+    /// save by hand: a workbook on the 1904 date system, a cell written as an
+    /// empty element. What such a test asserts is visible in the test.
+    pub fn sheet_package(&self, name: &str, properties: &str, cells: &str) -> PathBuf {
+        let workbook = workbook_xml(&format!(
+            r#"{properties}<sheets><sheet name="Inputs" sheetId="1" r:id="rId1"/></sheets>"#
+        ));
+        let sheet = format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData><row r="1" spans="1:3">{cells}</row></sheetData>
+</worksheet>"#
+        );
+        self.zip(
+            name,
+            &[
+                (CONTENT_TYPES_PART, FEATURE_CONTENT_TYPES),
+                (ROOT_RELS_PART, ROOT_RELS),
+                (WORKBOOK_PART, &workbook),
+                (WORKBOOK_RELS_PART, WORKBOOK_RELS),
+                (SHEET1_PART, &sheet),
+            ],
+        )
+    }
+
     /// A writable copy of the committed fixture called `name`, so that a test
     /// may write to it without touching the baseline its bytes are.
     pub fn copy_of(&self, name: &str) -> PathBuf {
@@ -563,6 +592,23 @@ pub mod verb {
             target: target.to_owned(),
             write_type,
             value: value.to_owned(),
+            replace_formula: false,
+        }
+    }
+
+    /// `xlsplice clear FILE TARGET [--out PATH] [--dry-run]`.
+    pub fn clear(path: &Path, target: &str, out: Option<PathBuf>, dry_run: bool) -> Result<Answer> {
+        let batch = Batch::of(Operation::Clear {
+            target: target.to_owned(),
+            replace_formula: false,
+        });
+        answer::written(&batch::run(path, &batch, &Destination::from(out), dry_run)?)
+    }
+
+    /// One `clear` operation, for a batch built by [`batch`].
+    pub fn clearing(target: &str) -> Operation {
+        Operation::Clear {
+            target: target.to_owned(),
             replace_formula: false,
         }
     }

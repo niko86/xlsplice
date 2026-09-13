@@ -19,6 +19,9 @@
 
 #![allow(dead_code)]
 
+/// A real Excel, for the one question the tool must not answer about itself.
+pub mod oracle;
+
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};

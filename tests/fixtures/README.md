@@ -32,3 +32,16 @@ c81533de1755ccd027e4bf5abc37a94bd109b5170668d1e4a24ed6cf380e98f2 plain.xlsx
 5d864236a1c3f4add7ad45f2f87f43f6b82e20b117865bc81aca39113b766d24 macros.xlsm
 f4a0eac7179c7a18038938e28d8acf696697f4190a5bdd375913450f8f600480 feature.xlsx
 ```
+
+## The oracle
+
+`tests/oracle.rs` puts these in front of a real Excel and asks whether it
+opens them without complaint. Those cases are ignored by default:
+
+```
+cargo test --test oracle -- --ignored --test-threads=1
+```
+
+One at a time, because there is one Excel and they take turns at it. See
+`docs/adr/0006-the-oracle-hands-excel-the-file-and-reads-the-screen.md` for
+what that costs and why.

@@ -234,6 +234,14 @@ _Avoid_: status, return code, errorlevel
 A real Excel instance used by tests to say whether a package opens clean or demands repair.
 _Avoid_: validator, checker
 
+**Verdict**:
+What the oracle answered about one package: clean, repair, or unavailable.
+_Avoid_: result, status, outcome
+
+**Repair**:
+Excel refusing a package as it stands and offering to recover what it can.
+_Avoid_: corrupt, invalid, broken
+
 **Corpus**:
 The real-world packages the test suites run over, kept outside the repository.
 _Avoid_: fixtures, samples

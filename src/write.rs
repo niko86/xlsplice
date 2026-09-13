@@ -8,13 +8,80 @@
 //! run itself, the trace of what it did and the answer it comes back with — so
 //! it is here, once, rather than copied into each verb.
 
+use std::io::{IsTerminal, Read};
 use std::path::Path;
 
 use xlsplice::answer::{self, Answer};
 use xlsplice::batch::{self, Batch};
+use xlsplice::error::Error;
 
 use crate::cli::Landing;
 use crate::out::Out;
+
+/// The operand that means stdin rather than a path.
+const STDIN: &str = "-";
+
+/// The `apply` verb: read the batch the operand names, and run it.
+///
+/// Reading the batch is the only thing `apply` does that `set` does not; from
+/// there it is the same path every writing verb takes.
+pub fn apply(
+    file: &Path,
+    operand: &Path,
+    landing: &Landing,
+    out: &Out,
+) -> xlsplice::Result<Answer> {
+    out.trace(&format!(
+        "reading the batch at {}",
+        match operand == Path::new(STDIN) {
+            true => "stdin".to_owned(),
+            false => operand.display().to_string(),
+        }
+    ));
+    let batch = batch_at(operand, stdin_is_terminal())?;
+    run(file, &batch, landing, out)
+}
+
+/// The batch an operand names: a JSON array of operations in a file, or one
+/// read from stdin where the operand is a single dash.
+///
+/// A dash with a terminal on stdin is a caller who meant to pipe a batch in
+/// and did not. Waiting for one to be typed would look like a hang, so it is
+/// a usage error instead. `is_terminal` is asked of the process by the caller,
+/// so that what this does with the answer can be tested without one.
+fn batch_at(operand: &Path, is_terminal: bool) -> xlsplice::Result<Batch> {
+    Batch::parse(&document(operand, is_terminal)?)
+}
+
+/// The text of the batch, from wherever the operand says it is.
+fn document(operand: &Path, is_terminal: bool) -> xlsplice::Result<String> {
+    if operand != Path::new(STDIN) {
+        return std::fs::read_to_string(operand).map_err(|err| {
+            Error::unreadable(format!(
+                "cannot read the batch at {}: {err}. Give the path of a JSON \
+                 array of operations, or {STDIN} to read one from stdin.",
+                operand.display()
+            ))
+        });
+    }
+    if is_terminal {
+        return Err(Error::usage(format!(
+            "{STDIN} reads the batch from stdin, and stdin is a terminal. Pipe \
+             a JSON array of operations in, or give the path of a file holding \
+             one."
+        )));
+    }
+    let mut json = String::new();
+    std::io::stdin()
+        .read_to_string(&mut json)
+        .map_err(|err| Error::unreadable(format!("cannot read the batch from stdin: {err}")))?;
+    Ok(json)
+}
+
+/// Whether stdin is a terminal, asked of the process once.
+fn stdin_is_terminal() -> bool {
+    std::io::stdin().is_terminal()
+}
 
 /// Apply `batch` to the package at `file`, land the result where `landing`
 /// says, and answer with what it did.
@@ -47,4 +114,31 @@ fn targets(batch: &Batch) -> String {
         .map(|operation| operation.target())
         .collect::<Vec<&str>>()
         .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use xlsplice::ErrorCode;
+
+    /// Whether stdin is a terminal is asked of the process, which a test has
+    /// no way to make one of; what is done with the answer is asked here.
+    #[test]
+    fn a_dash_with_a_terminal_on_stdin_is_a_usage_error() {
+        let err = batch_at(Path::new(STDIN), true).expect_err("nothing was piped in");
+
+        assert_eq!(err.code(), ErrorCode::Usage);
+        assert!(err.message().contains("stdin is a terminal"), "{err}");
+    }
+
+    /// The terminal is only ever a question about the dash: an operand that
+    /// is a path is read whatever stdin happens to be.
+    #[test]
+    fn a_path_operand_is_read_whatever_stdin_is() {
+        let err = batch_at(Path::new("no-such-batch.json"), true).expect_err("no such file");
+
+        assert_eq!(err.code(), ErrorCode::Unreadable);
+        assert!(err.message().contains("no-such-batch.json"), "{err}");
+    }
 }

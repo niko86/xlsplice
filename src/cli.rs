@@ -122,6 +122,26 @@ pub enum Command {
         landing: Landing,
     },
 
+    /// Apply a batch of operations to a package, all of them or none.
+    ///
+    /// The batch is a JSON array of operations. It is validated whole before
+    /// a byte is written and applied whole afterwards, so a failure anywhere
+    /// leaves the package as it was, and the failure names the operation it
+    /// came from by its place in the array.
+    Apply {
+        /// The package to write. Written in place unless `--out` is given.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+
+        /// The batch: a path to a JSON array of operations, or `-` to read
+        /// one from stdin.
+        #[arg(value_name = "BATCH")]
+        batch: PathBuf,
+
+        #[command(flatten)]
+        landing: Landing,
+    },
+
     /// Print the version of xlsplice.
     Version,
 
@@ -159,6 +179,7 @@ impl Command {
             Command::Names { .. } => "names",
             Command::Get { .. } => "get",
             Command::Set { .. } => "set",
+            Command::Apply { .. } => "apply",
             Command::Version => "version",
             #[cfg(debug_assertions)]
             Command::Selftest { .. } => "selftest",

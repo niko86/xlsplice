@@ -69,15 +69,56 @@ pub enum Operation {
         write_type: WriteType,
         /// The value, exactly as the caller spelled it.
         value: String,
+        /// Whether the caller says a formula in the cell may be replaced.
+        ///
+        /// Carried, not yet honoured: #10 is the ticket that replaces a
+        /// formula and clears its calc chain entry, and until then a cell
+        /// holding one is refused whatever this says. It is in the schema now
+        /// so that a caller writing a batch writes the same document before
+        /// and after that ticket.
+        #[serde(default)]
+        replace_formula: bool,
     },
 }
 
 impl Operation {
+    /// Every operation kind, spelled as a batch spells it, in the order a
+    /// caller is offered them.
+    ///
+    /// `clear`, `props.set`, `props.unset` and `calc` join these as their
+    /// tickets land. A batch naming a kind that is not here is refused with
+    /// this list, so a caller writing one against a later version and running
+    /// it against this one is told what this one knows.
+    pub const KINDS: [&'static str; 1] = ["set"];
+
+    /// The kind this operation is, as a batch spells it.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Operation::Set { .. } => "set",
+        }
+    }
+
     /// The target the operation names, for resolving and for reporting.
     pub fn target(&self) -> &str {
         match self {
             Operation::Set { target, .. } => target,
         }
+    }
+
+    /// How a failure of this operation names it: its place in the batch, and
+    /// what it asked of which target.
+    ///
+    /// A batch may ask of one cell in more than one way, and two operations
+    /// may fail for the same reason, so neither the target nor the reason
+    /// alone says which operation was wrong. The index is the one the report
+    /// counts by, so a caller reading a failure and a caller reading a report
+    /// are counting the same way.
+    fn within(&self, index: usize) -> String {
+        format!(
+            "operation at index {index} ({} {})",
+            self.kind(),
+            self.target()
+        )
     }
 
     /// The cell this operation names, resolved, or `None` where it names no
@@ -100,17 +141,11 @@ impl Operation {
     /// so that the cell the batch checked is the cell the operation acts on.
     /// The operation reads whatever parts it needs out of `opened`, which
     /// memoises them, and answers without changing anything: a batch is
-    /// applied only once every operation has answered. `index` is the place
-    /// the operation has in the batch, which is what a failure names it by.
-    pub fn edits(
-        &self,
-        index: usize,
-        at: Option<Resolution>,
-        opened: &mut Opened,
-    ) -> Result<Asked> {
+    /// applied only once every operation has answered.
+    pub fn edits(&self, at: Option<Resolution>, opened: &mut Opened) -> Result<Asked> {
         match (self, at) {
             (Operation::Set { .. }, Some(at)) => {
-                let written = self.written(index)?;
+                let written = self.written()?;
                 let xml = opened.text(&at.part)?;
                 let splices = splices_of(xml, &at, &written)?;
                 Ok(Asked {
@@ -126,21 +161,11 @@ impl Operation {
     }
 
     /// The value this operation writes, read the way its write type says to.
-    ///
-    /// A failure names the operation by its index in the batch, as well as by
-    /// what it asked of which target: a batch may ask twice of one cell, so
-    /// the target alone does not say which operation was wrong. The index is
-    /// the one the report counts by, so a caller reading a failure and a
-    /// caller reading a report are counting the same way.
-    fn written(&self, index: usize) -> Result<Written> {
+    fn written(&self) -> Result<Written> {
         let Operation::Set {
-            target,
-            write_type,
-            value,
+            write_type, value, ..
         } = self;
-        write_type
-            .read(value)
-            .map_err(|err| err.within(format!("operation at index {index} (set {target})")))
+        write_type.read(value)
     }
 }
 
@@ -398,6 +423,25 @@ impl Batch {
             operations: vec![operation],
         }
     }
+
+    /// The batch `json` spells, or why it is not one.
+    ///
+    /// A document that is not a batch is the caller's mistake rather than the
+    /// package's, so it is a usage error. Where the document is JSON but not a
+    /// batch, the message carries the operation kinds this build knows: the
+    /// likeliest such mistake is a batch written for a kind a later ticket
+    /// adds.
+    pub fn parse(json: &str) -> Result<Self> {
+        serde_json::from_str(json).map_err(|err| {
+            let known = match err.classify() {
+                serde_json::error::Category::Data => {
+                    format!(" The operation kinds are: {}.", Operation::KINDS.join(", "))
+                }
+                _ => String::new(),
+            };
+            Error::usage(format!("cannot read the batch: {err}.{known}"))
+        })
+    }
 }
 
 /// Where the result goes.
@@ -486,7 +530,12 @@ pub fn run(path: &Path, batch: &Batch, destination: &Destination, dry_run: bool)
     let land_at: Vec<Option<Resolution>> = batch
         .operations
         .iter()
-        .map(|operation| operation.at(&opened))
+        .enumerate()
+        .map(|(index, operation)| {
+            operation
+                .at(&opened)
+                .map_err(|err| err.within(operation.within(index)))
+        })
         .collect::<Result<_>>()?;
     refuse_a_repeated_cell(&land_at)?;
 
@@ -498,7 +547,11 @@ pub fn run(path: &Path, batch: &Batch, destination: &Destination, dry_run: bool)
         .iter()
         .zip(land_at)
         .enumerate()
-        .map(|(index, (operation, at))| operation.edits(index, at, &mut opened))
+        .map(|(index, (operation, at))| {
+            operation
+                .edits(at, &mut opened)
+                .map_err(|err| err.within(operation.within(index)))
+        })
         .collect::<Result<_>>()?;
 
     let applied = apply(&mut opened, &asked)?;
@@ -815,17 +868,23 @@ mod tests {
         }
     }
 
-    /// A batch may ask twice of one cell, so a failure says which operation it
-    /// was, by the index the report counts by, as well as what it asked.
+    /// A batch may ask of one cell in more than one way, and two operations
+    /// may fail for the same reason, so every failure of an operation says
+    /// which operation it was, by the index the report counts by, as well as
+    /// what it asked of which target.
     #[test]
-    fn a_value_that_is_not_of_its_type_names_the_operation_it_came_from() {
+    fn a_failure_of_an_operation_names_the_operation_it_came_from() {
         let operation = Operation::Set {
             target: "Inputs!A1".to_owned(),
             write_type: WriteType::Number,
             value: "hello".to_owned(),
+            replace_formula: false,
         };
 
-        let err = operation.written(1).expect_err("hello is not a number");
+        let err = operation
+            .written()
+            .expect_err("hello is not a number")
+            .within(operation.within(1));
 
         assert_eq!(err.code(), ErrorCode::Usage);
         assert!(
@@ -835,24 +894,30 @@ mod tests {
         );
     }
 
+    fn writing(target: &str, write_type: WriteType, value: &str) -> Operation {
+        Operation::Set {
+            target: target.to_owned(),
+            write_type,
+            value: value.to_owned(),
+            replace_formula: false,
+        }
+    }
+
     /// The document `apply` parses a batch from, spelled out here rather than
     /// derived from the code: a change to any of this is a change to what a
-    /// caller writes. An array of operations is the shape #8 asks for; a
-    /// value is text under the type that says how to read it, which is what
-    /// #20 asks for.
+    /// caller writes. An array of operations is the shape #8 asks for; a value
+    /// is text under the type that says how to read it, which is what #20
+    /// asks for; `replace_formula` is carried for #10 to honour.
     #[test]
     fn a_batch_round_trips_through_json() {
         let batch = Batch {
             operations: vec![
-                Operation::Set {
-                    target: "Inputs!A1".to_owned(),
-                    write_type: WriteType::Number,
-                    value: "42.5".to_owned(),
-                },
+                writing("Inputs!A1", WriteType::Number, "42.5"),
                 Operation::Set {
                     target: "Total".to_owned(),
                     write_type: WriteType::Text,
                     value: " kept ".to_owned(),
+                    replace_formula: true,
                 },
             ],
         };
@@ -862,8 +927,10 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!([
-                {"op": "set", "target": "Inputs!A1", "type": "number", "value": "42.5"},
-                {"op": "set", "target": "Total", "type": "text", "value": " kept "}
+                {"op": "set", "target": "Inputs!A1", "type": "number", "value": "42.5",
+                 "replace_formula": false},
+                {"op": "set", "target": "Total", "type": "text", "value": " kept ",
+                 "replace_formula": true}
             ])
         );
         assert_eq!(
@@ -872,25 +939,76 @@ mod tests {
         );
     }
 
-    /// A field an operation does not know is ignored, so a batch written for a
-    /// later ticket's flag still reads here.
+    /// `replace_formula` may be left out, because most operations have no
+    /// opinion about a formula and every one of them would otherwise have to
+    /// say so.
     #[test]
-    fn a_field_an_operation_does_not_know_is_ignored() {
-        let json = serde_json::json!([
-            {"op": "set", "target": "Inputs!A1", "type": "bool", "value": "1",
-             "replace_formula": false}
-        ]);
-
-        let batch = serde_json::from_value::<Batch>(json).expect("a batch deserialises");
+    fn an_operation_that_says_nothing_about_a_formula_does_not_replace_one() {
+        let batch =
+            Batch::parse(r#"[{"op": "set", "target": "Inputs!A1", "type": "bool", "value": "1"}]"#)
+                .expect("a batch may leave the flag out");
 
         assert_eq!(
             batch.operations,
-            [Operation::Set {
-                target: "Inputs!A1".to_owned(),
-                write_type: WriteType::Bool,
-                value: "1".to_owned(),
-            }]
+            [writing("Inputs!A1", WriteType::Bool, "1")]
         );
+    }
+
+    /// A field an operation does not know is ignored, so a batch written
+    /// against a later version still reads here.
+    #[test]
+    fn a_field_an_operation_does_not_know_is_ignored() {
+        let batch = Batch::parse(
+            r#"[{"op": "set", "target": "Inputs!A1", "type": "bool", "value": "1",
+                 "why": "a field no ticket has added"}]"#,
+        )
+        .expect("a batch deserialises");
+
+        assert_eq!(
+            batch.operations,
+            [writing("Inputs!A1", WriteType::Bool, "1")]
+        );
+    }
+
+    /// The kinds, transcribed rather than derived from the code, so that a
+    /// kind added without being listed fails the test: the list is what a
+    /// caller naming an unknown kind is told.
+    #[test]
+    fn every_operation_kind_is_listed_under_the_name_a_batch_spells_it_with() {
+        for kind in Operation::KINDS {
+            let json =
+                format!(r#"[{{"op": "{kind}", "target": "A1", "type": "text", "value": ""}}]"#);
+            let batch = Batch::parse(&json).unwrap_or_else(|err| panic!("{kind}: {err}"));
+            assert_eq!(batch.operations[0].kind(), kind);
+        }
+        assert_eq!(Operation::KINDS, ["set"], "a kind with no list entry");
+    }
+
+    /// A kind this build does not know is the caller's mistake, and the
+    /// likeliest one is a batch written for a later ticket, so the failure
+    /// says what this build does know.
+    #[test]
+    fn a_kind_this_build_does_not_know_is_a_usage_error_listing_the_ones_it_does() {
+        let err = Batch::parse(r#"[{"op": "props.set", "name": "Ref", "value": "1"}]"#)
+            .expect_err("props.set is #12's to add");
+
+        assert_eq!(err.code(), ErrorCode::Usage);
+        assert!(
+            err.message().contains("props.set")
+                && err.message().contains("The operation kinds are: set."),
+            "{}",
+            err.message()
+        );
+    }
+
+    /// A document that is not JSON at all fails on that alone: the operation
+    /// kinds have nothing to do with it and would only be noise.
+    #[test]
+    fn a_document_that_is_not_json_says_so_and_nothing_about_kinds() {
+        let err = Batch::parse("not json").expect_err("that is not JSON");
+
+        assert_eq!(err.code(), ErrorCode::Usage);
+        assert!(!err.message().contains("kinds are"), "{}", err.message());
     }
 
     fn splice() -> Splice {
@@ -992,16 +1110,8 @@ mod tests {
     #[test]
     fn an_operation_that_names_no_cell_is_reported_with_no_address() {
         let operations = [
-            Operation::Set {
-                target: "Inputs!A1".to_owned(),
-                write_type: WriteType::Number,
-                value: "1".to_owned(),
-            },
-            Operation::Set {
-                target: "the flag".to_owned(),
-                write_type: WriteType::Bool,
-                value: "true".to_owned(),
-            },
+            writing("Inputs!A1", WriteType::Number, "1"),
+            writing("the flag", WriteType::Bool, "true"),
         ];
         let asked = [
             Asked {
@@ -1040,11 +1150,7 @@ mod tests {
 
     #[test]
     fn a_batch_of_one_holds_that_one_operation() {
-        let operation = Operation::Set {
-            target: "Inputs!A1".to_owned(),
-            write_type: WriteType::Number,
-            value: "1".to_owned(),
-        };
+        let operation = writing("Inputs!A1", WriteType::Number, "1");
 
         assert_eq!(Batch::of(operation.clone()).operations, [operation]);
     }

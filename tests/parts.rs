@@ -113,6 +113,7 @@ fn a_part_two_operations_both_read_is_read_once() {
         target: target.to_owned(),
         write_type: WriteType::Number,
         value: "7".to_owned(),
+        replace_formula: false,
     };
 
     let opening = opened.reads();
@@ -124,11 +125,9 @@ fn a_part_two_operations_both_read_is_read_once() {
             .expect("both cells are in the package")
     };
     let (at_one, at_two) = (at(&one), at(&two));
-    one.edits(0, at_one, &mut opened)
-        .expect("A1 must be writable");
+    one.edits(at_one, &mut opened).expect("A1 must be writable");
     let after_one = opened.reads();
-    two.edits(1, at_two, &mut opened)
-        .expect("A2 must be writable");
+    two.edits(at_two, &mut opened).expect("A2 must be writable");
 
     assert_eq!(
         opening, 3,

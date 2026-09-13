@@ -67,10 +67,18 @@ fn run(command: Command, out: &Out) -> ExitCode {
                 target,
                 write_type: kind,
                 value,
+                // #10 adds the flag that licenses replacing a formula; a
+                // `set` cannot yet say so.
+                replace_formula: false,
             }),
             &landing,
             out,
         ),
+        Command::Apply {
+            file,
+            batch,
+            landing,
+        } => write::apply(&file, &batch, &landing, out),
         Command::Version => answer::version(),
         #[cfg(debug_assertions)]
         Command::Selftest { .. } => panic!("selftest was asked to panic"),

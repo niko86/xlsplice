@@ -45,6 +45,22 @@ Everything in a worksheet part outside `<sheetData>`. Say _worksheet envelope_
 wherever the JSON envelope is also in play.
 _Avoid_: header, wrapper
 
+**Declaration**:
+What a package says about a part besides holding it: its content type in
+`[Content_Types].xml`, and the _relationship_ that reaches it. A part is
+created and removed with both of them, because a package naming a part it does
+not hold is what Excel offers to repair.
+_Avoid_: registration, manifest entry
+
+**Calc chain**:
+The order Excel last calculated a workbook's formulas in, cached in
+`xl/calcChain.xml`, one entry per formula cell. An entry names its sheet by
+the number the workbook gives it, and one that names none is on the sheet the
+entry before it named. Nothing depends on the chain being right, but an entry
+for a cell that no longer holds a formula is an inconsistency, so a formula
+replaced takes its entry with it.
+_Avoid_: dependency graph, formula cache
+
 ### Cells
 
 **Address**:

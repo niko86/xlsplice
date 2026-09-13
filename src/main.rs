@@ -60,6 +60,7 @@ fn run(command: Command, out: &Out) -> ExitCode {
             target,
             value,
             kind,
+            formulas,
             landing,
         } => write::run(
             &file,
@@ -67,9 +68,7 @@ fn run(command: Command, out: &Out) -> ExitCode {
                 target,
                 write_type: kind,
                 value,
-                // #10 adds the flag that licenses replacing a formula; a
-                // `set` cannot yet say so.
-                replace_formula: false,
+                replace_formula: formulas.replace_formula,
             }),
             &landing,
             out,
@@ -77,14 +76,13 @@ fn run(command: Command, out: &Out) -> ExitCode {
         Command::Clear {
             file,
             target,
+            formulas,
             landing,
         } => write::run(
             &file,
             &Batch::of(Operation::Clear {
                 target,
-                // #10 adds the flag that licenses replacing a formula; a
-                // `clear` cannot yet say so.
-                replace_formula: false,
+                replace_formula: formulas.replace_formula,
             }),
             &landing,
             out,

@@ -23,8 +23,10 @@
 pub mod answer;
 pub mod atomic;
 pub mod batch;
+pub mod calc_chain;
 pub mod cells;
 pub mod date;
+pub mod declared;
 pub mod envelope;
 pub mod error;
 pub mod package;

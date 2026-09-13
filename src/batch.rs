@@ -43,11 +43,13 @@ use roxmltree::{Document, Node};
 use serde::{Deserialize, Serialize};
 
 use crate::atomic;
+use crate::calc_chain;
 use crate::date;
+use crate::declared;
 use crate::error::{Error, Result};
 use crate::package::{Content, Package};
 use crate::reference::Address;
-use crate::relationships::Relationships;
+use crate::relationships::{Relationships, part_or_conventional};
 use crate::splice::{self, Splice};
 use crate::target::{Resolution, resolve};
 use crate::workbook::{DateSystem, Workbook};
@@ -109,6 +111,19 @@ impl Operation {
         }
     }
 
+    /// Whether the operation says a formula in the cell it names may be
+    /// replaced.
+    fn replaces_a_formula(&self) -> bool {
+        match self {
+            Operation::Set {
+                replace_formula, ..
+            }
+            | Operation::Clear {
+                replace_formula, ..
+            } => *replace_formula,
+        }
+    }
+
     /// The target the operation names, for resolving and for reporting.
     pub fn target(&self) -> &str {
         match self {
@@ -159,10 +174,18 @@ impl Operation {
         match at {
             Some(at) => {
                 let written = self.written(opened.dates())?;
-                let xml = opened.text(&at.part)?;
-                let splices = splices_of(xml, &at, &written)?;
+                // The borrow of the part's text ends here, because taking a
+                // formula's entry out of the calc chain reads another part.
+                let (splices, replaced) = {
+                    let xml = opened.text(&at.part)?;
+                    splices_of(xml, &at, &written, self.replaces_a_formula())?
+                };
+                let mut parts = vec![(at.part.clone(), PartEdit::Splice(splices))];
+                if replaced {
+                    parts.extend(uncalculated(opened, &at)?);
+                }
                 Ok(Asked {
-                    parts: vec![(at.part.clone(), PartEdit::Splice(splices))],
+                    parts,
                     at: Some(at),
                 })
             }
@@ -412,6 +435,37 @@ impl Opened {
     /// Which day the workbook counts its date serials from.
     pub fn dates(&self) -> DateSystem {
         self.workbook.dates()
+    }
+
+    /// The calc chain part, where the package holds one. The relationship
+    /// names it, falling back to where Excel puts it, as every other part
+    /// xlsplice follows by type does.
+    pub fn calc_chain(&self) -> Option<String> {
+        part_or_conventional(
+            &self.package,
+            self.rels.part_of_kind(calc_chain::CALC_CHAIN),
+            calc_chain::CONVENTIONAL_PART,
+        )
+    }
+
+    /// The workbook part, which owns the relationships every part under
+    /// `xl/` is reached by.
+    pub fn workbook_part(&self) -> &str {
+        self.workbook.part()
+    }
+
+    /// The package itself, for the declarations a part removed has to be
+    /// taken out of. Nothing else reaches past this into the container.
+    fn package(&mut self) -> &mut Package {
+        &mut self.package
+    }
+
+    /// The number the workbook gives the sheet called `sheet`, which is what
+    /// the calc chain calls it.
+    pub fn sheet_number(&self, sheet: &str) -> Option<u32> {
+        self.workbook
+            .sheet_named(sheet)
+            .and_then(|found| found.sheet_id)
     }
 
     /// How many parts have been taken out of the container so far.
@@ -682,16 +736,24 @@ struct Applied {
 /// parts are taken in path order, which is the order the report lists them
 /// in.
 fn apply(opened: &mut Opened, asked: &[Asked]) -> Result<Applied> {
+    let by_part = by_part(asked);
+    let mut wanted: BTreeMap<String, PartEdit> = BTreeMap::new();
+    for (part, edits) in &by_part {
+        wanted.insert(part.clone(), merged(part, edits)?);
+    }
+    withdraw_an_emptied_calc_chain(opened, &mut wanted)?;
+
     let mut applied = Applied {
         content: BTreeMap::new(),
         changed: vec![false; asked.len()],
         parts: Parts::default(),
     };
-    for (part, edits) in by_part(asked) {
-        match merged(&part, &edits)? {
+    for (part, edit) in wanted {
+        let edits = by_part.get(&part).map_or(&[][..], Vec::as_slice);
+        match edit {
             PartEdit::Splice(all) => {
                 let xml = opened.text(&part)?;
-                spliced(&mut applied.changed, &edits, xml);
+                spliced(&mut applied.changed, edits, xml);
                 let spliced = splice::apply(xml, &all)?;
                 if spliced != xml {
                     applied.parts.changed.push(part.clone());
@@ -706,7 +768,7 @@ fn apply(opened: &mut Opened, asked: &[Asked]) -> Result<Applied> {
                         "part '{part}' is already in the package, so it cannot be created"
                     )));
                 }
-                mark(&mut applied.changed, &edits);
+                mark(&mut applied.changed, edits);
                 applied.parts.added.push(part.clone());
                 applied.content.insert(part, Content::Bytes(bytes));
             }
@@ -716,13 +778,58 @@ fn apply(opened: &mut Opened, asked: &[Asked]) -> Result<Applied> {
                         "part '{part}' is not in the package, so it cannot be removed"
                     )));
                 }
-                mark(&mut applied.changed, &edits);
+                mark(&mut applied.changed, edits);
                 applied.parts.removed.push(part.clone());
                 applied.content.insert(part, Content::Gone);
             }
         }
     }
     Ok(applied)
+}
+
+/// A calc chain with no entries left is not a calc chain, so it goes.
+///
+/// Whether the last entry has gone is a question about the part rather than
+/// about any one operation: two operations may each take an entry out, and
+/// neither can see the other's, so it is asked once, of the chain as the whole
+/// batch leaves it. The part then goes with the relationship that reaches it
+/// and its content type, because a package naming a part it does not hold is
+/// the sort of inconsistency Excel offers to repair.
+fn withdraw_an_emptied_calc_chain(
+    opened: &mut Opened,
+    wanted: &mut BTreeMap<String, PartEdit>,
+) -> Result<()> {
+    let Some(part) = opened.calc_chain() else {
+        return Ok(());
+    };
+    let Some(PartEdit::Splice(splices)) = wanted.get(&part) else {
+        return Ok(());
+    };
+    let left = {
+        let xml = opened.text(&part)?;
+        let emptied = splice::apply(xml, splices)?;
+        calc_chain::entries_in(&emptied).map_err(|err| err.within(&part))?
+    };
+    if left > 0 {
+        return Ok(());
+    }
+
+    let owner = opened.workbook_part().to_owned();
+    for (declaring, splices) in declared::withdrawn(opened.package(), &owner, &part)? {
+        let edit = PartEdit::Splice(splices);
+        let merged = match wanted.remove(&declaring) {
+            None => edit,
+            Some(already) => already.and(&edit).ok_or_else(|| {
+                Error::internal(format!(
+                    "part '{declaring}' is being edited two ways at once while the calc \
+                     chain is withdrawn"
+                ))
+            })?,
+        };
+        wanted.insert(declaring, merged);
+    }
+    wanted.insert(part, PartEdit::Remove);
+    Ok(())
 }
 
 /// Every operation's edits, gathered by the part they land in, in path order.
@@ -782,12 +889,22 @@ fn mark(changed: &mut [bool], edits: &[(usize, &PartEdit)]) {
 }
 
 /// The splices that put `written` into the cell `at` names, in the part whose
-/// text is `xml`.
+/// text is `xml`, and whether a formula was replaced to do it.
 ///
 /// The part is parsed here, by the operation that named it, and the splices
 /// are byte ranges of the text handed in: the same text every other operation
 /// on this part is handed, so their ranges all mean the same thing.
-fn splices_of(xml: &str, at: &Resolution, written: &Written) -> Result<Vec<Splice>> {
+///
+/// `licensed` is whether the operation said a formula may be replaced. A
+/// formula that is replaced goes with the value that replaces it, because
+/// what goes between the cell's tags is written whole, and its calc chain
+/// entry goes with it, which is what the second half of the answer is for.
+fn splices_of(
+    xml: &str,
+    at: &Resolution,
+    written: &Written,
+    licensed: bool,
+) -> Result<(Vec<Splice>, bool)> {
     let document = Document::parse(xml)
         .map_err(|err| Error::unreadable(format!("not valid XML: {err}")).within(&at.part))?;
     let sheet = Worksheet::of(&document).map_err(|err| err.within(&at.part))?;
@@ -806,28 +923,58 @@ fn splices_of(xml: &str, at: &Resolution, written: &Written) -> Result<Vec<Splic
             )));
         }
     };
-    refuse_a_formula(node, at)?;
-    value_splices(node, xml, written)
+    let replaced = formula_to_replace(node, at, licensed)?;
+    Ok((value_splices(node, xml, written)?, replaced))
 }
 
-/// Refuse to write over a formula.
+/// The edit that takes the cell `at` names out of the calc chain, where the
+/// package holds one that mentions it.
+///
+/// The chain is a cache of the order the formulas were last calculated in, so
+/// an entry for a cell that no longer holds a formula is an inconsistency
+/// Excel may complain about. A package with no chain has nothing to maintain,
+/// and a workbook that gives the sheet no number gives the chain no way to
+/// name it: rather than guess at which entry is which, the chain is left as it
+/// is, because a wrong entry removed is worse than a stale one kept.
+fn uncalculated(opened: &mut Opened, at: &Resolution) -> Result<Option<(String, PartEdit)>> {
+    let (Some(part), Some(sheet)) = (opened.calc_chain(), opened.sheet_number(&at.address.sheet))
+    else {
+        return Ok(None);
+    };
+    let removal = {
+        let xml = opened.text(&part)?;
+        calc_chain::without(xml, sheet, at.address.cell).map_err(|err| err.within(&part))?
+    };
+    Ok(match removal.splices.is_empty() {
+        true => None,
+        false => Some((part, PartEdit::Splice(removal.splices))),
+    })
+}
+
+/// Whether a formula is being replaced, refusing where the operation was not
+/// licensed to replace one.
 ///
 /// The spec's guarantee is that a mis-addressed write cannot silently destroy
-/// a template's formula, and nothing yet says a caller meant to. A shared
-/// master carries the formula its children take theirs from, and overwriting
-/// it orphans them, so it names its range: it is refused even once replacing
-/// a formula is possible.
-fn refuse_a_formula(node: Node, at: &Resolution) -> Result<()> {
+/// a template's formula, so a cell holding one is refused unless the operation
+/// says it meant it. A shared master carries the formula its children take
+/// theirs from, and overwriting it orphans them, so it is refused whatever the
+/// operation says, and its range is in the message so the caller can see what
+/// it would have taken with it.
+fn formula_to_replace(node: Node, at: &Resolution, licensed: bool) -> Result<bool> {
     let Some(formula) = formula_of(node, at.address.cell)? else {
-        return Ok(());
+        return Ok(false);
     };
     if formula.role == FormulaRole::SharedMaster {
         return Err(Error::refused(format!(
             "cell {} carries the formula shared across {}; overwriting it would \
-             orphan the rest of the range. Write to a cell outside it.",
+             orphan the rest of the range, so no flag licenses it. Write to a \
+             cell outside it.",
             at.address,
             formula.range.as_deref().unwrap_or("its group")
         )));
+    }
+    if licensed {
+        return Ok(true);
     }
     // A shared child stores no formula text of its own, so what names it is
     // the group it takes one from.
@@ -842,8 +989,8 @@ fn refuse_a_formula(node: Node, at: &Resolution) -> Result<()> {
         (_, text) => format!("holds the formula '{text}'"),
     };
     Err(Error::refused(format!(
-        "cell {} {what}; replacing a formula is not yet supported. Write to a \
-         cell that holds a value.",
+        "cell {} {what}; pass --replace-formula, or replace_formula: true in a \
+         batch, to replace it and take its calc chain entry with it.",
         at.address
     )))
 }

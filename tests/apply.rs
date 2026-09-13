@@ -255,23 +255,32 @@ fn out_and_dry_run_work_as_they_do_for_set() {
     assert_only_these_differ(&fixture("feature.xlsx"), &elsewhere, &[SHEET1, SHEET2]);
 }
 
-/// A cell holding a formula is refused whatever `replace_formula` says: the
-/// flag is carried for #10 to honour, and until then nothing honours it.
+/// An operation says for itself whether a formula may be replaced, and one
+/// that does not say so is refused. What replacing one does to the calc chain
+/// is asserted in `formulas.rs`.
 #[test]
-fn replace_formula_is_carried_and_a_formula_is_still_refused() {
+fn replace_formula_licenses_the_operation_that_carries_it_and_no_other() {
     let (workspace, package) = copy("replace-formula");
     let batch = batch_file(
         &workspace,
         "batch.json",
         r#"[{"op": "set", "target": "Inputs!D1", "type": "number", "value": "1",
-             "replace_formula": true}]"#,
+             "replace_formula": true},
+            {"op": "set", "target": "Inputs!E1", "type": "number", "value": "2"}]"#,
     );
     let file = package.display().to_string();
 
     let out = run(&["apply", &file, &batch, "--json"]);
 
     assert_eq!(exit_code(&out), 4, "{}", stdout(&out));
-    assert_eq!(json(&out)["error"]["code"], serde_json::json!("refused"));
+    let message = json(&out)["error"]["message"]
+        .as_str()
+        .expect("a failed envelope carries a message")
+        .to_owned();
+    assert!(
+        message.starts_with("operation at index 1 (set Inputs!E1): "),
+        "the second operation is the one with no licence: {message}"
+    );
     assert_same_bytes(&fixture("feature.xlsx"), &package);
 }
 

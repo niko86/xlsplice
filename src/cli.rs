@@ -64,6 +64,22 @@ impl Landing {
     }
 }
 
+/// What a writing verb may do to a formula in the cell it was pointed at.
+///
+/// Declared once and flattened into each cell-writing verb, as [`Landing`] is.
+/// `apply` does not take it: a batch says it per operation, so that one
+/// operation licensing a replacement cannot license another's.
+#[derive(Debug, clap::Args)]
+pub struct Formulas {
+    /// Replace a formula in the target cell, dropping it and taking its calc
+    /// chain entry with it. Without this a cell holding a formula is refused,
+    /// so that a mis-addressed write cannot silently destroy one. A shared
+    /// formula's master is refused even with this, because overwriting it
+    /// orphans the rest of its range.
+    #[arg(long)]
+    pub replace_formula: bool,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// List the package's sheets with their state, in workbook order.
@@ -119,6 +135,9 @@ pub enum Command {
         kind: WriteType,
 
         #[command(flatten)]
+        formulas: Formulas,
+
+        #[command(flatten)]
         landing: Landing,
     },
 
@@ -137,6 +156,9 @@ pub enum Command {
         /// anchor.
         #[arg(value_name = "TARGET")]
         target: String,
+
+        #[command(flatten)]
+        formulas: Formulas,
 
         #[command(flatten)]
         landing: Landing,

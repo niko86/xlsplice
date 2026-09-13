@@ -54,6 +54,11 @@ pub struct Sheet {
     /// The relationship naming the part that holds the sheet's cells. A
     /// package another tool has mangled can lose it.
     pub rel_id: Option<String>,
+    /// The number the workbook gives the sheet, which is what the calc chain
+    /// calls it. Nothing else in the package refers to a sheet this way, and
+    /// it is not the sheet's place in the workbook: a sheet moved keeps its
+    /// number.
+    pub sheet_id: Option<u32>,
 }
 
 /// Where a defined name can be seen from.
@@ -300,6 +305,7 @@ fn read_sheets(root: Node) -> Result<Vec<Sheet>> {
                     .attributes()
                     .find(|attribute| attribute.name() == "id")
                     .map(|attribute| attribute.value().to_owned()),
+                sheet_id: node.attribute("sheetId").and_then(|id| id.parse().ok()),
             })
         })
         .collect()
@@ -428,16 +434,19 @@ mod tests {
                     name: "Data".to_owned(),
                     state: SheetState::Visible,
                     rel_id: Some("rId1".to_owned()),
+                    sheet_id: Some(1),
                 },
                 Sheet {
                     name: "Notes".to_owned(),
                     state: SheetState::Hidden,
                     rel_id: Some("rId2".to_owned()),
+                    sheet_id: Some(2),
                 },
                 Sheet {
                     name: "Parameters".to_owned(),
                     state: SheetState::VeryHidden,
                     rel_id: Some("rId3".to_owned()),
+                    sheet_id: Some(3),
                 },
             ]
         );

@@ -613,6 +613,27 @@ pub mod verb {
         }
     }
 
+    /// The same operation, licensed to replace a formula it finds.
+    pub fn replacing(operation: Operation) -> Operation {
+        match operation {
+            Operation::Set {
+                target,
+                write_type,
+                value,
+                ..
+            } => Operation::Set {
+                target,
+                write_type,
+                value,
+                replace_formula: true,
+            },
+            Operation::Clear { target, .. } => Operation::Clear {
+                target,
+                replace_formula: true,
+            },
+        }
+    }
+
     /// `xlsplice set FILE TARGET VALUE --type TYPE [--out PATH] [--dry-run]`.
     pub fn set(
         path: &Path,

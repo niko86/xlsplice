@@ -593,6 +593,23 @@ fn a_value_that_is_not_of_the_type_asked_for_is_a_usage_error() {
     assert_same_bytes(&fixture("plain.xlsx"), &package);
 }
 
+/// `--out` and `--dry-run` are declared once and flattened into every writing
+/// verb, so the one thing that could go wrong is a flag going missing from the
+/// verb it was flattened into. Only a real argv can say what the help lists.
+#[test]
+fn the_help_lists_every_operand_and_flag_set_takes() {
+    let out = run(&["set", "--help"]);
+
+    assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
+    let help = support::stdout(&out);
+    for wanted in ["FILE", "TARGET", "VALUE", "--type", "--out", "--dry-run"] {
+        assert!(
+            help.contains(wanted),
+            "set --help must list {wanted}: {help}"
+        );
+    }
+}
+
 /// clap reads `--type` before a verb is reached, so a type outside the three
 /// never becomes a write at all, and only a real argv can say so.
 #[test]

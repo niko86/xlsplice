@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
 use clap::{Parser, Subcommand};
 
-use xlsplice::batch::WriteType;
+use xlsplice::batch::{Destination, WriteType};
 
 /// Surgical edits to Excel packages.
 #[derive(Debug, Parser)]
@@ -35,6 +35,33 @@ pub struct GlobalArgs {
     /// Write extra diagnostics. Affects stderr only.
     #[arg(long, short, global = true)]
     pub verbose: bool,
+}
+
+/// Where a writing verb's result lands: the two flags every one of them
+/// takes.
+///
+/// Declared once and flattened into each writing verb, so that `set`,
+/// `clear`, `apply`, `props` and `calc` cannot drift apart in how they spell
+/// the same two questions. Not global, because a read verb has no result to
+/// land anywhere.
+#[derive(Debug, clap::Args)]
+pub struct Landing {
+    /// Write the result here instead, leaving FILE untouched. An existing
+    /// file at this path is replaced.
+    #[arg(long, value_name = "PATH")]
+    pub out: Option<PathBuf>,
+
+    /// Do everything but put the result anywhere, and report what would
+    /// have changed.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+impl Landing {
+    /// Where the result goes: the path `--out` names, or the package itself.
+    pub fn destination(&self) -> Destination {
+        Destination::from(self.out.clone())
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -91,15 +118,8 @@ pub enum Command {
         #[arg(long = "type", value_name = "TYPE", value_parser = write_type())]
         kind: WriteType,
 
-        /// Write the result here instead, leaving FILE untouched. An existing
-        /// file at this path is replaced.
-        #[arg(long, value_name = "PATH")]
-        out: Option<PathBuf>,
-
-        /// Do everything but put the result anywhere, and report what would
-        /// have changed.
-        #[arg(long)]
-        dry_run: bool,
+        #[command(flatten)]
+        landing: Landing,
     },
 
     /// Print the version of xlsplice.

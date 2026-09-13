@@ -7,14 +7,15 @@
 
 mod cli;
 mod out;
+mod write;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 
 use clap::Parser;
 
 use xlsplice::answer::{self, Answer};
-use xlsplice::batch::{self, Batch, Destination, Operation, WriteType};
+use xlsplice::batch::{Batch, Operation};
 use xlsplice::cells;
 use xlsplice::error::Error;
 use xlsplice::package::Package;
@@ -59,9 +60,17 @@ fn run(command: Command, out: &Out) -> ExitCode {
             target,
             value,
             kind,
-            out: destination,
-            dry_run,
-        } => set(&file, &target, &value, kind, destination, dry_run, out),
+            landing,
+        } => write::run(
+            &file,
+            &Batch::of(Operation::Set {
+                target,
+                write_type: kind,
+                value,
+            }),
+            &landing,
+            out,
+        ),
         Command::Version => answer::version(),
         #[cfg(debug_assertions)]
         Command::Selftest { .. } => panic!("selftest was asked to panic"),
@@ -100,39 +109,6 @@ fn get(path: &Path, targets: &[String], out: &Out) -> xlsplice::Result<Answer> {
     let (mut package, workbook) = open(path, out)?;
     out.trace(&format!("reading {} target(s)", targets.len()));
     answer::cells(&cells::read(&mut package, &workbook, targets)?)
-}
-
-/// Write one value into one cell, as a batch of one operation.
-fn set(
-    path: &Path,
-    target: &str,
-    value: &str,
-    write_type: WriteType,
-    destination: Option<PathBuf>,
-    dry_run: bool,
-    out: &Out,
-) -> xlsplice::Result<Answer> {
-    let batch = Batch::of(Operation::Set {
-        target: target.to_owned(),
-        write_type,
-        value: value.to_owned(),
-    });
-    let destination = Destination::from(destination);
-    out.trace(&format!(
-        "writing {target} in {}{}",
-        destination.path(path).display(),
-        if dry_run { " (dry run)" } else { "" }
-    ));
-    let report = batch::run(path, &batch, &destination, dry_run)?;
-    out.trace(&format!(
-        "{} part(s) changed: {}",
-        report.parts.changed.len(),
-        match report.parts.changed.is_empty() {
-            true => "none".to_owned(),
-            false => report.parts.changed.join(", "),
-        }
-    ));
-    answer::written(&report)
 }
 
 /// Render what clap gave back instead of a command.

@@ -1,0 +1,19 @@
+# Line endings are the repository's, not the checkout's.
+#
+# Git for Windows installs with `core.autocrlf=true`, so without this the lab
+# machine gets CRLF in every text file and three tests fail on that alone: two
+# in `tests/packaging.rs` split the workflow YAML on "\non:\n", and the oracle
+# gate in `tests/oracle.rs` splits its own source on "\n#[test]" and then
+# reports every case as ungated. Harder to see, and the reason the fix is here
+# rather than in those three parsers: the XML a test builds a package out of is
+# a multi-line raw string literal, so a CRLF checkout changes the bytes of every
+# package the suites write, and a string literal cannot be parsed tolerantly.
+#
+# `Cargo.toml` already says the point about zlib-rs: the Linux CI job and the
+# Windows lab machine build the same.
+* text=auto eol=lf
+
+# Packages are bytes. A fixture's bytes are the baseline every
+# byte-preservation test compares against, so nothing may translate them.
+*.xlsx binary
+*.xlsm binary

@@ -37,7 +37,15 @@ esac
 # Accessibility permission. Without it System Events answers nothing about any
 # application and every package looks like a timeout, so it is asked about
 # first, plainly, rather than left to be discovered case by case.
-if ! /usr/bin/osascript -e 'tell application "System Events" to return (count of windows of every process whose visible is true) as text' >/dev/null 2>&1; then
+# Asked about one named process, which is the shape the suite itself uses.
+# Asking about every visible process is a stricter question than the suite
+# ever asks — one process in the enumeration refusing fails the whole thing —
+# and on 2026-09-14 that is exactly what it did, on a machine where the suite
+# would have run.
+if ! /usr/bin/osascript -e 'tell application "System Events"
+	if not (exists process "Finder") then return "no Finder to ask about"
+	return (count of windows of process "Finder") as text
+end tell' >/dev/null 2>&1; then
 	echo "This terminal cannot read the screen, so the oracle has no verdict to give." >&2
 	echo >&2
 	echo "What is refused is narrow: Apple Events work, and System Events will say" >&2

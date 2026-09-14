@@ -194,9 +194,19 @@ pub fn requires(set_to: Option<&str>) -> bool {
 /// none, it says so, and the run says so in one second instead of ninety.
 /// Only that refusal is read as one: any other trouble with System Events is
 /// left to the watcher, which has a better view of it.
+///
+/// Asked, too, in the shape the watcher uses: one named process, its windows.
+/// The first version of this asked about the windows of *every* visible
+/// process, and on 2026-09-14 that shape was refused on a machine where every
+/// shape the suite actually uses was allowed — one process in the enumeration
+/// refusing is enough to fail the whole question. A probe that is stricter
+/// than what it stands in for does not report a blocked suite, it blocks one.
 fn reads_the_screen() -> Option<String> {
     let asked = run(
-        r#"tell application "System Events" to return (count of windows of every process whose visible is true) as text"#,
+        r#"tell application "System Events"
+	if not (exists process "Finder") then return "no Finder to ask about"
+	return (count of windows of process "Finder") as text
+end tell"#,
     );
     let Err(why) = asked else { return None };
     (why.contains("assistive access") || why.contains("-25211")).then(|| {

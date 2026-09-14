@@ -70,6 +70,15 @@ nothing on screen.
   ground truth: a process that is trusted gets `AXIsProcessTrusted: YES` and
   can read window titles and subroles directly, System Events or no System
   Events. On this Mac it always could.
+- Excel is launched **behind** whatever is in front (`open -g`), so a run of
+  any length can be left alone: the window is still drawn and still read, and
+  what is withheld is activation rather than the screen. The price is that
+  nothing in the backend may type — a keystroke goes to the front
+  application, which during a backgrounded run is somebody's work — so a
+  dialog is answered by pressing its button through the accessibility
+  interface and never by sending an escape. Checked on 2026-09-14 against the
+  case that makes Excel demand repair: the dialog was answered, the verdict
+  was the same, and the front application never changed.
 - A Windows backend (#15) answers the same question and will not answer it this
   way: nothing here about sandboxes, LaunchServices or System Events crosses
   over, which is why the interface is one operation returning clean, repair or

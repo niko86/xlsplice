@@ -327,6 +327,12 @@ fn running() -> bool {
 /// sandbox the file and launches Excel if it is not already up.
 fn launched(package: &Path) -> Result<(), String> {
     let out = Command::new("/usr/bin/open")
+        // Behind whatever is in front, so a run of any length can be left
+        // alone. The window is still drawn and still read: what `-g` withholds
+        // is activation, not the screen. Nothing here may type, then — see the
+        // watcher — because a keystroke goes to the front application, which
+        // during a backgrounded run is somebody's work.
+        .arg("-g")
         .arg("-a")
         .arg("Microsoft Excel")
         .arg(package)
@@ -418,7 +424,9 @@ on run
 								return "repair Excel offered to recover the workbook"
 							end if
 							if winName is "Open" then
-								key code 53
+								try
+									click button "Cancel" of w
+								end try
 								return "unavailable Excel was not granted the file and asked for it"
 							end if
 						else
@@ -457,7 +465,9 @@ on run
 					try
 						click button "No" of w
 					on error
-						key code 53
+						try
+							click button "Cancel" of w
+						end try
 					end try
 				end if
 			end repeat

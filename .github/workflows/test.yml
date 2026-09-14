@@ -2,6 +2,10 @@
 # this private repository are limited, so this is one job on one platform, with
 # the cargo cache and with superseded runs cancelled. Release builds belong on
 # a version tag, in their own workflow; the Excel oracle suite never runs here.
+#
+# One job, two toolchains: the suite runs on stable, and the declared
+# `rust-version` is checked afterwards so that the floor is a thing CI holds
+# rather than a thing someone remembers to test. See #45.
 name: test
 
 on:
@@ -28,3 +32,23 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - run: cargo test --locked
+
+      # The floor `Cargo.toml` declares, held by something other than memory.
+      # CI otherwise only ever builds on stable, so a dependency bump or a
+      # newly-used language feature could raise the real floor above the
+      # declared one and nothing would notice until someone on that toolchain
+      # ran `cargo install --git`.
+      #
+      # A step rather than a job: Actions minutes on this private repository
+      # are limited, and one toolchain download plus a check against a warm
+      # cache is seconds on a 1x runner, where a second job would be a second
+      # checkout, a second cache restore and a second billable minute.
+      #
+      # The version is read from the manifest rather than written here, so
+      # there is one place to change it and no way for the two to drift.
+      - name: The declared rust-version still builds
+        run: |
+          floor=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].rust_version')
+          echo "Cargo.toml declares rust-version = $floor"
+          rustup toolchain install "$floor" --profile minimal --no-self-update
+          cargo "+$floor" check --locked --all-targets

@@ -100,6 +100,57 @@ fn the_test_workflow_is_the_only_one_a_push_or_a_pull_request_starts() {
     );
 }
 
+/// The floor in `Cargo.toml` is a promise to anyone running `cargo install
+/// --git` on an older toolchain, and CI otherwise only ever builds on stable.
+/// So CI checks it — and reads which version to check from the manifest, so
+/// that raising the floor is one edit rather than two that can drift apart.
+#[test]
+fn the_test_workflow_holds_the_crate_to_the_floor_the_manifest_declares() {
+    let workflow = repository_file(".github/workflows/test.yml");
+    let manifest = repository_file("Cargo.toml");
+
+    let declared = manifest
+        .lines()
+        .find_map(|line| line.strip_prefix("rust-version = "))
+        .expect("the manifest declares a rust-version")
+        .trim_matches('"')
+        .to_owned();
+
+    assert!(
+        workflow.contains("rust_version"),
+        "CI reads the floor out of the manifest: {workflow}"
+    );
+    assert!(
+        workflow.contains("check --locked --all-targets"),
+        "and builds every target against it, the example included: {workflow}"
+    );
+    assert!(
+        !workflow.contains(&declared),
+        "the floor is {declared} in one place only; the workflow must not spell it too"
+    );
+}
+
+/// One job, because the bill is the reason this workflow looks the way it
+/// does. The floor check is a step inside it, and the day it becomes a job of
+/// its own is a day someone should have decided to spend the minutes.
+#[test]
+fn the_test_workflow_is_still_one_job() {
+    let workflow = repository_file(".github/workflows/test.yml");
+    let jobs = workflow
+        .split_once("\njobs:\n")
+        .expect("the workflow declares jobs")
+        .1;
+    let named = jobs
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            line.len() - trimmed.len() == 2 && trimmed.ends_with(':')
+        })
+        .count();
+
+    assert_eq!(named, 1, "one job on one platform: {jobs}");
+}
+
 #[test]
 fn the_release_workflow_builds_every_target_the_ticket_names() {
     let workflow = release_workflow();

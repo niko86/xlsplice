@@ -51,18 +51,25 @@ nothing on screen.
   sees nothing for ninety seconds and calls it a timeout: every package looks
   broken and nothing says why. So the permission is asked about before Excel
   is launched, in the form that errors rather than the form that quietly
-  answers none, and its absence is an `Unavailable` naming what to grant. A
-  grant the list shows as enabled can still deny — an operating system update
-  on 2026-09-13 left one looking on and refusing every request, through a
-  reboot and a re-grant — so the probe is what says whether the oracle can
-  answer, never the checkbox, and `UI elements enabled` is no better than the
-  checkbox: on 2026-09-14 it answered `true` while every call denied. What is
-  refused is narrow, which is worth knowing when diagnosing one: Apple Events
-  are not blocked at all, and System Events will answer how many processes
-  there are while refusing to say how many windows they have. What has gone
-  stale is a row in the permission database, and the list edits that row
-  rather than removing it; `tccutil reset Accessibility <bundle id>` removes
-  it, so the next call asks again rather than reading what is there.
+  answers none, and its absence is an `Unavailable` naming what to grant.
+- **The probe asks the shape the watcher asks, and no broader.** One named
+  process, its windows. The first one asked about the windows of every
+  visible process, and that shape is refused on this Mac while every shape
+  the suite uses is allowed: an enumeration fails whole if one process in it
+  refuses, and some process here refuses. A guard stricter than the thing it
+  guards does not report a blocked suite, it blocks one — and this one
+  blocked it from 2026-09-13 to 2026-09-14, through an operating system
+  update, a reboot, two re-grants, a grant to `/usr/bin/osascript`, and a
+  purpose-built `.app` with its own TCC identity that was refused in its own
+  name. That last refusal was the evidence that the identity was never what
+  was wrong, and it was read as one more failure instead.
+- What the permission looks like when it really is absent is worth
+  separating from what that looked like. `UI elements enabled` answers `true`
+  either way, so it says nothing. Apple Events are a different grant
+  altogether and are not involved. The Accessibility API itself is the
+  ground truth: a process that is trusted gets `AXIsProcessTrusted: YES` and
+  can read window titles and subroles directly, System Events or no System
+  Events. On this Mac it always could.
 - A Windows backend (#15) answers the same question and will not answer it this
   way: nothing here about sandboxes, LaunchServices or System Events crosses
   over, which is why the interface is one operation returning clean, repair or

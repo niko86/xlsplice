@@ -50,8 +50,10 @@ way to run them is:
 scripts/oracle.sh
 ```
 
-One at a time, because there is one Excel and they take turns at it. Run
-them that way rather than by hand: the script exports what the suite reads,
-so a suite of skips cannot pass itself off as a suite of verdicts. See
+One at a time on the Mac, because there is one Excel and it takes the
+screen, so the cases have to take turns at it; on Windows each case gets its
+own invisible one and the flag costs nothing. Run them through the script
+rather than by hand: it exports what the suite reads, so a suite of skips
+cannot pass itself off as a suite of verdicts. See
 `docs/adr/0006-the-oracle-hands-excel-the-file-and-reads-the-screen.md` for
 what that costs and why.

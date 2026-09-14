@@ -49,10 +49,11 @@
 //! what it holds. Leaving it alone is what makes re-running a hydration safe.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 
-use roxmltree::{Document, Node};
+use roxmltree::Node;
 use serde::{Deserialize, Serialize};
 
 use crate::atomic;
@@ -134,23 +135,68 @@ pub enum Operation {
     },
 }
 
-impl Operation {
-    /// Every operation kind, spelled as a batch spells it, in the order a
-    /// caller is offered them.
-    ///
-    /// A batch naming a kind that is not here is refused with this list, so
-    /// a caller writing one against a later version and running it against
-    /// this one is told what this one knows.
-    pub const KINDS: [&'static str; 5] = ["set", "clear", "calc", "props.set", "props.unset"];
+/// What an operation does, without what it does it to.
+///
+/// An [`Operation`] carries a target and a value; this is the half of it that
+/// is only a name, which is what a report prints, what a failure says it was
+/// doing, and what a batch naming a kind this build does not know is offered
+/// instead. [`Kind::ALL`] is the list, and [`Kind::as_str`] the spelling, so
+/// neither is written out beside the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// Write a value into a cell.
+    Set,
+    /// Empty a cell.
+    Clear,
+    /// Say whether the workbook recalculates fully on load.
+    Calc,
+    /// Give a custom document property a value.
+    PropsSet,
+    /// Take a custom document property out.
+    PropsUnset,
+}
 
-    /// The kind this operation is, as a batch spells it.
-    pub fn kind(&self) -> &'static str {
+impl Kind {
+    /// Every operation kind, in the order a caller is offered them.
+    ///
+    /// A batch naming a kind that is not here is refused with this list, so a
+    /// caller writing one against a later version and running it against this
+    /// one is told what this one knows.
+    pub const ALL: [Kind; 5] = [
+        Kind::Set,
+        Kind::Clear,
+        Kind::Calc,
+        Kind::PropsSet,
+        Kind::PropsUnset,
+    ];
+
+    /// The kind as a batch spells it.
+    pub fn as_str(self) -> &'static str {
         match self {
-            Operation::Set { .. } => "set",
-            Operation::Clear { .. } => "clear",
-            Operation::Calc { .. } => "calc",
-            Operation::PropsSet { .. } => "props.set",
-            Operation::PropsUnset { .. } => "props.unset",
+            Kind::Set => "set",
+            Kind::Clear => "clear",
+            Kind::Calc => "calc",
+            Kind::PropsSet => "props.set",
+            Kind::PropsUnset => "props.unset",
+        }
+    }
+}
+
+impl fmt::Display for Kind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Operation {
+    /// The kind this operation is.
+    pub fn kind(&self) -> Kind {
+        match self {
+            Operation::Set { .. } => Kind::Set,
+            Operation::Clear { .. } => Kind::Clear,
+            Operation::Calc { .. } => Kind::Calc,
+            Operation::PropsSet { .. } => Kind::PropsSet,
+            Operation::PropsUnset { .. } => Kind::PropsUnset,
         }
     }
 
@@ -285,12 +331,9 @@ impl Operation {
         match at {
             Some(at) => {
                 let written = self.written(opened.dates())?;
-                // The borrow of the part's text ends here, because taking a
-                // formula's entry out of the calc chain reads another part.
-                let wrote = {
-                    let xml = opened.text(&at.part)?;
-                    splices_of(xml, &at, &written, self.replaces_a_formula())?
-                };
+                let licensed = self.replaces_a_formula();
+                let wrote =
+                    opened.read_part(&at.part, |xml| splices_of(xml, &at, &written, licensed))?;
                 let mut parts = vec![(at.part.clone(), PartEdit::Splice(wrote.splices))];
                 if wrote.replaced {
                     parts.extend(uncalculated(opened, &at)?);
@@ -564,9 +607,26 @@ impl<R: Read + Seek> Opened<R> {
         resolve(&self.package, &self.rels, &self.workbook, target)
     }
 
-    /// The text of one part, read once however many operations ask for it.
-    pub fn text(&mut self, part: &str) -> Result<&str> {
-        self.package.read_part_text(part)
+    /// Read the part at `path` — once, however many operations ask for it —
+    /// and answer what `of` makes of its text, with every failure raised
+    /// through it attributed to the part.
+    ///
+    /// The only way into a part's bytes from the write path, so that naming
+    /// the part is not something an operation or a settlement can forget. A
+    /// part module answers about its own part's contents — "the root element
+    /// is <x>, not <worksheet>", "a row is numbered 'q'" — and cannot say
+    /// which part of the package that was, because a part's text does not
+    /// carry its path. Saying so used to be the caller's duty at every site
+    /// that read one here, eighteen of them. It is this one's now: the path
+    /// is in hand because the read is.
+    ///
+    /// The read verbs still reach [`Package::read_part_text`] themselves and
+    /// still attribute by hand — `props`, `calc` and `get` each read one part
+    /// and have nothing to forget between them. This is the door for a batch,
+    /// which reads many.
+    pub fn read_part<T>(&mut self, path: &str, of: impl FnOnce(&str) -> Result<T>) -> Result<T> {
+        let text = self.package.read_part_text(path)?;
+        of(text).map_err(|err| err.within(path))
     }
 
     /// Whether the package holds a part at `part`.
@@ -683,7 +743,10 @@ impl Batch {
         serde_json::from_str(json).map_err(|err| {
             let known = match err.classify() {
                 serde_json::error::Category::Data => {
-                    format!(" The operation kinds are: {}.", Operation::KINDS.join(", "))
+                    format!(
+                        " The operation kinds are: {}.",
+                        Kind::ALL.map(Kind::as_str).join(", ")
+                    )
                 }
                 _ => String::new(),
             };
@@ -960,11 +1023,9 @@ fn withdraw_an_emptied_calc_chain<R: Read + Seek>(
     let Some(PartEdit::Splice(splices)) = wanted.of_part(&part) else {
         return Ok(());
     };
-    let left = {
-        let xml = opened.text(&part)?;
-        let emptied = splice::apply(xml, splices)?;
-        calc_chain::entries_in(&emptied).map_err(|err| err.within(&part))?
-    };
+    let left = opened.read_part(&part, |xml| {
+        calc_chain::entries_in(&splice::apply(xml, splices)?)
+    })?;
     if left > 0 {
         return Ok(());
     }
@@ -1001,10 +1062,7 @@ fn add_the_new_properties<R: Read + Seek>(
         };
         let there = match held {
             false => false,
-            true => {
-                let xml = opened.text(&part)?;
-                properties::holds(xml, name).map_err(|err| err.within(&part))?
-            }
+            true => opened.read_part(&part, |xml| properties::holds(xml, name))?,
         };
         if !there {
             let value = operation
@@ -1022,10 +1080,7 @@ fn add_the_new_properties<R: Read + Seek>(
         .map(|(_, name, value)| (*name, value))
         .collect();
     let edit = match held {
-        true => {
-            let xml = opened.text(&part)?;
-            PartEdit::Splice(properties::added(xml, &new).map_err(|err| err.within(&part))?)
-        }
+        true => PartEdit::Splice(opened.read_part(&part, |xml| properties::added(xml, &new))?),
         false => {
             let declarations = declared::declared(
                 opened.package(),
@@ -1068,20 +1123,7 @@ fn put_the_new_rows_in<R: Read + Seek>(opened: &mut Opened<R>, wanted: &mut Want
     }
     for ((part, row), members) in by_row {
         let cells: Vec<NewCell> = members.iter().map(|(_, cell)| cell.clone()).collect();
-        let splice = {
-            let xml = opened.text(&part)?;
-            let document = Document::parse(xml)
-                .map_err(|err| Error::unreadable(format!("not valid XML: {err}")).within(&part))?;
-            let sheet = Worksheet::of(&document).map_err(|err| err.within(&part))?;
-            let Located::InSheetData(data) =
-                sheet.locate(cells[0].at).map_err(|err| err.within(&part))?
-            else {
-                return Err(Error::internal(format!(
-                    "row {row} of part '{part}' was to be put in, and the part holds it"
-                )));
-            };
-            worksheet::row_inserted(data, xml, row, &cells).map_err(|err| err.within(&part))?
-        };
+        let splice = opened.read_part(&part, |xml| worksheet::row_inserted(xml, row, &cells))?;
         wanted.merge(
             part,
             PartEdit::Splice(vec![splice]),
@@ -1101,6 +1143,11 @@ fn put_the_new_rows_in<R: Read + Seek>(opened: &mut Opened<R>, wanted: &mut Want
 /// are byte ranges of the text handed in: the same text every other operation
 /// on this part is handed, so their ranges all mean the same thing.
 ///
+/// Nothing here says which part it was reading. It is handed one part's text
+/// and answers about that text, and [`Opened::read_part`], which took the
+/// text out of the container, is what puts the part's name in front of
+/// whatever this comes back with.
+///
 /// A cell the part does not hold is put there, and the row it would sit in
 /// with it. There is nothing to replace in a cell that was not there, so a
 /// formula never is.
@@ -1110,12 +1157,10 @@ fn put_the_new_rows_in<R: Read + Seek>(opened: &mut Opened<R>, wanted: &mut Want
 /// what goes between the cell's tags is written whole, and its calc chain
 /// entry goes with it, which is what the second half of the answer is for.
 fn splices_of(xml: &str, at: &Resolution, written: &Written, licensed: bool) -> Result<Wrote> {
-    let document = Document::parse(xml)
-        .map_err(|err| Error::unreadable(format!("not valid XML: {err}")).within(&at.part))?;
-    let sheet = Worksheet::of(&document).map_err(|err| err.within(&at.part))?;
+    let document = worksheet::parsed(xml)?;
+    let sheet = Worksheet::of(&document)?;
     let cell = at.address.cell;
-    let located = sheet.locate(cell).map_err(|err| err.within(&at.part))?;
-    let node = match located {
+    let node = match sheet.locate(cell)? {
         Located::Cell(node) => node,
         // Clearing a cell that is not there would put an empty one where
         // there was nothing, which is a change with nothing behind it: an
@@ -1123,11 +1168,8 @@ fn splices_of(xml: &str, at: &Resolution, written: &Written, licensed: bool) -> 
         // row or its column gives it.
         _ if written == &Written::Nothing => return Ok(Wrote::default()),
         Located::InRow(row) => {
-            let style = sheet
-                .style_of_an_absent_cell(cell)
-                .map_err(|err| err.within(&at.part))?;
-            let splice = worksheet::cell_inserted(row, xml, cell, style, written)
-                .map_err(|err| err.within(&at.part))?;
+            let style = sheet.style_of_an_absent_cell(cell)?;
+            let splice = worksheet::cell_inserted(row, xml, cell, style, written)?;
             return Ok(Wrote {
                 splices: vec![splice],
                 ..Wrote::default()
@@ -1138,13 +1180,10 @@ fn splices_of(xml: &str, at: &Resolution, written: &Written, licensed: bool) -> 
         // of one absent row cannot see each other over one snapshot, and both
         // would put the row in.
         Located::InSheetData(_) => {
-            let style = sheet
-                .style_of_an_absent_cell(cell)
-                .map_err(|err| err.within(&at.part))?;
             return Ok(Wrote {
                 into_a_new_row: Some(NewCell {
                     at: cell,
-                    style,
+                    style: sheet.style_of_an_absent_cell(cell)?,
                     written: written.clone(),
                 }),
                 ..Wrote::default()
@@ -1156,8 +1195,7 @@ fn splices_of(xml: &str, at: &Resolution, written: &Written, licensed: bool) -> 
                  no rows and there is nowhere to put one. A worksheet part without one is \
                  not a sheet Excel wrote.",
                 at.address, at.address.sheet
-            ))
-            .within(&at.part));
+            )));
         }
     };
     Ok(Wrote {
@@ -1187,9 +1225,9 @@ struct Wrote {
 /// its part rather than being handed it, and the one that reads no cell.
 fn calculated<R: Read + Seek>(full_calc_on_load: bool, opened: &mut Opened<R>) -> Result<Asked> {
     let part = opened.workbook_part().to_owned();
-    let xml = opened.text(&part)?;
-    let splices = calculation::set_full_calc_on_load(xml, full_calc_on_load)
-        .map_err(|err| err.within(&part))?;
+    let splices = opened.read_part(&part, |xml| {
+        calculation::set_full_calc_on_load(xml, full_calc_on_load)
+    })?;
     Ok(Asked {
         at: None,
         parts: vec![(part, PartEdit::Splice(splices))],
@@ -1212,10 +1250,7 @@ fn property_written<R: Read + Seek>(
     if !held {
         return Ok(nothing_asked());
     }
-    let written = {
-        let xml = opened.text(&part)?;
-        properties::written(xml, name, value).map_err(|err| err.within(&part))?
-    };
+    let written = opened.read_part(&part, |xml| properties::written(xml, name, value))?;
     Ok(match written {
         None => nothing_asked(),
         Some(splices) => Asked {
@@ -1234,10 +1269,7 @@ fn property_withdrawn<R: Read + Seek>(name: &str, opened: &mut Opened<R>) -> Res
     let (part, held) = opened.properties()?;
     let splices = match held {
         false => None,
-        true => {
-            let xml = opened.text(&part)?;
-            properties::unset(xml, name).map_err(|err| err.within(&part))?
-        }
+        true => opened.read_part(&part, |xml| properties::unset(xml, name))?,
     };
     let splices = splices.ok_or_else(|| no_such_property(name, opened))?;
     Ok(Asked {
@@ -1263,13 +1295,12 @@ fn no_such_property<R: Read + Seek>(name: &str, opened: &mut Opened<R>) -> Error
         let (part, held) = opened.properties()?;
         match held {
             false => Ok(Vec::new()),
-            true => {
-                let xml = opened.text(&part)?;
+            true => opened.read_part(&part, |xml| {
                 Ok(properties::read(xml)?
                     .into_iter()
                     .map(|property| property.name)
                     .collect::<Vec<String>>())
-            }
+            }),
         }
     })()
     .unwrap_or_default();
@@ -1300,10 +1331,9 @@ fn uncalculated<R: Read + Seek>(
     else {
         return Ok(None);
     };
-    let removal = {
-        let xml = opened.text(&part)?;
-        calc_chain::without(xml, sheet, at.address.cell).map_err(|err| err.within(&part))?
-    };
+    let removal = opened.read_part(&part, |xml| {
+        calc_chain::without(xml, sheet, at.address.cell)
+    })?;
     Ok(match removal.splices.is_empty() {
         true => None,
         false => Some((part, PartEdit::Splice(removal.splices))),
@@ -1529,12 +1559,18 @@ mod tests {
         );
     }
 
-    /// The kinds, transcribed rather than derived from the code, so that a
-    /// kind added without being listed fails the test: the list is what a
-    /// caller naming an unknown kind is told.
+    /// Serde spells the kinds in its own attributes and [`Kind`] spells them
+    /// in `as_str`; this is what holds the two together. Each kind is parsed
+    /// from the name it gives itself, and the operation that comes back must
+    /// say it is that kind, so a rename on either side fails here.
+    ///
+    /// The list itself is transcribed rather than derived, so that a kind
+    /// added to the enum without being added to [`Kind::ALL`] fails too: the
+    /// list is what a caller naming an unknown kind is told, and a kind
+    /// missing from it is a kind nobody is told about.
     #[test]
     fn every_operation_kind_is_listed_under_the_name_a_batch_spells_it_with() {
-        for kind in Operation::KINDS {
+        for kind in Kind::ALL {
             // Every field any kind takes, so that one document serves them
             // all: a field an operation does not know is ignored.
             let json = format!(
@@ -1545,7 +1581,7 @@ mod tests {
             assert_eq!(batch.operations[0].kind(), kind);
         }
         assert_eq!(
-            Operation::KINDS,
+            Kind::ALL.map(Kind::as_str),
             ["set", "clear", "calc", "props.set", "props.unset"],
             "a kind with no list entry"
         );
@@ -1567,7 +1603,7 @@ mod tests {
         assert!(
             err.message().contains(&format!(
                 "The operation kinds are: {}.",
-                Operation::KINDS.join(", ")
+                Kind::ALL.map(Kind::as_str).join(", ")
             )),
             "{}",
             err.message()
@@ -1705,6 +1741,31 @@ mod tests {
             }
         }
         Opened::of(crate::package::container_of(&all)).expect("the parts make a package")
+    }
+
+    /// Naming the part a failure came from belongs to [`Opened::read_part`],
+    /// which is how everything on the write path reaches a part's bytes. What
+    /// a part module raises is about the part's own contents and cannot say
+    /// which part of the package that was, so a read that came back
+    /// unattributed would be a caller having forgotten — and on this path
+    /// there is no longer a caller who could.
+    #[test]
+    fn a_failure_raised_reading_a_part_comes_back_naming_the_part() {
+        let mut opened = opened(&[(SHEET_PART, "<worksheet><sheetData>")]);
+        let operation = writing("Inputs!A1", WriteType::Number, "1");
+        let at = operation.at(&opened).expect("the target resolves");
+
+        let err = operation
+            .edits(at, &mut opened)
+            .expect_err("that worksheet part is not valid XML");
+
+        assert_eq!(err.code(), ErrorCode::Unreadable);
+        assert!(
+            err.message().starts_with(&format!(
+                "{SHEET_PART}: the worksheet part is not valid XML"
+            )),
+            "{err}"
+        );
     }
 
     /// What the batch wants of `part` once the splices it holds are applied.

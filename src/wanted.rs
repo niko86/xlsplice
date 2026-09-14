@@ -181,10 +181,12 @@ impl<'a> Wanted<'a> {
         for (part, edit) in std::mem::take(&mut self.edits) {
             match edit {
                 PartEdit::Splice(all) => {
-                    let xml = opened.text(&part)?;
-                    let spliced = splice::apply(xml, &all)?;
-                    let landed = spliced != xml;
-                    self.credit_the_splices_that_land(&part, xml);
+                    let (spliced, landed) = opened.read_part(&part, |xml| {
+                        let spliced = splice::apply(xml, &all)?;
+                        let landed = spliced != xml;
+                        self.credit_the_splices_that_land(&part, xml);
+                        Ok((spliced, landed))
+                    })?;
                     if landed {
                         parts.changed.push(part.clone());
                         content.insert(part, Content::Bytes(spliced.into_bytes()));

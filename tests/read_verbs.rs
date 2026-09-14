@@ -341,6 +341,8 @@ fn quiet_and_verbose_move_stderr_only() {
     let loud = run(&["sheets", package, "--verbose"]);
     let hushed = run(&["sheets", package, "--quiet"]);
 
+    assert_eq!(stderr(&plain), "", "the default says nothing on stderr");
+
     assert_eq!(stdout(&loud), stdout(&plain));
     assert_eq!(stdout(&hushed), stdout(&plain));
     assert!(!stderr(&loud).is_empty(), "--verbose must trace on stderr");

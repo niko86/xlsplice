@@ -63,19 +63,45 @@ impl Workspace {
     /// Write a zip container of `parts`, in the order given, and give back
     /// its path. Deflate is what Excel writes, so it is what the tests read.
     pub fn zip(&self, name: &str, parts: &[(&str, &str)]) -> PathBuf {
+        let bytes: Vec<(&str, &[u8])> = parts
+            .iter()
+            .map(|(part, text)| (*part, text.as_bytes()))
+            .collect();
+        self.container(name, &bytes)
+    }
+
+    /// The same, for parts that are not text. What a package built out of
+    /// another package's parts is written with, because one of the fixtures
+    /// carries a macro project and a `.bin` is not a `&str`.
+    fn container(&self, name: &str, parts: &[(&str, &[u8])]) -> PathBuf {
         let path = self.dir.join(name);
         let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
         let mut writer = ZipWriter::new(
             File::create(&path).expect("a test must be able to write its own packages"),
         );
-        for (part, text) in parts {
+        for (part, bytes) in parts {
             writer
                 .start_file(*part, options)
-                .and_then(|()| writer.write_all(text.as_bytes()).map_err(Into::into))
+                .and_then(|()| writer.write_all(bytes).map_err(Into::into))
                 .expect("a test must be able to write a part");
         }
         writer.finish().expect("the container must close");
         path
+    }
+
+    /// A package like the one at `from`, to be written under `name` here.
+    ///
+    /// See [`Like`]: what comes back takes the base package's parts and is
+    /// told which of them to put differently.
+    pub fn like(&self, name: &str, from: &Path) -> Like<'_> {
+        Like {
+            workspace: self,
+            name: name.to_owned(),
+            parts: super::container::parts(from)
+                .into_iter()
+                .map(|part| (part.path, part.bytes))
+                .collect(),
+        }
     }
 
     /// Write a package whose workbook part is `workbook`, with the content
@@ -210,6 +236,55 @@ impl Workspace {
 impl Drop for Workspace {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// A package being built from another package's parts, with some of them put
+/// differently and some left out.
+///
+/// A test that needs a package Excel could not have saved usually needs one
+/// that is a real package in every respect but one: a worksheet envelope out
+/// of order, a sheet whose first row is not row 1, a workbook whose sheet is
+/// not there. Spelling the whole part list out to change one of them puts
+/// four parts in the test that say nothing about what it is asking, and every
+/// suite that did it wrote the same list. This says the part that matters and
+/// takes the rest from the package it started from, in the order that package
+/// held them.
+///
+/// A part is taken as bytes, so a base package carrying a macro project
+/// rebuilds as readily as one that is XML throughout.
+pub struct Like<'a> {
+    workspace: &'a Workspace,
+    name: String,
+    parts: Vec<(String, Vec<u8>)>,
+}
+
+impl Like<'_> {
+    /// With `part` holding `text` instead of what the base package put there,
+    /// or on the end where the base package holds no such part.
+    pub fn with_part(mut self, part: &str, text: &str) -> Self {
+        match self.parts.iter_mut().find(|(held, _)| held == part) {
+            Some(held) => held.1 = text.as_bytes().to_vec(),
+            None => self.parts.push((part.to_owned(), text.as_bytes().to_vec())),
+        }
+        self
+    }
+
+    /// And without the part called `part`, which the base package need not
+    /// have held.
+    pub fn without_part(mut self, part: &str) -> Self {
+        self.parts.retain(|(held, _)| held != part);
+        self
+    }
+
+    /// Write it, and give back its path.
+    pub fn written(self) -> PathBuf {
+        let parts: Vec<(&str, &[u8])> = self
+            .parts
+            .iter()
+            .map(|(part, bytes)| (part.as_str(), bytes.as_slice()))
+            .collect();
+        self.workspace.container(&self.name, &parts)
     }
 }
 

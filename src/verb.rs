@@ -346,7 +346,11 @@ fn targets(batch: &Batch) -> String {
     batch
         .operations
         .iter()
-        .map(|operation| operation.target().unwrap_or_else(|| operation.kind()))
+        .map(|operation| {
+            operation
+                .target()
+                .unwrap_or_else(|| operation.kind().as_str())
+        })
         .collect::<Vec<&str>>()
         .join(", ")
 }

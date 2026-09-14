@@ -31,7 +31,7 @@ mod support;
 
 use std::path::{Path, PathBuf};
 
-use support::container::{assert_nothing_outside, compare};
+use support::container::{SHEET1, SHEET2, SHEET3, assert_nothing_outside, compare};
 use support::corpus::{self, Case};
 use support::workspace::Workspace;
 use xlsplice::batch::Report;
@@ -261,29 +261,13 @@ fn where_every_sheet_carries_a_table_the_first_is_used_regardless() {
 /// each written out by the caller. The third sheet the workbook declares is
 /// not there, which is a sheet the finding cannot read and passes over.
 fn two_sheets(workspace: &Workspace, name: &str, first: &str, second: &str) -> PathBuf {
-    workspace.zip(
-        name,
-        &[
-            (
-                support::container::CONTENT_TYPES,
-                support::workspace::FEATURE_CONTENT_TYPES_XML,
-            ),
-            (
-                support::container::ROOT_RELS,
-                support::workspace::ROOT_RELS_XML,
-            ),
-            (
-                support::container::WORKBOOK,
-                &support::workspace::feature_workbook(),
-            ),
-            (
-                support::container::WORKBOOK_RELS,
-                support::workspace::WORKBOOK_RELS_XML,
-            ),
-            (support::container::SHEET1, first),
-            (support::container::SHEET2, second),
-        ],
-    )
+    let feature = workspace.feature_package("feature.xlsx");
+    workspace
+        .like(name, &feature)
+        .with_part(SHEET1, first)
+        .with_part(SHEET2, second)
+        .without_part(SHEET3)
+        .written()
 }
 
 /// A worksheet holding no cells at all, which is what a template that starts

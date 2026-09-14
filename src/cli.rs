@@ -34,7 +34,9 @@ pub struct GlobalArgs {
     #[arg(long, global = true)]
     pub json: bool,
 
-    /// Suppress progress diagnostics. Affects stderr only; errors still print.
+    /// Accepted and does nothing. A run says nothing on stderr unless
+    /// `--verbose` asks it to, so there are no diagnostics left to suppress;
+    /// the flag stays because it is on the published surface.
     #[arg(long, short, global = true, conflicts_with = "verbose")]
     pub quiet: bool,
 
@@ -348,29 +350,6 @@ fn write_type() -> impl TypedValueParser<Value = WriteType> {
         }),
     )
     .map(|name| WriteType::named(&name).expect("clap offers only the names it was given"))
-}
-
-impl Command {
-    /// The verb's name, for diagnostics.
-    pub fn name(&self) -> &'static str {
-        match self {
-            Command::Sheets { .. } => "sheets",
-            Command::Names { .. } => "names",
-            Command::Get { .. } => "get",
-            Command::Set { .. } => "set",
-            Command::Clear { .. } => "clear",
-            Command::Calc { .. } => "calc",
-            Command::Props { action } => match action {
-                PropsAction::Get { .. } => "props get",
-                PropsAction::Set { .. } => "props set",
-                PropsAction::Unset { .. } => "props unset",
-            },
-            Command::Apply { .. } => "apply",
-            Command::Diff { .. } => "diff",
-            Command::Help { .. } => "help",
-            Command::Version => "version",
-        }
-    }
 }
 
 /// Whether `--json` appears in `argv` as a flag.

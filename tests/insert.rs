@@ -52,28 +52,10 @@ fn writing(package: &std::path::Path, target: &str) -> String {
 /// all.
 fn package_with(workspace: &Workspace, name: &str, sheet: &str) -> PathBuf {
     let bare = workspace.sheet_package("bare.xlsx", "", r#"<c r="A1"><v>1</v></c>"#);
-    workspace.zip(
-        name,
-        &[
-            (
-                support::container::CONTENT_TYPES,
-                support::workspace::FEATURE_CONTENT_TYPES_XML,
-            ),
-            (
-                support::container::ROOT_RELS,
-                support::workspace::ROOT_RELS_XML,
-            ),
-            (
-                support::container::WORKBOOK,
-                &part_text(&bare, "xl/workbook.xml"),
-            ),
-            (
-                support::container::WORKBOOK_RELS,
-                support::workspace::WORKBOOK_RELS_XML,
-            ),
-            (support::container::SHEET1, sheet),
-        ],
-    )
+    workspace
+        .like(name, &bare)
+        .with_part(SHEET1, sheet)
+        .written()
 }
 
 /// A worksheet part holding `body` as its sheet data.

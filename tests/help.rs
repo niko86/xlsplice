@@ -302,8 +302,12 @@ fn the_skill_files_examples_put_the_operands_behind_a_double_dash() {
 }
 
 /// Every verb honours the two diagnostic flags the same way: stderr only,
-/// stdout untouched, and an error still printed however quiet it was asked
-/// to be.
+/// stdout untouched, and silent unless `--verbose` asks otherwise.
+///
+/// The silence is the default's, which is what `--quiet` asks for and the
+/// whole of what it does; asserted of the plain run as well as the hushed one,
+/// so that a verb which started chattering on stderr fails here rather than
+/// looking like a flag that works.
 #[test]
 fn every_verb_honours_quiet_and_verbose_on_stderr_alone() {
     for verb in verbs() {
@@ -337,6 +341,11 @@ fn every_verb_honours_quiet_and_verbose_on_stderr_alone() {
             stdout(&hushed),
             stdout(&plain),
             "{verb}: --quiet moved stdout"
+        );
+        assert_eq!(
+            stderr(&plain),
+            "",
+            "{verb}: the default left something on stderr"
         );
         assert_eq!(
             stderr(&hushed),

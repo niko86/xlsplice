@@ -32,25 +32,10 @@ use xlsplice::verb::{self, Trace};
 fn workbook_ending_with(workspace: &Workspace, name: &str, tail: &str) -> PathBuf {
     let bare = workspace.sheet_package("bare.xlsx", "", r#"<c r="A1"><v>1</v></c>"#);
     let workbook = part_text(&bare, WORKBOOK).replace("</workbook>", &format!("{tail}</workbook>"));
-    workspace.zip(
-        name,
-        &[
-            (
-                support::container::CONTENT_TYPES,
-                support::workspace::FEATURE_CONTENT_TYPES_XML,
-            ),
-            (
-                support::container::ROOT_RELS,
-                support::workspace::ROOT_RELS_XML,
-            ),
-            (support::container::WORKBOOK, &workbook),
-            (
-                support::container::WORKBOOK_RELS,
-                support::workspace::WORKBOOK_RELS_XML,
-            ),
-            (support::container::SHEET1, &part_text(&bare, SHEET1)),
-        ],
-    )
+    workspace
+        .like(name, &bare)
+        .with_part(WORKBOOK, &workbook)
+        .written()
 }
 
 /// What `calc FILE --json` reports.

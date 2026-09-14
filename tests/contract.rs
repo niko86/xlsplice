@@ -152,14 +152,36 @@ fn verbose_does_not_disturb_the_envelope() {
     assert!(!stderr(&out).is_empty());
 }
 
+/// `--quiet` asks for the default, which is silence: a run that was not asked
+/// to be loud says nothing on stderr, so the flag has nothing left to take
+/// away. What is asserted here is the default's silence, which is the property
+/// `--quiet` names; the flag riding along says only that it is still accepted.
 #[test]
-fn quiet_leaves_stderr_silent_and_stdout_unchanged() {
+fn the_default_is_silent_and_quiet_asks_for_the_default() {
     let plain = run(&["version"]);
     let hushed = run(&["version", "--quiet"]);
 
     assert_eq!(exit_code(&hushed), 0);
+    assert_eq!(stderr(&plain), "", "the default says nothing on stderr");
     assert_eq!(stdout(&hushed), stdout(&plain));
     assert_eq!(stderr(&hushed), "");
+}
+
+/// And the help says so, rather than leaving a caller to find out by running
+/// the tool twice and comparing. A published flag that does nothing is a
+/// promise to keep accepting it, not a promise that it does something.
+#[test]
+fn the_help_says_quiet_does_nothing() {
+    let help = stdout(&run(&["--help"]));
+
+    let quiet = help
+        .lines()
+        .find(|line| line.contains("--quiet"))
+        .unwrap_or_else(|| panic!("the help lists --quiet: {help}"));
+    assert!(
+        quiet.contains("does nothing"),
+        "the help must say --quiet does nothing: {quiet}"
+    );
 }
 
 #[test]
@@ -194,11 +216,11 @@ fn the_binary_installs_the_panic_hook_before_it_parses() {
         .expect("main must install the panic hook");
 
     assert!(
-        !before.contains("Cli::try_parse_from"),
+        !before.contains("try_get_matches_from"),
         "the hook goes in before clap parses, because a panic can precede it"
     );
     assert!(
-        after.contains("Cli::try_parse_from"),
+        after.contains("try_get_matches_from"),
         "and clap still parses after it"
     );
 }

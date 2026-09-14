@@ -644,6 +644,8 @@ fn quiet_and_verbose_move_stderr_only() {
     let loud = run(&["get", package, "Inputs!A1", "--verbose"]);
     let hushed = run(&["get", package, "Inputs!A1", "--quiet"]);
 
+    assert_eq!(stderr(&plain), "", "the default says nothing on stderr");
+
     assert_eq!(
         support::binary::stdout(&loud),
         support::binary::stdout(&plain)

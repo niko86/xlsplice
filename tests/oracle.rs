@@ -57,11 +57,11 @@ mod support;
 
 use std::path::Path;
 
-use support::container::{SHEET1, part_text};
+use support::container::{SHEET1, WORKBOOK, part_text, parts};
 use support::corpus;
 use support::library::op;
 use support::oracle::{Verdict, asked, decided, opened_by, requires};
-use support::workspace::{Workspace, copy_of, fixture};
+use support::workspace::{Workspace, built, copy_of, fixture};
 use xlsplice::batch::Batch;
 use xlsplice::batch::Destination;
 use xlsplice::batch::WriteType;
@@ -75,10 +75,19 @@ const FIXTURES: [&str; 4] = [
     "dated-row.xlsx",
 ];
 
-/// How many cases put a package in front of Excel. Counted rather than
-/// bounded, so that a case which stopped reaching Excel is as much a failure
-/// as one added without the `--ignored` gate.
-const CASES: usize = 22;
+/// The two calls that put a package in front of Excel: a case makes the first
+/// itself, or the second, which makes the first for every output of a set.
+/// Nothing else here reaches Excel.
+///
+/// Named up here, above the first case, so that the test that reads this file
+/// for them does not find its own body among the things it is looking for.
+/// They used to be spelled in halves and joined at run time for that reason.
+const REACHES_EXCEL: [&str; 2] = ["assert_verdict(", "opens_clean_after_the_fixed_set("];
+
+/// The gate that keeps Excel out of an ordinary build, as a case carries it.
+/// Every case that reaches Excel has this and nothing else here does, which
+/// is the pairing the test at the foot of this file holds both ways round.
+const DRIVES_EXCEL: &str = "\n#[ignore = \"drives Excel\"]";
 
 /// Ask the oracle, and assert the answer, unless there is no oracle to ask.
 ///
@@ -112,9 +121,8 @@ fn the_fixtures_excel_saved_open_clean() {
 #[test]
 #[ignore = "drives Excel"]
 fn a_worksheet_whose_envelope_is_out_of_order_demands_repair() {
-    let path = copy_of("oracle-broken", "plain.xlsx");
-    let workspace = path.workspace();
-    let sheet = part_text(&path, SHEET1);
+    let plain = fixture("plain.xlsx");
+    let sheet = part_text(&plain, SHEET1);
     let dimension = element(&sheet, "<dimension");
     let reordered = sheet.replacen(&dimension, "", 1).replacen(
         "</sheetData>",
@@ -122,8 +130,15 @@ fn a_worksheet_whose_envelope_is_out_of_order_demands_repair() {
         1,
     );
     assert_ne!(reordered, sheet, "the test must have moved something");
-    let broken = workspace.dir().join("broken.xlsx");
-    rewritten(&path, &broken, SHEET1, &reordered);
+    // The container is rebuilt around the fixture's own parts rather than
+    // spliced, because this is a test building a package that is deliberately
+    // wrong, not the tool writing one.
+    let broken = built("oracle-broken", |workspace| {
+        workspace
+            .like("broken.xlsx", &plain)
+            .with_part(SHEET1, &reordered)
+            .written()
+    });
 
     assert_verdict(&broken, Verdict::Repair, "a reordered worksheet envelope");
 }
@@ -464,16 +479,19 @@ fn a_created_custom_properties_part_opens_clean() {
 #[test]
 #[ignore = "drives Excel"]
 fn a_created_calculation_element_opens_clean() {
-    let path = copy_of("oracle-calc", "plain.xlsx");
-    let workspace = path.workspace();
-    let workbook = part_text(&path, "xl/workbook.xml");
+    let plain = fixture("plain.xlsx");
+    let workbook = part_text(&plain, WORKBOOK);
     let without = workbook.replacen(r#"<calcPr calcId="181029"/>"#, "", 1);
     assert_ne!(
         without, workbook,
         "the test must have taken the element out"
     );
-    let derived = workspace.dir().join("no-calc.xlsx");
-    rewritten(&path, &derived, "xl/workbook.xml", &without);
+    let derived = built("oracle-calc", |workspace| {
+        workspace
+            .like("no-calc.xlsx", &plain)
+            .with_part(WORKBOOK, &without)
+            .written()
+    });
     assert_verdict(&derived, Verdict::Clean, "the package this case derives");
 
     verb::run(
@@ -662,6 +680,56 @@ fn every_output_of_the_fixed_operation_set_over_the_fixtures_opens_clean() {
     eprintln!("{}", opened.said("the fixtures"));
 }
 
+/// Two of the cases here put a package in front of Excel that was built from a
+/// fixture's parts with one of them put differently, and each is the pair that
+/// gives a clean verdict its meaning: it must be wrong, or different, in
+/// exactly the way the case says and in no other. So the rebuild is held to
+/// that here, where no Excel is needed to say it — every part the base package
+/// held is carried across byte for byte, in the order it held them, and only
+/// the named part is anything else.
+///
+/// The container around the parts is not compared. A rebuild writes every
+/// entry fresh, so compressed sizes and timestamps are its own; what the cases
+/// turn on is what the parts say.
+#[test]
+fn a_package_built_from_another_carries_every_other_part_across_unchanged() {
+    let plain = fixture("plain.xlsx");
+    let rebuilt = built("oracle-rebuilt", |workspace| {
+        workspace
+            .like("rebuilt.xlsx", &plain)
+            .with_part(SHEET1, "<worksheet/>")
+            .without_part(WORKBOOK)
+            .written()
+    });
+
+    let (was, now) = (parts(&plain), parts(&rebuilt));
+    let kept: Vec<String> = was
+        .iter()
+        .map(|part| part.path.clone())
+        .filter(|path| path != WORKBOOK)
+        .collect();
+    assert_eq!(
+        now.iter().map(|part| part.path.clone()).collect::<Vec<_>>(),
+        kept,
+        "the same parts, less the one left out, in the order they were held"
+    );
+    for part in &now {
+        if part.path == SHEET1 {
+            continue;
+        }
+        let before = was
+            .iter()
+            .find(|other| other.path == part.path)
+            .unwrap_or_else(|| panic!("{} came from somewhere", part.path));
+        assert!(
+            before.bytes == part.bytes,
+            "{} is not the bytes the fixture held",
+            part.path
+        );
+    }
+    assert_eq!(part_text(&rebuilt, SHEET1), "<worksheet/>");
+}
+
 /// What a case of this suite does about there being no corpus, said apart
 /// from Excel so that it can be held to without one.
 ///
@@ -817,22 +885,25 @@ fn only_require_requires_an_oracle() {
 }
 
 /// The `--ignored` gate is what keeps Excel out of an ordinary build, so it is
-/// held to rather than trusted: every case here that puts a package in front
-/// of Excel carries the attribute. The suite reads itself to say so, because
-/// the thing that goes wrong is a case added without it. A case reaches Excel
-/// when it calls `assert_verdict` on a package, or the one thing that does
-/// that for it, and both are what is looked for.
+/// held to rather than trusted, and held to both ways round. A case that puts
+/// a package in front of Excel must carry the gate, or an ordinary `cargo
+/// test` would drive Excel; and a case that carries the gate must put a
+/// package in front of Excel, or it is a case that has stopped doing the one
+/// thing it was written to do and says nothing about having stopped. The suite
+/// reads itself to say either, because both are things a case is edited into
+/// rather than things it does when it runs.
+///
+/// There was a hand-kept `CASES` constant here, bumped when a case was added.
+/// It was there to catch the second half, which the pairing catches without a
+/// number to keep: a case that stops reaching Excel still carries the gate,
+/// and now fails. What the count was good for besides — saying how many
+/// packages a full run puts in front of Excel — is printed instead, for
+/// `--nocapture` to show.
 #[test]
-fn every_case_that_reaches_excel_is_ignored_by_default() {
+fn a_case_drives_excel_if_and_only_if_the_gate_says_it_does() {
     let source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(file!()))
         .expect("the suite must be able to read itself");
-    // The two calls that put a package in front of Excel, each spelled in
-    // halves so that this test does not go off on its own source.
-    let reaches = [
-        format!("{}{}", "assert_verdict", "("),
-        format!("{}{}", "opens_clean_after_the_fixed_set", "("),
-    ];
-    let mut reaching = 0;
+    let mut driving = 0;
 
     for case in source.split("\n#[test]").skip(1) {
         let name = case
@@ -840,20 +911,27 @@ fn every_case_that_reaches_excel_is_ignored_by_default() {
             .and_then(|(_, rest)| rest.split_once('('))
             .map(|(name, _)| name)
             .expect("a test has a name");
-        if !reaches.iter().any(|call| case.contains(call)) {
-            continue;
-        }
-        reaching += 1;
-        assert!(
-            case.starts_with("\n#[ignore"),
-            "{name} puts a package in front of Excel and is not #[ignore]d"
+        let reaches = REACHES_EXCEL.iter().any(|call| case.contains(call));
+        let gated = case.starts_with(DRIVES_EXCEL);
+
+        assert_eq!(
+            reaches,
+            gated,
+            "{name} {}",
+            match reaches {
+                true =>
+                    "puts a package in front of Excel without \
+                         #[ignore = \"drives Excel\"] over it",
+                false =>
+                    "is gated #[ignore = \"drives Excel\"] and puts no package \
+                          in front of Excel",
+            }
         );
+        driving += usize::from(gated);
     }
 
-    assert_eq!(
-        reaching, CASES,
-        "the oracle cases must be the ones counted, and there are {CASES} of them"
-    );
+    eprintln!("{driving} case(s) drive Excel");
+    assert!(driving > 0, "a suite with no oracle cases is not this one");
 }
 
 /// One element of `xml`, from its opening angle bracket to the `/>` that
@@ -868,35 +946,4 @@ fn element(xml: &str, opening: &str) -> String {
         + start
         + 2;
     xml[start..end].to_owned()
-}
-
-/// A copy of `from` at `to` with one part's text replaced. The container is
-/// rebuilt rather than spliced, because this is a test building a package
-/// that is deliberately wrong, not the tool writing one.
-fn rewritten(from: &Path, to: &Path, part: &str, text: &str) {
-    let reader = std::fs::File::open(from).expect("a test must be able to read its own copy");
-    let mut zip = zip::ZipArchive::new(reader).expect("the fixture must be a container");
-    let writer = std::fs::File::create(to).expect("a test must be able to write its own package");
-    let mut out = zip::ZipWriter::new(writer);
-    for index in 0..zip.len() {
-        use std::io::Read;
-        let mut entry = zip.by_index(index).expect("an entry the archive listed");
-        let name = entry.name().to_owned();
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
-        out.start_file(&name, options)
-            .expect("a test must be able to write an entry");
-        use std::io::Write;
-        if name == part {
-            out.write_all(text.as_bytes())
-        } else {
-            let mut bytes = Vec::new();
-            entry
-                .read_to_end(&mut bytes)
-                .expect("an entry must be readable");
-            out.write_all(&bytes)
-        }
-        .expect("a test must be able to write an entry");
-    }
-    out.finish().expect("the container must close");
 }

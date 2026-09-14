@@ -11,7 +11,7 @@ mod out;
 use std::io::IsTerminal;
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{ArgMatches, CommandFactory, FromArgMatches};
 
 use xlsplice::answer;
 use xlsplice::error::Error;
@@ -27,24 +27,49 @@ fn main() -> ExitCode {
     // shape of a usage error.
     out::install_panic_hook(out::mode(cli::json_requested(&argv)));
 
-    match Cli::try_parse_from(&argv) {
-        Ok(parsed) => {
-            let out = Out::new(
-                out::mode(parsed.global.json),
-                Verbosity::from_flags(parsed.global.quiet, parsed.global.verbose),
-            );
-            run(parsed.command, &out)
+    match parsed(&argv) {
+        Ok((command, global, verb)) => {
+            let out = Out::new(out::mode(global.json), Verbosity::asked_for(global.verbose));
+            run(command, &verb, &out)
         }
         // clap never finished, so the argv scan is what decides the shape.
         Err(err) => parse_failure(err, out::mode(cli::json_requested(&argv))),
     }
 }
 
-fn run(command: Command, out: &Out) -> ExitCode {
+/// The command line, and the name of the verb it named.
+///
+/// clap is asked for its matches first and the typed command built from them,
+/// which is what [`clap::Parser::try_parse_from`] does in one step. The step
+/// is taken apart here for the name: the matches carry the subcommand names
+/// clap derived from the enum, so the trace below says `props set` without
+/// this binary keeping its own list of what the subcommands are called.
+fn parsed(argv: &[String]) -> Result<(Command, cli::GlobalArgs, String), clap::Error> {
+    let mut matches = Cli::command().try_get_matches_from(argv)?;
+    let verb = named(&matches);
+    let cli = Cli::from_arg_matches_mut(&mut matches).map_err(|err| {
+        let mut command = Cli::command();
+        err.format(&mut command)
+    })?;
+    Ok((cli.command, cli.global, verb))
+}
+
+/// The verb, as clap names it: the subcommand, and the subcommand under that
+/// one where there is one, which is what makes `props set` two words.
+fn named(matches: &ArgMatches) -> String {
+    let mut names = Vec::new();
+    let mut at = matches;
+    while let Some((name, under)) = at.subcommand() {
+        names.push(name);
+        at = under;
+    }
+    names.join(" ")
+}
+
+fn run(command: Command, verb: &str, out: &Out) -> ExitCode {
     out.trace(&format!(
-        "xlsplice {}: running {}",
+        "xlsplice {}: running {verb}",
         env!("CARGO_PKG_VERSION"),
-        command.name()
     ));
     // The trace goes to stderr, and only when it was asked for. Built once
     // here so that every verb below says what it is doing into the same
@@ -159,7 +184,7 @@ fn parse_failure(err: clap::Error, mode: OutputMode) -> ExitCode {
         let _ = err.print();
         return ExitCode::from(xlsplice::error::EXIT_SUCCESS);
     }
-    Out::new(mode, Verbosity::Normal).emit(Err(Error::usage(usage_message(&err))))
+    Out::new(mode, Verbosity::Quiet).emit(Err(Error::usage(usage_message(&err))))
 }
 
 /// clap's rendered error, minus its `error: ` prefix: the code in the envelope

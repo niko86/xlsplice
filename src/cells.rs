@@ -14,8 +14,6 @@
 
 use std::io::{Read, Seek};
 
-use roxmltree::Document;
-
 use crate::error::{Error, Result};
 use crate::package::Package;
 use crate::reference::Address;
@@ -23,7 +21,7 @@ use crate::relationships::Relationships;
 use crate::strings::SharedStrings;
 use crate::target::{Resolution, parts_of, resolve};
 use crate::workbook::Workbook;
-use crate::worksheet::{Formula, Found, Stored, StoredType, Worksheet};
+use crate::worksheet::{self, Formula, Found, Stored, StoredType, Worksheet};
 
 /// A cell's value, typed by what the cell stores.
 #[derive(Debug, Clone, PartialEq)]
@@ -110,8 +108,7 @@ fn read_cells<R: Read + Seek>(
     let mut stored: Vec<Option<Stored>> = vec![None; resolved.len()];
     for part in parts_of(resolved.iter()) {
         let xml = package.read_part_text(&part)?;
-        let document = Document::parse(xml)
-            .map_err(|err| Error::unreadable(format!("not valid XML: {err}")).within(&part))?;
+        let document = worksheet::parsed(xml).map_err(|err| err.within(&part))?;
         let sheet = Worksheet::of(&document).map_err(|err| err.within(&part))?;
         for (index, at) in resolved.iter().enumerate() {
             if at.part != part {

@@ -322,6 +322,42 @@ impl<'a, 'input> Worksheet<'a, 'input> {
         }
         Ok(None)
     }
+
+    /// The sheet data a row numbered `row` is to be put into, or why it is
+    /// not to be put in at all.
+    ///
+    /// Two reasons, and both belong to the part rather than to whoever asked.
+    /// A part with no sheet data element has nowhere to put a row, which is
+    /// the same absence a cell in it runs into. A part that already holds the
+    /// row is one nothing should be asking this of: a second row of the same
+    /// number is a part disagreeing with itself, so it is refused here rather
+    /// than spliced in beside the row that is there.
+    fn where_a_row_goes(&self, row: u32) -> Result<Node<'a, 'input>> {
+        let Some(data) = self.data else {
+            return Err(Error::not_found(format!(
+                "there is no row {row} and nowhere to put one: the worksheet part has no \
+                 sheet data element, so it holds no rows. A worksheet part without one is \
+                 not a sheet Excel wrote."
+            )));
+        };
+        match self.row(row)? {
+            None => Ok(data),
+            Some(_) => Err(Error::internal(format!(
+                "row {row} was to be put into the sheet, and the sheet holds it already"
+            ))),
+        }
+    }
+}
+
+/// Parse a worksheet part's text.
+///
+/// The one place a worksheet part is handed to the parser, so that what a
+/// failure says about one is said once. Which part of the package it was is
+/// no part of this — a part's text does not carry its path — and is added by
+/// whoever read it out of the container.
+pub fn parsed(xml: &str) -> Result<Document<'_>> {
+    Document::parse(xml)
+        .map_err(|err| Error::unreadable(format!("the worksheet part is not valid XML: {err}")))
 }
 
 /// A whole number an attribute spells, or nothing where it spells none or
@@ -396,19 +432,25 @@ pub struct NewCell {
     pub written: Written,
 }
 
-/// The splice that puts a row numbered `row` and holding `cells` into `data`,
-/// before the first row of a greater number and after every row of a lesser
-/// one.
+/// The splice that puts a row numbered `row` and holding `cells` into the
+/// worksheet part whose text is `xml`, before the first row of a greater
+/// number and after every row of a lesser one.
+///
+/// The part is parsed here rather than handed in parsed. Where a row goes is
+/// a question about the part and nothing else, so everything it takes to
+/// answer is here: the parse, the root element the part must have, and the
+/// sheet data the row goes into. The splice's byte ranges are ranges of
+/// `xml`, which is the text every other edit to this part is ranged against.
 ///
 /// The cells go in in column order whatever order they are given in, which is
 /// the order a row has to read in. The row carries its number and nothing
 /// else: `spans` is a hint about which columns a row holds, and Excel neither
 /// needs it nor minds a row without one; the rows already there keep the spans
 /// they have, because a splice changes what it was told to and nothing else.
-///
-/// `source` must be the text the sheet data's document was parsed from.
-pub fn row_inserted(data: Node, source: &str, row: u32, cells: &[NewCell]) -> Result<Splice> {
-    let prefix = Element::of(data, source)?.prefix();
+pub fn row_inserted(xml: &str, row: u32, cells: &[NewCell]) -> Result<Splice> {
+    let document = parsed(xml)?;
+    let data = Worksheet::of(&document)?.where_a_row_goes(row)?;
+    let prefix = Element::of(data, xml)?.prefix();
     let mut ordered: Vec<&NewCell> = cells.iter().collect();
     ordered.sort_by_key(|cell| cell.at.column());
     let mut written = String::new();
@@ -417,8 +459,8 @@ pub fn row_inserted(data: Node, source: &str, row: u32, cells: &[NewCell]) -> Re
     }
     let element = format!(r#"<{prefix}row r="{row}">{written}</{prefix}row>"#);
     let splice = match first_row_after(data, row)? {
-        Some(next) => inserted_before(next, source, &element),
-        None => appended(data, source, &element)?,
+        Some(next) => inserted_before(next, xml, &element),
+        None => appended(data, xml, &element)?,
     };
     // Two rows put into one sheet go in at the same byte where both follow
     // the same row, so they order themselves by number.
@@ -1060,8 +1102,7 @@ mod tests {
             Located::InRow(row) => {
                 cell_inserted(row, xml, cell, style, written).expect("the row is spliceable")
             }
-            Located::InSheetData(data) => row_inserted(
-                data,
+            Located::InSheetData(_) => row_inserted(
                 xml,
                 cell.row(),
                 &[NewCell {
@@ -1147,6 +1188,39 @@ mod tests {
                 "{empty}"
             );
         }
+    }
+
+    /// Putting a row in reads the part itself, so what is wrong with the part
+    /// is answered here rather than by whoever called. The caller used to
+    /// parse, find the sheet data and hand the node over, which meant it also
+    /// had to invent an answer for a part that would not parse and for one
+    /// that already held the row.
+    #[test]
+    fn putting_a_row_in_answers_for_the_part_it_is_given() {
+        let cells = [NewCell {
+            at: Cell::parse("A1").expect("A1 is a cell"),
+            style: None,
+            written: Written::Number(9.0),
+        }];
+
+        let unparseable = row_inserted("<worksheet><sheetData>", 1, &cells)
+            .expect_err("that part is not valid XML");
+        let not_a_worksheet =
+            row_inserted(r#"<sst xmlns="x"/>"#, 1, &cells).expect_err("that is not a worksheet");
+        let held = row_inserted(
+            &sheet(r#"<row r="1"><c r="A1"><v>1</v></c></row>"#),
+            1,
+            &cells,
+        )
+        .expect_err("the sheet holds row 1 already");
+
+        assert_eq!(unparseable.code(), ErrorCode::Unreadable);
+        assert!(
+            unparseable.message().contains("the worksheet part"),
+            "{unparseable}"
+        );
+        assert_eq!(not_a_worksheet.code(), ErrorCode::Unreadable);
+        assert_eq!(held.code(), ErrorCode::Internal, "{held}");
     }
 
     /// A row declaring a custom format gives its style to the cells in it,

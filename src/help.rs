@@ -7,10 +7,10 @@
 //!
 //! Both topics are built from the library rather than transcribed beside it.
 //! The exit-code table comes from [`ErrorCode`] and the batch's operation
-//! kinds from [`Operation::KINDS`], so a topic cannot fall behind the thing it
+//! kinds from [`Kind::ALL`], so a topic cannot fall behind the thing it
 //! describes: adding a code or a kind changes the topic in the same commit.
 
-use crate::batch::{Operation, WriteType};
+use crate::batch::{Kind, WriteType};
 use crate::error::{EXIT_DIFFERENT, EXIT_SUCCESS, ErrorCode};
 
 /// A subject the `help` verb can explain.
@@ -60,7 +60,7 @@ impl Topic {
 
 /// The envelope, the policy that governs it, and the batch document.
 fn json() -> String {
-    let kinds = Operation::KINDS.map(|kind| format!("  {kind}")).join("\n");
+    let kinds = Kind::ALL.map(|kind| format!("  {kind}")).join("\n");
     let types = WriteType::ALL
         .map(|write_type| format!("  {:<7} {}", write_type.as_str(), write_type.description()))
         .join("\n");
@@ -217,8 +217,11 @@ mod tests {
     fn the_json_topic_carries_every_operation_kind_and_write_type() {
         let text = Topic::Json.text();
 
-        for kind in Operation::KINDS {
-            assert!(text.contains(kind), "the batch schema must name '{kind}'");
+        for kind in Kind::ALL {
+            assert!(
+                text.contains(kind.as_str()),
+                "the batch schema must name '{kind}'"
+            );
         }
         for write_type in WriteType::ALL {
             assert!(

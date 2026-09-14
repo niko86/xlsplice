@@ -20,25 +20,37 @@ pub fn mode(json: bool) -> OutputMode {
 }
 
 /// How much of the diagnostic channel a caller asked for. It moves stderr
-/// only; stdout carries the same bytes at every level. Errors ignore it: a
+/// only; stdout carries the same bytes at either volume. Errors ignore it: a
 /// failure stays visible even under `--quiet`.
+///
+/// Two volumes rather than three, because there are two: a run that was not
+/// asked to be loud says nothing on stderr, so there is nothing `--quiet`
+/// could take away. A third value between them would be a level the code
+/// never reads and a promise the output does not keep. The flag itself stays
+/// on the published surface and says in its help that it changes nothing;
+/// giving the default something to suppress is what would earn it back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verbosity {
-    /// `--quiet`: nothing on stderr but errors.
+    /// Nothing on stderr but errors: the default, and what `--quiet` asks
+    /// for.
     Quiet,
-    /// The default.
-    Normal,
     /// `--verbose`: traces of what the command is doing.
     Verbose,
 }
 
 impl Verbosity {
-    /// The level the global flags ask for. clap keeps them mutually exclusive.
-    pub fn from_flags(quiet: bool, verbose: bool) -> Self {
-        match (quiet, verbose) {
-            (true, _) => Verbosity::Quiet,
-            (_, true) => Verbosity::Verbose,
-            _ => Verbosity::Normal,
+    /// The volume `--verbose` asks for.
+    ///
+    /// It is the only flag that moves this. `--quiet` asks for the default,
+    /// so nothing here reads it — which is the point of the flag doing
+    /// nothing, said in code rather than only in the help. That the two
+    /// cannot be asked for at once is clap's, and
+    /// `quiet_and_verbose_cannot_both_be_asked_for` holds the real binary to
+    /// it.
+    pub fn asked_for(verbose: bool) -> Self {
+        match verbose {
+            true => Verbosity::Verbose,
+            false => Verbosity::Quiet,
         }
     }
 }

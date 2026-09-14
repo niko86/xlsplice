@@ -11,10 +11,12 @@
 # for "Excel had to repair this", because that is the one thing the macOS
 # backend reads off the screen and Windows must read some other way.
 #
-# Three readings are taken of each: what `Open` gives back and says about the
-# workbook, whether the workbook count moved at all, and what happens when
-# Excel is told it may not repair (`CorruptLoad = xlNormalLoad`). Any of the
-# three could be the signal; the point of running this is to find out which.
+# The run of 2026-09-14 answered the first question: with alerts suppressed,
+# `Workbooks.Open` throws on a package that would demand repair and opens one
+# that would not. What is left is whether that throw can be told apart from
+# every other reason an open fails, so each package is now read for the
+# exception's type and HRESULT as well, and two failures that are not repairs
+# are put through the same probe for comparison.
 #
 # It writes only inside its own temporary directory. Nothing is written to the
 # repository, and no fixture is opened for writing.
@@ -108,7 +110,18 @@ function Probe([string]$label, [string]$path) {
     # candidate signal, and a count on its own cannot say that.
     Say "Workbooks    : $was before, $($excel.Workbooks.Count) after"
     if ($failed) {
+        # The message is the same generic one for every COM failure of `Open`,
+        # so it cannot say what went wrong. The HRESULT might, and that is what
+        # decides whether a backend can read a throw as "repair" or has to
+        # narrow it first.
         Say "threw        : $($failed.Exception.Message)"
+        Say "  type       : $($failed.Exception.GetType().FullName)"
+        Say "  HResult    : 0x$('{0:X8}' -f $failed.Exception.HResult)"
+        if ($failed.Exception.InnerException) {
+            Say "  inner      : $($failed.Exception.InnerException.Message)"
+            Say "  inner type : $($failed.Exception.InnerException.GetType().FullName)"
+            Say "  inner H    : 0x$('{0:X8}' -f $failed.Exception.InnerException.HResult)"
+        }
     }
     if ($opened) {
         Say "Name         : $($opened.Name)"
@@ -128,23 +141,21 @@ function Probe([string]$label, [string]$path) {
     $after = Get-ChildItem -Path $work -File | Select-Object -ExpandProperty Name
     $new = $after | Where-Object { $before -notcontains $_ }
     if ($new) { Say "new files    : $($new -join ', ')" } else { Say "new files    : none" }
-
-    # And again, telling Excel it may not repair. `CorruptLoad` is the
-    # fifteenth argument of `Open`, and `xlNormalLoad` (0) asks for the file as
-    # it stands or not at all. If a broken package throws here where a good one
-    # does not, that is the signal the backend wants: it needs no screen, no
-    # dialog and no log.
-    $m = [Type]::Missing
-    try {
-        $strict = $excel.Workbooks.Open($path, $m, $m, $m, $m, $m, $m, $m, $m, $m, $m, $m, $m, $m, 0)
-        Say "xlNormalLoad : opened as $($strict.Name)"
-        try { $strict.Close($false) } catch { Say "close threw  : $_" }
-    }
-    catch { Say "xlNormalLoad : threw, $($_.Exception.Message)" }
 }
 
 Probe "the package Excel saved" $good
 if (Test-Path $broken) { Probe "the package broken on purpose" $broken }
+
+# Two failures that are not repairs. A broken package throws, and so does a
+# package that is not there and one that is not a package at all; if all three
+# throw the same thing, a backend cannot read a bare throw as "Excel demanded
+# repair" and must narrow it — otherwise a locked file or a bad path would be
+# reported as a package Excel objected to, which is the oracle lying rather
+# than skipping.
+Probe "a file that is not there" (Join-Path $work 'no-such-file.xlsx')
+$garbage = Join-Path $work 'not-a-package.xlsx'
+Set-Content -Path $garbage -Value 'this is not a package' -Encoding Ascii
+Probe "a file that is not a package at all" $garbage
 
 Head "Anything Excel logged about a repair"
 foreach ($where in @($work, [Environment]::GetFolderPath('MyDocuments'), $env:TEMP)) {

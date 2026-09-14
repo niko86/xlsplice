@@ -398,6 +398,13 @@ fn tidied() {
 /// with `Repaired` when it opened a recovered copy.
 fn watcher(name: &str) -> String {
     let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+    // Excel will not show a square bracket in a window title, because a
+    // bracket is how a reference names a workbook: `X [v1].xlsm` is titled
+    // `X (v1)`. So the name watched for is the one Excel will show rather than
+    // the one on disk. Every the vendor system template is versioned this way, which is
+    // how this was found: Excel opened the package, drew its window, and the
+    // watcher looked straight past it for ninety seconds.
+    let stem = stem.replace('[', "(").replace(']', ")");
     format!(
         r#"
 on run

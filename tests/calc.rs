@@ -16,9 +16,12 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 use support::{
     Workspace, assert_only_these_differ, assert_same_bytes, assert_spliced, copy_of, envelope,
-    exit_code, fixture, in_text, json, part_text, run, stderr, stdout, under_json, verb,
+    exit_code, fixture, in_text, json, op, part_text, run, stderr, stdout, under_json,
 };
+use xlsplice::batch::Batch;
+use xlsplice::batch::Destination;
 use xlsplice::batch::WriteType;
+use xlsplice::verb::{self, Trace};
 
 const WORKBOOK: &str = "xl/workbook.xml";
 const SHEET1: &str = "xl/worksheets/sheet1.xml";
@@ -54,11 +57,14 @@ fn reported(package: &Path) -> bool {
 /// Set the flag through a batch of one, in process, and give back the
 /// envelope it answered with.
 fn set(package: &Path) -> serde_json::Value {
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         package,
-        vec![verb::calculating(true)],
-        None,
+        &Batch {
+            operations: vec![op::calculating(true)],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
     assert_eq!(out.exit, 0, "{}", out.stdout);
     envelope(&out)
@@ -190,11 +196,14 @@ fn a_batch_may_ask_for_the_flag_off_again_and_the_element_returns_to_itself() {
     set(&package);
     assert!(reported(&package));
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![verb::calculating(false)],
-        None,
+        &Batch {
+            operations: vec![op::calculating(false)],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -215,11 +224,14 @@ fn a_batch_may_ask_for_the_flag_off_again_and_the_element_returns_to_itself() {
 fn asking_for_the_flag_off_where_it_is_already_off_changes_nothing() {
     let package = copy_of("off-already", "feature.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![verb::calculating(false)],
-        None,
+        &Batch {
+            operations: vec![op::calculating(false)],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -257,8 +269,10 @@ fn a_cell_write_alone_does_not_touch_the_calculation_element() {
         "Inputs!A1",
         WriteType::Number,
         "5",
-        None,
         false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -271,14 +285,17 @@ fn a_cell_write_alone_does_not_touch_the_calculation_element() {
 fn a_batch_of_a_cell_write_and_a_calc_touches_both_parts() {
     let package = copy_of("both", "feature.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![
-            verb::writing("Inputs!A1", WriteType::Number, "5"),
-            verb::calculating(true),
-        ],
-        None,
+        &Batch {
+            operations: vec![
+                op::writing("Inputs!A1", WriteType::Number, "5"),
+                op::calculating(true),
+            ],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -343,11 +360,14 @@ fn reading_is_one_tab_separated_row_down_a_pipe() {
 fn setting_is_one_row_per_operation_down_a_pipe() {
     let package = copy_of("write-rows", "feature.xlsx");
 
-    let out = in_text(verb::batch(
+    let out = in_text(verb::run(
         &package,
-        vec![verb::calculating(true)],
-        None,
+        &Batch {
+            operations: vec![op::calculating(true)],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stderr);

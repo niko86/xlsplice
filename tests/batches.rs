@@ -14,10 +14,13 @@ mod support;
 use std::path::{Path, PathBuf};
 
 use support::{
-    Workspace, assert_same_bytes, envelope, exit_code, fixture, part_text, run, stdout, under_json,
-    verb,
+    Workspace, assert_same_bytes, envelope, exit_code, fixture, op, part_text, run, stdout,
+    under_json,
 };
+use xlsplice::batch::Batch;
+use xlsplice::batch::Destination;
 use xlsplice::batch::WriteType;
+use xlsplice::verb::{self, Trace};
 
 const SHEET1: &str = "xl/worksheets/sheet1.xml";
 
@@ -31,7 +34,13 @@ fn package_of(workspace: &Workspace, row: &str) -> PathBuf {
 /// The message of a batch that was refused, with the exit code asserted to be
 /// the one the frozen table gives `usage`.
 fn refused(package: &Path, operations: Vec<xlsplice::batch::Operation>) -> String {
-    let out = under_json(verb::batch(package, operations, None, false));
+    let out = under_json(verb::run(
+        package,
+        &Batch { operations },
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
+    ));
 
     assert_eq!(out.exit, 2, "a contradictory batch is a usage error");
     let body = envelope(&out);
@@ -48,14 +57,17 @@ fn two_operations_on_different_cells_of_one_part_are_spliced_into_it_together() 
     let package = workspace.copy_of("feature.xlsx");
     let before = part_text(&fixture("feature.xlsx"), SHEET1);
 
-    let body = envelope(&under_json(verb::batch(
+    let body = envelope(&under_json(verb::run(
         &package,
-        vec![
-            verb::writing("Inputs!A1", WriteType::Number, "11"),
-            verb::writing("Inputs!A3", WriteType::Number, "13"),
-        ],
-        None,
+        &Batch {
+            operations: vec![
+                op::writing("Inputs!A1", WriteType::Number, "11"),
+                op::writing("Inputs!A3", WriteType::Number, "13"),
+            ],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     )));
 
     assert_eq!(
@@ -82,9 +94,9 @@ fn two_operations_naming_one_cell_are_refused_and_the_package_is_untouched() {
     let message = refused(
         &package,
         vec![
-            verb::writing("Inputs!A1", WriteType::Number, "1"),
-            verb::writing("Inputs!A3", WriteType::Number, "3"),
-            verb::writing("Inputs!A1", WriteType::Number, "2"),
+            op::writing("Inputs!A1", WriteType::Number, "1"),
+            op::writing("Inputs!A3", WriteType::Number, "3"),
+            op::writing("Inputs!A1", WriteType::Number, "2"),
         ],
     );
 
@@ -109,8 +121,8 @@ fn one_cell_named_twice_two_ways_is_still_one_cell() {
     let message = refused(
         &package,
         vec![
-            verb::writing("MergedInput", WriteType::Text, "by name"),
-            verb::writing("Inputs!B2", WriteType::Text, "by address"),
+            op::writing("MergedInput", WriteType::Text, "by name"),
+            op::writing("Inputs!B2", WriteType::Text, "by address"),
         ],
     );
 
@@ -137,8 +149,8 @@ fn a_cell_written_as_an_empty_element_is_refused_rather_than_given_two_types() {
         let message = refused(
             &package,
             vec![
-                verb::writing(target, WriteType::Text, "first"),
-                verb::writing(target, WriteType::Text, "second"),
+                op::writing(target, WriteType::Text, "first"),
+                op::writing(target, WriteType::Text, "second"),
             ],
         );
 
@@ -162,14 +174,17 @@ fn the_check_refuses_a_repeated_cell_rather_than_a_repeated_part() {
         r#"<c r="A1"><v>1</v></c><c r="B1"><v>2</v></c>"#,
     );
 
-    let body = envelope(&under_json(verb::batch(
+    let body = envelope(&under_json(verb::run(
         &package,
-        vec![
-            verb::writing("Inputs!A1", WriteType::Number, "10"),
-            verb::writing("Inputs!B1", WriteType::Number, "20"),
-        ],
-        None,
+        &Batch {
+            operations: vec![
+                op::writing("Inputs!A1", WriteType::Number, "10"),
+                op::writing("Inputs!B1", WriteType::Number, "20"),
+            ],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     )));
 
     assert_eq!(body["operations"][0]["changed"], serde_json::json!(true));

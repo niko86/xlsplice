@@ -11,9 +11,12 @@ mod support;
 use std::path::Path;
 
 use support::{
-    Workspace, assert_same_bytes, copy_of, envelope, fixture, part_text, under_json, verb,
+    Workspace, assert_same_bytes, copy_of, envelope, fixture, op, part_text, targets, under_json,
 };
+use xlsplice::batch::Batch;
+use xlsplice::batch::Destination;
 use xlsplice::batch::WriteType;
+use xlsplice::verb::{self, Trace};
 
 const SHEET1: &str = "xl/worksheets/sheet1.xml";
 
@@ -30,8 +33,10 @@ fn written(label: &str, value: &str) -> String {
         "Sheet1!C1",
         WriteType::Date,
         value,
-        None,
         false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{value}: {}", out.stdout);
@@ -93,12 +98,18 @@ fn get_reads_the_serial_back() {
         "Sheet1!C1",
         WriteType::Date,
         "2026-09-13T12:00:00",
-        None,
         false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
     ));
     assert_eq!(out.exit, 0, "{}", out.stdout);
 
-    let body = envelope(&under_json(verb::get(&package, &["Sheet1!C1"])));
+    let body = envelope(&under_json(verb::get(
+        &package,
+        &targets(&["Sheet1!C1"]),
+        &Trace::Off,
+    )));
     assert_eq!(body["cells"][0]["type"], serde_json::json!("n"));
     assert_eq!(body["cells"][0]["value"], serde_json::json!(46_278.5));
     assert_eq!(body["cells"][0]["raw"], serde_json::json!("46278.5"));
@@ -121,8 +132,10 @@ fn a_1904_workbook_yields_the_shifted_serial() {
         "Inputs!A1",
         WriteType::Date,
         "2026-09-13",
-        None,
         false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -145,8 +158,10 @@ fn the_same_package_without_the_flag_yields_the_unshifted_serial() {
         "Inputs!A1",
         WriteType::Date,
         "2026-09-13",
-        None,
         false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -166,8 +181,10 @@ fn a_date_before_the_phantom_leap_day_exits_2_and_leaves_the_package_alone() {
             "Sheet1!C1",
             WriteType::Date,
             value,
-            None,
             false,
+            &Destination::InPlace,
+            false,
+            &Trace::Off,
         ));
 
         assert_eq!(out.exit, 2, "{value}");
@@ -193,8 +210,10 @@ fn a_spelling_that_is_not_a_date_exits_2_and_names_the_operation() {
         "Sheet1!C1",
         WriteType::Date,
         "the thirteenth",
-        None,
         false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 2);
@@ -222,19 +241,24 @@ fn a_date_through_a_batch_produces_the_same_bytes_as_the_command_line() {
         "Sheet1!C1",
         WriteType::Date,
         "2026-09-13T06:00:00",
-        None,
         false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
     ));
     assert_eq!(out.exit, 0, "{}", out.stdout);
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &from_batch,
-        vec![verb::writing(
-            "Sheet1!C1",
-            WriteType::Date,
-            "2026-09-13T06:00:00",
-        )],
-        None,
+        &Batch {
+            operations: vec![op::writing(
+                "Sheet1!C1",
+                WriteType::Date,
+                "2026-09-13T06:00:00",
+            )],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
     assert_eq!(out.exit, 0, "{}", out.stdout);
 

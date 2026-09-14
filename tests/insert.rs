@@ -16,9 +16,12 @@ use std::path::PathBuf;
 use serde_json::json;
 use support::{
     Workspace, assert_only_these_differ, assert_same_bytes, assert_spliced, copy_of, envelope,
-    exit_code, fixture, json, part_text, run, stderr, under_json, verb,
+    exit_code, fixture, json, op, part_text, run, stderr, under_json,
 };
+use xlsplice::batch::Batch;
+use xlsplice::batch::Destination;
 use xlsplice::batch::WriteType;
+use xlsplice::verb::{self, Trace};
 
 const SHEET1: &str = "xl/worksheets/sheet1.xml";
 
@@ -30,8 +33,10 @@ fn writing(package: &std::path::Path, target: &str) -> String {
         target,
         WriteType::Number,
         "9",
-        None,
         false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
     ));
     assert_eq!(out.exit, 0, "{target}: {}", out.stdout);
     assert_eq!(
@@ -247,7 +252,16 @@ fn every_write_type_goes_into_a_cell_that_was_not_there() {
     ] {
         let package = copy_of("types", "feature.xlsx");
 
-        let out = under_json(verb::set(&package, target, write_type, value, None, false));
+        let out = under_json(verb::set(
+            &package,
+            target,
+            write_type,
+            value,
+            false,
+            &Destination::InPlace,
+            false,
+            &Trace::Off,
+        ));
 
         assert_eq!(out.exit, 0, "{value}: {}", out.stdout);
         assert!(
@@ -272,8 +286,10 @@ fn a_sheet_with_no_sheet_data_element_is_not_found_and_the_package_is_untouched(
         "Inputs!A1",
         WriteType::Number,
         "9",
-        None,
         false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 3, "{}", out.stdout);
@@ -295,15 +311,18 @@ fn a_sheet_with_no_sheet_data_element_is_not_found_and_the_package_is_untouched(
 fn a_batch_may_insert_a_cell_and_write_an_existing_one() {
     let package = copy_of("mixed", "feature.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![
-            verb::writing("Inputs!A1", WriteType::Number, "100"),
-            verb::writing("Inputs!B1", WriteType::Number, "9"),
-            verb::writing("Inputs!C6", WriteType::Text, "new row"),
-        ],
-        None,
+        &Batch {
+            operations: vec![
+                op::writing("Inputs!A1", WriteType::Number, "100"),
+                op::writing("Inputs!B1", WriteType::Number, "9"),
+                op::writing("Inputs!C6", WriteType::Text, "new row"),
+            ],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -323,14 +342,17 @@ fn a_batch_may_insert_a_cell_and_write_an_existing_one() {
 fn two_cells_put_into_one_row_land_in_column_order() {
     let package = copy_of("two-in-row", "feature.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![
-            verb::writing("Inputs!C1", WriteType::Number, "3"),
-            verb::writing("Inputs!B1", WriteType::Number, "2"),
-        ],
-        None,
+        &Batch {
+            operations: vec![
+                op::writing("Inputs!C1", WriteType::Number, "3"),
+                op::writing("Inputs!B1", WriteType::Number, "2"),
+            ],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -349,14 +371,17 @@ fn two_cells_put_into_one_row_land_in_column_order() {
 fn two_cells_of_one_row_the_sheet_does_not_hold_go_into_the_one_row() {
     let package = copy_of("row-once", "feature.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![
-            verb::writing("Inputs!C6", WriteType::Number, "3"),
-            verb::writing("Inputs!A6", WriteType::Number, "1"),
-        ],
-        None,
+        &Batch {
+            operations: vec![
+                op::writing("Inputs!C6", WriteType::Number, "3"),
+                op::writing("Inputs!A6", WriteType::Number, "1"),
+            ],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -381,14 +406,17 @@ fn two_cells_of_one_row_the_sheet_does_not_hold_go_into_the_one_row() {
 fn each_cell_of_a_row_being_put_in_takes_its_own_style() {
     let package = copy_of("row-styles", "feature.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![
-            verb::writing("Inputs!G9", WriteType::Number, "7"),
-            verb::writing("Inputs!A9", WriteType::Number, "1"),
-        ],
-        None,
+        &Batch {
+            operations: vec![
+                op::writing("Inputs!G9", WriteType::Number, "7"),
+                op::writing("Inputs!A9", WriteType::Number, "1"),
+            ],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -406,15 +434,18 @@ fn each_cell_of_a_row_being_put_in_takes_its_own_style() {
 fn cells_of_several_rows_the_sheet_does_not_hold_put_each_row_in_once() {
     let package = copy_of("rows-once", "feature.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![
-            verb::writing("Inputs!B9", WriteType::Number, "9"),
-            verb::writing("Inputs!A8", WriteType::Number, "8"),
-            verb::writing("Inputs!A9", WriteType::Number, "7"),
-        ],
-        None,
+        &Batch {
+            operations: vec![
+                op::writing("Inputs!B9", WriteType::Number, "9"),
+                op::writing("Inputs!A8", WriteType::Number, "8"),
+                op::writing("Inputs!A9", WriteType::Number, "7"),
+            ],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -437,14 +468,17 @@ fn cells_of_several_rows_the_sheet_does_not_hold_put_each_row_in_once() {
 fn a_new_row_and_a_cell_in_an_existing_row_land_together() {
     let package = copy_of("mixed-rows", "feature.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![
-            verb::writing("Inputs!B1", WriteType::Number, "1"),
-            verb::writing("Inputs!A6", WriteType::Number, "6"),
-        ],
-        None,
+        &Batch {
+            operations: vec![
+                op::writing("Inputs!B1", WriteType::Number, "1"),
+                op::writing("Inputs!A6", WriteType::Number, "6"),
+            ],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -463,14 +497,17 @@ fn a_new_row_and_a_cell_in_an_existing_row_land_together() {
 fn two_cells_of_two_rows_the_sheet_does_not_hold_both_go_in() {
     let package = copy_of("two-rows", "feature.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![
-            verb::writing("Inputs!A9", WriteType::Number, "9"),
-            verb::writing("Inputs!A8", WriteType::Number, "8"),
-        ],
-        None,
+        &Batch {
+            operations: vec![
+                op::writing("Inputs!A9", WriteType::Number, "9"),
+                op::writing("Inputs!A8", WriteType::Number, "8"),
+            ],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -525,8 +562,10 @@ fn a_write_through_a_defined_name_puts_the_anchor_in() {
         "MergedInput",
         WriteType::Number,
         "9",
-        None,
         false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -551,8 +590,10 @@ fn a_dry_run_reports_the_insertion_and_writes_nothing() {
         "Inputs!B1",
         WriteType::Number,
         "9",
-        None,
+        false,
+        &Destination::InPlace,
         true,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);

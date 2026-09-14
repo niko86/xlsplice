@@ -16,10 +16,11 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 use support::{
-    Copied, Workspace, built, envelope, exit_code, in_text, run, stderr, under_json, verb,
+    Copied, Workspace, built, envelope, exit_code, in_text, run, stderr, targets, under_json,
     workbook_xml,
 };
 use xlsplice::render::Rendered;
+use xlsplice::verb::{self, Trace};
 
 /// The feature package, and the workspace holding it alive for as long as the
 /// test needs it.
@@ -37,7 +38,7 @@ fn error_message(out: &Rendered) -> String {
 
 /// The one cell `target` names, out of the envelope.
 fn cell(package: &Path, target: &str) -> serde_json::Value {
-    let out = under_json(verb::get(package, &[target]));
+    let out = under_json(verb::get(package, &targets(&[target]), &Trace::Off));
     assert_eq!(out.exit, 0, "get {target}: {}", out.stderr);
     envelope(&out)["cells"][0].clone()
 }
@@ -348,7 +349,8 @@ fn several_targets_come_back_one_per_target_in_the_order_they_were_given() {
 
     let out = under_json(verb::get(
         &package,
-        &["Inputs!A3", "MergedInput", "Notes!LocalNote", "Inputs!A1"],
+        &targets(&["Inputs!A3", "MergedInput", "Notes!LocalNote", "Inputs!A1"]),
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0);
@@ -379,7 +381,8 @@ fn one_target_is_one_tab_separated_line_with_every_field_in_its_place() {
 
     let out = in_text(verb::get(
         &package,
-        &["MergedInput", "Inputs!E2", "Inputs!Z1"],
+        &targets(&["MergedInput", "Inputs!E2", "Inputs!Z1"]),
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0);
@@ -398,7 +401,11 @@ fn one_target_is_one_tab_separated_line_with_every_field_in_its_place() {
 fn the_envelope_leads_with_ok_and_the_schema_version() {
     let package = feature("envelope");
 
-    let body = envelope(&under_json(verb::get(&package, &["Inputs!A1"])));
+    let body = envelope(&under_json(verb::get(
+        &package,
+        &targets(&["Inputs!A1"]),
+        &Trace::Off,
+    )));
 
     assert_eq!(body["ok"], json!(true));
     assert_eq!(body["schema_version"], json!(1));
@@ -409,7 +416,7 @@ fn the_envelope_leads_with_ok_and_the_schema_version() {
 fn an_unknown_sheet_is_not_found_and_the_message_lists_the_sheets() {
     let package = feature("no-sheet");
 
-    let out = under_json(verb::get(&package, &["Missing!A1"]));
+    let out = under_json(verb::get(&package, &targets(&["Missing!A1"]), &Trace::Off));
 
     assert_eq!(out.exit, 3);
     let message = error_message(&out);
@@ -424,7 +431,7 @@ fn an_unknown_sheet_is_not_found_and_the_message_lists_the_sheets() {
 fn an_unknown_name_is_not_found_and_the_message_lists_the_names_of_its_scope() {
     let package = feature("no-name-found");
 
-    let out = under_json(verb::get(&package, &["Absent"]));
+    let out = under_json(verb::get(&package, &targets(&["Absent"]), &Trace::Off));
 
     assert_eq!(out.exit, 3);
     let message = error_message(&out);
@@ -441,7 +448,11 @@ fn an_unknown_name_is_not_found_and_the_message_lists_the_names_of_its_scope() {
 fn an_unknown_sheet_scoped_name_names_the_sheet_it_was_looked_for_on() {
     let package = feature("no-local-name");
 
-    let out = under_json(verb::get(&package, &["Notes!Absent"]));
+    let out = under_json(verb::get(
+        &package,
+        &targets(&["Notes!Absent"]),
+        &Trace::Off,
+    ));
 
     assert_eq!(out.exit, 3);
     let message = error_message(&out);
@@ -459,7 +470,7 @@ fn a_name_that_is_not_a_reference_is_refused_with_what_it_refers_to() {
     ];
 
     for (target, refers_to) in cases {
-        let out = under_json(verb::get(&package, &[target]));
+        let out = under_json(verb::get(&package, &targets(&[target]), &Trace::Off));
 
         assert_eq!(out.exit, 4, "{target}");
         let body = envelope(&out);
@@ -485,7 +496,7 @@ fn a_cell_outside_every_row_the_sheet_holds_is_empty_rather_than_missing() {
     let package = feature("no-row");
 
     for target in ["Inputs!A99", "Parameters!A1"] {
-        let out = under_json(verb::get(&package, &[target]));
+        let out = under_json(verb::get(&package, &targets(&[target]), &Trace::Off));
 
         assert_eq!(out.exit, 0, "{target}: {}", out.stderr);
         let cell = &envelope(&out)["cells"][0];
@@ -507,7 +518,7 @@ fn a_name_whose_sheet_is_not_in_the_package_is_not_found() {
         ),
     );
 
-    let out = under_json(verb::get(&package, &["Away"]));
+    let out = under_json(verb::get(&package, &targets(&["Away"]), &Trace::Off));
 
     assert_eq!(out.exit, 3);
     let message = error_message(&out);
@@ -518,7 +529,11 @@ fn a_name_whose_sheet_is_not_in_the_package_is_not_found() {
 fn one_failing_target_fails_the_whole_read_and_leaves_stdout_empty() {
     let package = feature("all-or-nothing");
 
-    let out = in_text(verb::get(&package, &["Inputs!A1", "Missing!A1"]));
+    let out = in_text(verb::get(
+        &package,
+        &targets(&["Inputs!A1", "Missing!A1"]),
+        &Trace::Off,
+    ));
 
     assert_eq!(out.exit, 3);
     assert_eq!(
@@ -547,7 +562,11 @@ fn a_sheet_whose_name_needs_quoting_is_addressed_and_reported_quoted() {
         ],
     );
 
-    let out = under_json(verb::get(&package, &["'My Sheet'!A5"]));
+    let out = under_json(verb::get(
+        &package,
+        &targets(&["'My Sheet'!A5"]),
+        &Trace::Off,
+    ));
 
     assert_eq!(out.exit, 0, "{}", out.stderr);
     let cell = envelope(&out)["cells"][0].clone();
@@ -590,7 +609,7 @@ fn a_path_that_is_not_a_package_is_unreadable() {
     let workspace = Workspace::new("get-unreadable");
     let path = workspace.file("notes.txt", b"this is not a package");
 
-    let out = under_json(verb::get(&path, &["Inputs!A1"]));
+    let out = under_json(verb::get(&path, &targets(&["Inputs!A1"]), &Trace::Off));
 
     assert_eq!(out.exit, 5);
     assert_eq!(envelope(&out)["error"]["code"], json!("unreadable"));
@@ -638,7 +657,7 @@ fn a_sheet_whose_relationship_is_gone_is_not_found_rather_than_guessed_at() {
         ],
     );
 
-    let out = under_json(verb::get(&package, &["Second!A1"]));
+    let out = under_json(verb::get(&package, &targets(&["Second!A1"]), &Trace::Off));
 
     assert_eq!(
         out.exit, 3,
@@ -678,7 +697,7 @@ fn a_shared_string_table_the_relationships_do_not_name_is_still_found() {
         ],
     );
 
-    let out = under_json(verb::get(&package, &["Inputs!B1"]));
+    let out = under_json(verb::get(&package, &targets(&["Inputs!B1"]), &Trace::Off));
 
     assert_eq!(out.exit, 0, "{}", out.stderr);
     assert_eq!(envelope(&out)["cells"][0]["value"], json!("hello"));
@@ -692,7 +711,7 @@ fn a_sheet_the_package_holds_no_worksheet_part_for_is_not_found() {
         &workbook_xml(r#"<sheets><sheet name="Only" sheetId="1" r:id="rId1"/></sheets>"#),
     );
 
-    let out = under_json(verb::get(&package, &["Only!A1"]));
+    let out = under_json(verb::get(&package, &targets(&["Only!A1"]), &Trace::Off));
 
     assert_eq!(out.exit, 3);
     let message = error_message(&out);

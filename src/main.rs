@@ -7,21 +7,17 @@
 
 mod cli;
 mod out;
-mod write;
 
+use std::io::IsTerminal;
 use std::path::Path;
 use std::process::ExitCode;
 
 use clap::Parser;
 
-use xlsplice::answer::{self, Answer};
-use xlsplice::batch::{Batch, Operation};
-use xlsplice::cells;
-use xlsplice::diff::{self, Difference};
+use xlsplice::answer;
 use xlsplice::error::Error;
-use xlsplice::package::Package;
 use xlsplice::render::OutputMode;
-use xlsplice::workbook::Workbook;
+use xlsplice::verb::{self, Trace};
 
 use crate::cli::{Cli, Command};
 use crate::out::{Out, Verbosity};
@@ -51,22 +47,28 @@ fn run(command: Command, out: &Out) -> ExitCode {
         env!("CARGO_PKG_VERSION"),
         command.name()
     ));
+    // The trace goes to stderr, and only when it was asked for. Built once
+    // here so that every verb below says what it is doing into the same
+    // place.
+    let sink = |message: &str| out.trace(message);
+    let trace = Trace::To(&sink);
 
-    // `diff` is the one verb whose exit code says something when it succeeds,
-    // so it reaches the streams itself rather than through the common path.
+    // `diff` is the one verb whose exit code says something when it
+    // succeeded, so it reaches the streams itself rather than through the
+    // common path. #37 asks whether that should stay true.
     if let Command::Diff {
         file,
         other,
         exit_code,
     } = command
     {
-        return diff(&file, &other, exit_code, out);
+        return diff(&file, &other, exit_code, out, &trace);
     }
 
     out.emit(match command {
-        Command::Sheets { file } => sheets(&file, out),
-        Command::Names { file } => names(&file, out),
-        Command::Get { file, targets } => get(&file, &targets, out),
+        Command::Sheets { file } => verb::sheets(&file, &trace),
+        Command::Names { file } => verb::names(&file, &trace),
+        Command::Get { file, targets } => verb::get(&file, &targets, &trace),
         Command::Set {
             file,
             target,
@@ -74,70 +76,81 @@ fn run(command: Command, out: &Out) -> ExitCode {
             kind,
             formulas,
             landing,
-        } => write::run(
+        } => verb::set(
             &file,
-            &Batch::of(Operation::Set {
-                target,
-                write_type: kind,
-                value,
-                replace_formula: formulas.replace_formula,
-            }),
-            &landing,
-            out,
+            &target,
+            kind,
+            &value,
+            formulas.replace_formula,
+            &landing.destination(),
+            landing.dry_run,
+            &trace,
         ),
         Command::Clear {
             file,
             target,
             formulas,
             landing,
-        } => write::run(
+        } => verb::clear(
             &file,
-            &Batch::of(Operation::Clear {
-                target,
-                replace_formula: formulas.replace_formula,
-            }),
-            &landing,
-            out,
+            &target,
+            formulas.replace_formula,
+            &landing.destination(),
+            landing.dry_run,
+            &trace,
         ),
         Command::Calc {
             file,
             full_calc_on_load,
             landing,
-        } => write::calc(&file, full_calc_on_load, &landing, out),
+        } => verb::calc(
+            &file,
+            full_calc_on_load,
+            &landing.destination(),
+            landing.dry_run,
+            &trace,
+        ),
         Command::Props { action } => match action {
-            cli::PropsAction::Get { file } => write::props(&file, out),
+            cli::PropsAction::Get { file } => verb::props(&file, &trace),
             cli::PropsAction::Set {
                 file,
                 name,
                 value,
                 kind,
                 landing,
-            } => write::run(
+            } => verb::props_set(
                 &file,
-                &Batch::of(Operation::PropsSet {
-                    name,
-                    write_type: kind,
-                    value,
-                }),
-                &landing,
-                out,
+                &name,
+                kind,
+                &value,
+                &landing.destination(),
+                landing.dry_run,
+                &trace,
             ),
             cli::PropsAction::Unset {
                 file,
                 name,
                 landing,
-            } => write::run(
+            } => verb::props_unset(
                 &file,
-                &Batch::of(Operation::PropsUnset { name }),
-                &landing,
-                out,
+                &name,
+                &landing.destination(),
+                landing.dry_run,
+                &trace,
             ),
         },
         Command::Apply {
             file,
             batch,
             landing,
-        } => write::apply(&file, &batch, &landing, out),
+        } => verb::apply(
+            &file,
+            &batch,
+            std::io::stdin().is_terminal(),
+            &landing.destination(),
+            landing.dry_run,
+            &trace,
+        ),
         Command::Help { topic } => answer::topic(topic),
         Command::Version => answer::version(),
         #[cfg(debug_assertions)]
@@ -150,63 +163,23 @@ fn run(command: Command, out: &Out) -> ExitCode {
 /// Compare two packages, and say in the exit code whether they differ if the
 /// caller asked for that.
 ///
-/// Reading two packages is the whole of it, and neither is written to, so
-/// nothing here goes near the write path. The flag is honoured only where the
-/// comparison succeeded: a package that cannot be read is a failure with its
-/// own code, not a difference.
-fn diff(a: &Path, b: &Path, exit_code: bool, out: &Out) -> ExitCode {
-    out.trace(&format!("comparing {} with {}", a.display(), b.display()));
-    let found = match compared(a, b) {
-        Ok(found) => found,
+/// The comparison is the verb's; the exit code is this process's. The flag is
+/// honoured only where the comparison succeeded: a package that cannot be
+/// read is a failure with its own code, not a difference.
+fn diff(a: &Path, b: &Path, exit_code: bool, out: &Out, trace: &Trace) -> ExitCode {
+    let answer = match verb::difference(a, b, trace) {
+        Ok(answer) => answer,
         Err(err) => return out.emit(Err(err)),
     };
-    out.trace(&format!("{} part(s) between them", found.parts.len()));
-    let on_success = match exit_code && !found.identical {
+    // The answer already carries the fact the flag is about; it is opaque
+    // here only because a payload is JSON. #37 asks whether the answer should
+    // carry the exit code itself and take this reading with it.
+    let identical = answer.payload()["identical"] == serde_json::Value::Bool(true);
+    let on_success = match exit_code && !identical {
         true => xlsplice::error::EXIT_DIFFERENT,
         false => xlsplice::error::EXIT_SUCCESS,
     };
-    out.emit_exiting(answer::difference(&found), on_success)
-}
-
-/// Open both packages and compare them.
-fn compared(a: &Path, b: &Path) -> xlsplice::Result<Difference> {
-    let mut before = Package::open(a)?;
-    let mut after = Package::open(b)?;
-    diff::compare(&mut before, &mut after)
-}
-
-/// Open a package and read its workbook: what every read verb starts with.
-/// The package comes back too, because a verb that reads cells goes on to
-/// read more of its parts.
-fn open(path: &Path, out: &Out) -> xlsplice::Result<(Package, Workbook)> {
-    out.trace(&format!("opening {}", path.display()));
-    let mut package = Package::open(path)?;
-    out.trace(&format!(
-        "{} parts in the package",
-        package.part_paths().len()
-    ));
-    let workbook = Workbook::read(&mut package)?;
-    out.trace(&format!("workbook part: {}", workbook.part()));
-    Ok((package, workbook))
-}
-
-/// List the package's sheets.
-fn sheets(path: &Path, out: &Out) -> xlsplice::Result<Answer> {
-    let (_, workbook) = open(path, out)?;
-    answer::sheets(&workbook)
-}
-
-/// List the package's defined names.
-fn names(path: &Path, out: &Out) -> xlsplice::Result<Answer> {
-    let (_, workbook) = open(path, out)?;
-    answer::names(&workbook)
-}
-
-/// Read the cells `targets` name.
-fn get(path: &Path, targets: &[String], out: &Out) -> xlsplice::Result<Answer> {
-    let (mut package, workbook) = open(path, out)?;
-    out.trace(&format!("reading {} target(s)", targets.len()));
-    answer::cells(&cells::read(&mut package, &workbook, targets)?)
+    out.emit_exiting(Ok(answer), on_success)
 }
 
 /// Render what clap gave back instead of a command.

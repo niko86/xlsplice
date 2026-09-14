@@ -1,7 +1,8 @@
 //! Surgical edits to Excel packages.
 //!
-//! The library is where the work happens; the `xlsplice` binary in front of it
-//! parses arguments, calls in here, and writes what comes back.
+//! The library is where the work happens, the verbs included: the `xlsplice`
+//! binary in front of it parses arguments, calls a [`verb`], and writes what
+//! comes back. Anything that is not a process can call the same verb.
 //!
 //! Underneath everything is the contract every command speaks: the typed
 //! [`Error`] whose stable code maps to a frozen exit code, and the JSON
@@ -40,6 +41,7 @@ pub mod render;
 pub mod splice;
 pub mod strings;
 pub mod target;
+pub mod verb;
 pub mod workbook;
 pub mod worksheet;
 pub mod xml;

@@ -59,8 +59,11 @@ use std::path::Path;
 
 use support::corpus;
 use support::oracle::{Verdict, asked, decided, opened_by, requires};
-use support::{Workspace, copy_of, fixture, part_text, verb};
+use support::{Workspace, copy_of, fixture, op, part_text};
+use xlsplice::batch::Batch;
+use xlsplice::batch::Destination;
 use xlsplice::batch::WriteType;
+use xlsplice::verb::{self, Trace};
 
 /// The four fixtures, which Excel saved and so must open clean.
 const FIXTURES: [&str; 4] = [
@@ -132,8 +135,17 @@ fn a_worksheet_whose_envelope_is_out_of_order_demands_repair() {
 #[ignore = "drives Excel"]
 fn a_number_write_opens_clean() {
     let path = copy_of("oracle-number", "plain.xlsx");
-    verb::set(&path, "Sheet1!A1", WriteType::Number, "42", None, false)
-        .expect("a number write must land");
+    verb::set(
+        &path,
+        "Sheet1!A1",
+        WriteType::Number,
+        "42",
+        false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
+    )
+    .expect("a number write must land");
 
     assert_verdict(&path, Verdict::Clean, "a number written over a number");
 }
@@ -142,8 +154,17 @@ fn a_number_write_opens_clean() {
 #[ignore = "drives Excel"]
 fn a_text_write_opens_clean() {
     let path = copy_of("oracle-text", "plain.xlsx");
-    verb::set(&path, "Sheet1!A2", WriteType::Text, "written", None, false)
-        .expect("a text write must land");
+    verb::set(
+        &path,
+        "Sheet1!A2",
+        WriteType::Text,
+        "written",
+        false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
+    )
+    .expect("a text write must land");
 
     assert_verdict(&path, Verdict::Clean, "text written over a number");
 }
@@ -152,8 +173,17 @@ fn a_text_write_opens_clean() {
 #[ignore = "drives Excel"]
 fn a_boolean_write_opens_clean() {
     let path = copy_of("oracle-boolean", "plain.xlsx");
-    verb::set(&path, "Sheet1!D1", WriteType::Bool, "false", None, false)
-        .expect("a boolean write must land");
+    verb::set(
+        &path,
+        "Sheet1!D1",
+        WriteType::Bool,
+        "false",
+        false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
+    )
+    .expect("a boolean write must land");
 
     assert_verdict(&path, Verdict::Clean, "a boolean written over a boolean");
 }
@@ -166,8 +196,17 @@ fn a_boolean_write_opens_clean() {
 #[ignore = "drives Excel"]
 fn a_shared_string_cell_overwritten_inline_opens_clean() {
     let path = copy_of("oracle-shared", "plain.xlsx");
-    verb::set(&path, "Sheet1!B1", WriteType::Text, "goodbye", None, false)
-        .expect("a write over a shared string must land");
+    verb::set(
+        &path,
+        "Sheet1!B1",
+        WriteType::Text,
+        "goodbye",
+        false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
+    )
+    .expect("a write over a shared string must land");
     assert!(
         part_text(&path, SHEET1).contains(r#"<c r="B1" t="inlineStr">"#),
         "the write must have gone in as an inline string for this to be the case it is"
@@ -189,8 +228,10 @@ fn a_date_write_opens_clean() {
         "Sheet1!C1",
         WriteType::Date,
         "2026-12-25",
-        None,
         false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
     )
     .expect("a date write must land");
 
@@ -204,8 +245,17 @@ fn a_date_write_opens_clean() {
 #[ignore = "drives Excel"]
 fn an_inserted_cell_opens_clean() {
     let path = copy_of("oracle-cell", "feature.xlsx");
-    verb::set(&path, "Inputs!B1", WriteType::Number, "9", None, false)
-        .expect("a write to an absent cell must land");
+    verb::set(
+        &path,
+        "Inputs!B1",
+        WriteType::Number,
+        "9",
+        false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
+    )
+    .expect("a write to an absent cell must land");
     assert!(
         part_text(&path, SHEET1).contains(r#"<c r="B1"><v>9</v></c>"#),
         "the cell must have gone in for this to be the case it is"
@@ -222,8 +272,17 @@ fn an_inserted_cell_opens_clean() {
 #[ignore = "drives Excel"]
 fn an_inserted_row_opens_clean() {
     let path = copy_of("oracle-row", "feature.xlsx");
-    verb::set(&path, "Inputs!A9", WriteType::Number, "9", None, false)
-        .expect("a write to an absent row must land");
+    verb::set(
+        &path,
+        "Inputs!A9",
+        WriteType::Number,
+        "9",
+        false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
+    )
+    .expect("a write to an absent row must land");
     let written = part_text(&path, SHEET1);
     assert!(
         written.contains(r#"<row r="9"><c r="A9"><v>9</v></c></row>"#),
@@ -250,8 +309,10 @@ fn a_date_inheriting_a_date_style_from_its_column_opens_clean() {
         "Inputs!G1",
         WriteType::Date,
         "2026-09-11",
-        None,
         false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
     )
     .expect("a date written into an absent cell must land");
     assert!(
@@ -279,8 +340,10 @@ fn a_date_inheriting_a_date_style_from_its_row_opens_clean() {
         "Inputs!B7",
         WriteType::Date,
         "2026-09-11",
-        None,
         false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
     )
     .expect("a date written into an absent cell must land");
     assert!(
@@ -299,15 +362,18 @@ fn a_date_inheriting_a_date_style_from_its_row_opens_clean() {
 #[ignore = "drives Excel"]
 fn a_replaced_formula_and_the_chain_entry_it_took_with_it_open_clean() {
     let path = copy_of("oracle-formula", "feature.xlsx");
-    verb::batch(
+    verb::run(
         &path,
-        vec![verb::replacing(verb::writing(
-            "Inputs!D1",
-            WriteType::Number,
-            "15",
-        ))],
-        None,
+        &Batch {
+            operations: vec![op::replacing(op::writing(
+                "Inputs!D1",
+                WriteType::Number,
+                "15",
+            ))],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     )
     .expect("a licensed write over a formula must land");
     assert!(
@@ -335,15 +401,18 @@ fn a_package_whose_calc_chain_became_empty_opens_clean() {
     );
     assert_verdict(&path, Verdict::Clean, "the package this case starts from");
 
-    verb::batch(
+    verb::run(
         &path,
-        vec![verb::replacing(verb::writing(
-            "Inputs!A1",
-            WriteType::Number,
-            "2",
-        ))],
-        None,
+        &Batch {
+            operations: vec![op::replacing(op::writing(
+                "Inputs!A1",
+                WriteType::Number,
+                "2",
+            ))],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     )
     .expect("a licensed write over the one formula must land");
 
@@ -370,15 +439,18 @@ fn a_created_custom_properties_part_opens_clean() {
         "the plain fixture carries no custom properties, which is why it is this case"
     );
 
-    verb::batch(
+    verb::run(
         &path,
-        vec![verb::stamping(
-            "Stamp.Text",
-            WriteType::Text,
-            "xlsplice was here",
-        )],
-        None,
+        &Batch {
+            operations: vec![op::stamping(
+                "Stamp.Text",
+                WriteType::Text,
+                "xlsplice was here",
+            )],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     )
     .expect("a property set must land");
 
@@ -404,7 +476,16 @@ fn a_created_calculation_element_opens_clean() {
     rewritten(&path, &derived, "xl/workbook.xml", &without);
     assert_verdict(&derived, Verdict::Clean, "the package this case derives");
 
-    verb::batch(&derived, vec![verb::calculating(true)], None, false).expect("the flag must land");
+    verb::run(
+        &derived,
+        &Batch {
+            operations: vec![op::calculating(true)],
+        },
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
+    )
+    .expect("the flag must land");
 
     assert!(
         part_text(&derived, "xl/workbook.xml").contains(r#"<calcPr fullCalcOnLoad="1"/>"#),
@@ -420,8 +501,17 @@ fn a_created_calculation_element_opens_clean() {
 #[ignore = "drives Excel"]
 fn a_write_into_a_macro_enabled_package_opens_clean() {
     let path = copy_of("oracle-macros", "macros.xlsm");
-    verb::set(&path, "Sheet1!A1", WriteType::Number, "42", None, false)
-        .expect("a write into a macro-enabled package must land");
+    verb::set(
+        &path,
+        "Sheet1!A1",
+        WriteType::Number,
+        "42",
+        false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
+    )
+    .expect("a write into a macro-enabled package must land");
     assert_eq!(
         support::part(&path, "xl/vbaProject.bin"),
         support::part(&fixture("macros.xlsm"), "xl/vbaProject.bin"),
@@ -443,7 +533,15 @@ fn a_write_into_a_macro_enabled_package_opens_clean() {
 #[ignore = "drives Excel"]
 fn a_cleared_cell_opens_clean() {
     let path = copy_of("oracle-clear", "plain.xlsx");
-    verb::clear(&path, "Sheet1!C1", None, false).expect("a clear must land");
+    verb::clear(
+        &path,
+        "Sheet1!C1",
+        false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
+    )
+    .expect("a clear must land");
     assert!(
         part_text(&path, SHEET1).contains(r#"<c r="C1" s="1"/>"#),
         "the cell must have kept its element and its style for this to be the case it is"
@@ -460,8 +558,16 @@ fn a_cleared_cell_opens_clean() {
 #[ignore = "drives Excel"]
 fn a_property_taken_out_opens_clean() {
     let path = copy_of("oracle-unset", "feature.xlsx");
-    verb::batch(&path, vec![verb::unstamping("Stamp.Flag")], None, false)
-        .expect("a property removed must land");
+    verb::run(
+        &path,
+        &Batch {
+            operations: vec![op::unstamping("Stamp.Flag")],
+        },
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
+    )
+    .expect("a property removed must land");
     let written = part_text(&path, "docProps/custom.xml");
     assert!(
         !written.contains("Stamp.Flag"),
@@ -489,8 +595,10 @@ fn a_write_through_a_name_into_a_merged_anchor_opens_clean() {
         "MergedInput",
         WriteType::Text,
         "hydrated",
-        None,
         false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
     )
     .expect("a write through a name must land");
     assert!(
@@ -510,18 +618,21 @@ fn a_write_through_a_name_into_a_merged_anchor_opens_clean() {
 #[ignore = "drives Excel"]
 fn a_mixed_batch_opens_clean() {
     let path = copy_of("oracle-batch", "feature.xlsx");
-    verb::batch(
+    verb::run(
         &path,
-        vec![
-            verb::writing("Inputs!A1", WriteType::Number, "100"),
-            verb::writing("Inputs!B1", WriteType::Text, "put in"),
-            verb::writing("Inputs!C6", WriteType::Date, "2026-09-11"),
-            verb::clearing("Inputs!A2"),
-            verb::stamping("Run.At", WriteType::Date, "2026-09-13"),
-            verb::calculating(true),
-        ],
-        None,
+        &Batch {
+            operations: vec![
+                op::writing("Inputs!A1", WriteType::Number, "100"),
+                op::writing("Inputs!B1", WriteType::Text, "put in"),
+                op::writing("Inputs!C6", WriteType::Date, "2026-09-11"),
+                op::clearing("Inputs!A2"),
+                op::stamping("Run.At", WriteType::Date, "2026-09-13"),
+                op::calculating(true),
+            ],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     )
     .expect("a mixed batch must land");
     let written = part_text(&path, SHEET1);

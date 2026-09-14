@@ -730,56 +730,16 @@ pub const SHARED_STRINGS: &str = r#"<?xml version="1.0" encoding="UTF-8" standal
 /// `set` takes the write type and the caller's text, which is what an
 /// operation carries: reading the one as the other is the batch's, with the
 /// workbook open.
-pub mod verb {
-    use std::path::{Path, PathBuf};
+/// The operations a test batch is made of.
+///
+/// Not verbs: the verbs live in `xlsplice::verb`, where the binary calls
+/// them too. These build the [`Operation`] values a batch carries, which is
+/// test data rather than a second copy of anything — and each is one place, so
+/// a field added to an operation stops the build here until it is considered.
+pub mod op {
+    use xlsplice::batch::{Operation, WriteType};
 
-    use xlsplice::Result;
-    use xlsplice::answer::{self, Answer};
-    use xlsplice::batch::{self, Batch, Destination, Operation, WriteType};
-    use xlsplice::cells;
-    use xlsplice::package::Package;
-    use xlsplice::workbook::Workbook;
-
-    /// Open a package and read its workbook: what every read verb starts
-    /// with. The package comes back too, because a verb that reads cells goes
-    /// on to read more of its parts.
-    fn open(path: &Path) -> Result<(Package, Workbook)> {
-        let mut package = Package::open(path)?;
-        let workbook = Workbook::read(&mut package)?;
-        Ok((package, workbook))
-    }
-
-    /// `xlsplice sheets FILE`.
-    pub fn sheets(path: &Path) -> Result<Answer> {
-        answer::sheets(&open(path)?.1)
-    }
-
-    /// `xlsplice names FILE`.
-    pub fn names(path: &Path) -> Result<Answer> {
-        answer::names(&open(path)?.1)
-    }
-
-    /// `xlsplice get FILE TARGET...`.
-    pub fn get(path: &Path, targets: &[&str]) -> Result<Answer> {
-        let (mut package, workbook) = open(path)?;
-        let targets: Vec<String> = targets.iter().map(|target| (*target).to_owned()).collect();
-        answer::cells(&cells::read(&mut package, &workbook, &targets)?)
-    }
-
-    /// A batch of more than one operation, run the way a writing verb runs
-    /// one. The `apply` verb that will carry such a batch from the command
-    /// line is #8's; this is the library call it will make.
-    pub fn batch(
-        path: &Path,
-        operations: Vec<Operation>,
-        out: Option<PathBuf>,
-        dry_run: bool,
-    ) -> Result<Answer> {
-        let batch = Batch { operations };
-        answer::written(&batch::run(path, &batch, &Destination::from(out), dry_run)?)
-    }
-
-    /// One `set` operation, for a batch built by [`batch`].
+    /// One `set` operation.
     pub fn writing(target: &str, write_type: WriteType, value: &str) -> Operation {
         Operation::Set {
             target: target.to_owned(),
@@ -789,21 +749,12 @@ pub mod verb {
         }
     }
 
-    /// `xlsplice clear FILE TARGET [--out PATH] [--dry-run]`.
-    pub fn clear(path: &Path, target: &str, out: Option<PathBuf>, dry_run: bool) -> Result<Answer> {
-        let batch = Batch::of(Operation::Clear {
-            target: target.to_owned(),
-            replace_formula: false,
-        });
-        answer::written(&batch::run(path, &batch, &Destination::from(out), dry_run)?)
-    }
-
-    /// One `calc` operation, for a batch built by [`batch`].
+    /// One `calc` operation.
     pub fn calculating(full_calc_on_load: bool) -> Operation {
         Operation::Calc { full_calc_on_load }
     }
 
-    /// One `props.set` operation, for a batch built by [`batch`].
+    /// One `props.set` operation.
     pub fn stamping(name: &str, write_type: WriteType, value: &str) -> Operation {
         Operation::PropsSet {
             name: name.to_owned(),
@@ -812,14 +763,14 @@ pub mod verb {
         }
     }
 
-    /// One `props.unset` operation, for a batch built by [`batch`].
+    /// One `props.unset` operation.
     pub fn unstamping(name: &str) -> Operation {
         Operation::PropsUnset {
             name: name.to_owned(),
         }
     }
 
-    /// One `clear` operation, for a batch built by [`batch`].
+    /// One `clear` operation.
     pub fn clearing(target: &str) -> Operation {
         Operation::Clear {
             target: target.to_owned(),
@@ -827,7 +778,8 @@ pub mod verb {
         }
     }
 
-    /// The same operation, licensed to replace a formula it finds.
+    /// The same operation, licensed to replace a formula it finds — what
+    /// `--replace-formula` asks for, and what a batch says per operation.
     pub fn replacing(operation: Operation) -> Operation {
         match operation {
             Operation::Set {
@@ -848,24 +800,11 @@ pub mod verb {
             other => other,
         }
     }
+}
 
-    /// `xlsplice set FILE TARGET VALUE --type TYPE [--out PATH] [--dry-run]`.
-    pub fn set(
-        path: &Path,
-        target: &str,
-        write_type: WriteType,
-        value: &str,
-        out: Option<PathBuf>,
-        dry_run: bool,
-    ) -> Result<Answer> {
-        let batch = Batch::of(Operation::Set {
-            target: target.to_owned(),
-            write_type,
-            value: value.to_owned(),
-            replace_formula: false,
-        });
-        answer::written(&batch::run(path, &batch, &Destination::from(out), dry_run)?)
-    }
+/// The targets a read verb is pointed at, as it wants them.
+pub fn targets(list: &[&str]) -> Vec<String> {
+    list.iter().map(|target| (*target).to_owned()).collect()
 }
 
 /// What a verb writes down a pipe under `--json`: one envelope on stdout, a

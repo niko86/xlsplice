@@ -15,10 +15,13 @@ mod support;
 use serde_json::json;
 use support::{
     Workspace, assert_only_these_differ, assert_same_bytes, assert_spliced, copy_of, envelope,
-    exit_code, fixture, in_text, json, part, part_text, run, stderr, stdout, timestamp, under_json,
-    verb,
+    exit_code, fixture, in_text, json, op, part, part_text, run, stderr, stdout, timestamp,
+    under_json,
 };
+use xlsplice::batch::Batch;
+use xlsplice::batch::Destination;
 use xlsplice::batch::WriteType;
+use xlsplice::verb::{self, Trace};
 
 const CUSTOM: &str = "docProps/custom.xml";
 const CONTENT_TYPES: &str = "[Content_Types].xml";
@@ -113,11 +116,14 @@ fn writing_each_type_over_one_already_there_keeps_its_identifier() {
     ] {
         let package = copy_of(name, "feature.xlsx");
 
-        let out = under_json(verb::batch(
+        let out = under_json(verb::run(
             &package,
-            vec![verb::stamping(name, write_type, value)],
-            None,
+            &Batch {
+                operations: vec![op::stamping(name, write_type, value)],
+            },
+            &Destination::InPlace,
             false,
+            &Trace::Off,
         ));
 
         assert_eq!(out.exit, 0, "{name}: {}", out.stdout);
@@ -147,11 +153,14 @@ fn a_number_is_the_integer_variant_where_it_fits_and_the_real_one_otherwise() {
     ] {
         let package = copy_of("numbers", "feature.xlsx");
 
-        let out = under_json(verb::batch(
+        let out = under_json(verb::run(
             &package,
-            vec![verb::stamping("Stamp.Number", WriteType::Number, value)],
-            None,
+            &Batch {
+                operations: vec![op::stamping("Stamp.Number", WriteType::Number, value)],
+            },
+            &Destination::InPlace,
             false,
+            &Trace::Off,
         ));
 
         assert_eq!(out.exit, 0, "{value}: {}", out.stdout);
@@ -165,11 +174,14 @@ fn a_number_is_the_integer_variant_where_it_fits_and_the_real_one_otherwise() {
 fn a_property_that_is_not_there_is_added_after_the_last_with_the_next_identifier() {
     let package = copy_of("add", "feature.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![verb::stamping("Stamp.New", WriteType::Text, "added")],
-        None,
+        &Batch {
+            operations: vec![op::stamping("Stamp.New", WriteType::Text, "added")],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -191,14 +203,17 @@ fn a_property_that_is_not_there_is_added_after_the_last_with_the_next_identifier
 fn several_properties_added_in_one_batch_take_consecutive_identifiers() {
     let package = copy_of("add-several", "feature.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![
-            verb::stamping("One", WriteType::Text, "a"),
-            verb::stamping("Two", WriteType::Bool, "true"),
-        ],
-        None,
+        &Batch {
+            operations: vec![
+                op::stamping("One", WriteType::Text, "a"),
+                op::stamping("Two", WriteType::Bool, "true"),
+            ],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -221,11 +236,14 @@ fn several_properties_added_in_one_batch_take_consecutive_identifiers() {
 fn setting_on_a_package_with_no_part_adds_the_part_and_both_declarations() {
     let package = copy_of("create", "plain.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![verb::stamping("Reference", WriteType::Text, "R-1")],
-        None,
+        &Batch {
+            operations: vec![op::stamping("Reference", WriteType::Text, "R-1")],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -283,11 +301,14 @@ fn setting_on_a_package_with_no_part_adds_the_part_and_both_declarations() {
 fn a_created_part_is_the_last_entry_and_carries_the_zip_epoch() {
     let package = copy_of("created-entry", "plain.xlsx");
 
-    under_json(verb::batch(
+    under_json(verb::run(
         &package,
-        vec![verb::stamping("Reference", WriteType::Text, "R-1")],
-        None,
+        &Batch {
+            operations: vec![op::stamping("Reference", WriteType::Text, "R-1")],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(
@@ -311,14 +332,17 @@ fn a_created_part_is_the_last_entry_and_carries_the_zip_epoch() {
 fn several_properties_on_a_package_with_no_part_go_into_the_one_part() {
     let package = copy_of("create-several", "plain.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![
-            verb::stamping("One", WriteType::Text, "a"),
-            verb::stamping("Two", WriteType::Number, "2"),
-        ],
-        None,
+        &Batch {
+            operations: vec![
+                op::stamping("One", WriteType::Text, "a"),
+                op::stamping("Two", WriteType::Number, "2"),
+            ],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -336,11 +360,14 @@ fn several_properties_on_a_package_with_no_part_go_into_the_one_part() {
 fn writing_a_property_the_value_it_already_holds_changes_nothing() {
     let package = copy_of("unchanged", "feature.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![verb::stamping("Stamp.Text", WriteType::Text, "xlsplice")],
-        None,
+        &Batch {
+            operations: vec![op::stamping("Stamp.Text", WriteType::Text, "xlsplice")],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -353,11 +380,14 @@ fn writing_a_property_the_value_it_already_holds_changes_nothing() {
 fn unsetting_takes_out_only_the_property_named() {
     let package = copy_of("unset", "feature.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![verb::unstamping("Stamp.Flag")],
-        None,
+        &Batch {
+            operations: vec![op::unstamping("Stamp.Flag")],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -385,11 +415,14 @@ fn unsetting_a_property_that_is_not_there_is_not_found() {
     for (label, fixture_name) in [("missing", "feature.xlsx"), ("no-part", "plain.xlsx")] {
         let package = copy_of(label, fixture_name);
 
-        let out = under_json(verb::batch(
+        let out = under_json(verb::run(
             &package,
-            vec![verb::unstamping("Nope")],
-            None,
+            &Batch {
+                operations: vec![op::unstamping("Nope")],
+            },
+            &Destination::InPlace,
             false,
+            &Trace::Off,
         ));
 
         assert_eq!(out.exit, 3, "{label}: {}", out.stdout);
@@ -408,11 +441,14 @@ fn unsetting_a_property_that_is_not_there_is_not_found() {
 fn a_name_differing_in_case_is_another_property() {
     let package = copy_of("case", "feature.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![verb::stamping("stamp.text", WriteType::Text, "other")],
-        None,
+        &Batch {
+            operations: vec![op::stamping("stamp.text", WriteType::Text, "other")],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -428,14 +464,17 @@ fn a_name_differing_in_case_is_another_property() {
 fn two_operations_naming_one_property_are_refused_before_anything_is_read() {
     let package = copy_of("repeated", "feature.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![
-            verb::stamping("Stamp.Text", WriteType::Text, "one"),
-            verb::unstamping("Stamp.Text"),
-        ],
-        None,
+        &Batch {
+            operations: vec![
+                op::stamping("Stamp.Text", WriteType::Text, "one"),
+                op::unstamping("Stamp.Text"),
+            ],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 2);
@@ -455,14 +494,17 @@ fn two_operations_naming_one_property_are_refused_before_anything_is_read() {
 fn a_value_that_is_not_what_its_type_says_names_the_operation_it_came_from() {
     let package = copy_of("bad-value", "feature.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![
-            verb::stamping("Stamp.Text", WriteType::Text, "fine"),
-            verb::stamping("Stamp.Number", WriteType::Number, "twelve"),
-        ],
-        None,
+        &Batch {
+            operations: vec![
+                op::stamping("Stamp.Text", WriteType::Text, "fine"),
+                op::stamping("Stamp.Number", WriteType::Number, "twelve"),
+            ],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 2);
@@ -484,11 +526,14 @@ fn a_value_that_is_not_what_its_type_says_names_the_operation_it_came_from() {
 fn a_date_on_a_property_is_a_moment_and_not_a_serial() {
     let package = copy_of("moment", "feature.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![verb::stamping("Stamp.Date", WriteType::Date, "1900-01-05")],
-        None,
+        &Batch {
+            operations: vec![op::stamping("Stamp.Date", WriteType::Date, "1900-01-05")],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -566,11 +611,14 @@ fn a_write_reaches_the_package_from_the_command_line() {
 fn a_dry_run_reports_what_would_change_and_writes_nothing() {
     let package = copy_of("dry", "feature.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![verb::stamping("Stamp.Text", WriteType::Text, "not written")],
-        None,
+        &Batch {
+            operations: vec![op::stamping("Stamp.Text", WriteType::Text, "not written")],
+        },
+        &Destination::InPlace,
         true,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -586,11 +634,14 @@ fn out_leaves_the_package_alone_and_writes_the_result_elsewhere() {
     let workspace = package.workspace();
     let elsewhere = workspace.dir().join("stamped.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![verb::stamping("Reference", WriteType::Text, "R-1")],
-        Some(elsewhere.clone()),
+        &Batch {
+            operations: vec![op::stamping("Reference", WriteType::Text, "R-1")],
+        },
+        &Destination::Out(elsewhere.clone()),
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -602,11 +653,14 @@ fn out_leaves_the_package_alone_and_writes_the_result_elsewhere() {
 fn the_report_is_one_row_per_operation_down_a_pipe() {
     let package = copy_of("write-rows", "feature.xlsx");
 
-    let out = in_text(verb::batch(
+    let out = in_text(verb::run(
         &package,
-        vec![verb::stamping("Stamp.Text", WriteType::Text, "row")],
-        None,
+        &Batch {
+            operations: vec![op::stamping("Stamp.Text", WriteType::Text, "row")],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stderr);
@@ -658,8 +712,10 @@ fn a_cell_write_does_not_touch_the_properties() {
         "Inputs!A1",
         WriteType::Number,
         "5",
-        None,
         false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);

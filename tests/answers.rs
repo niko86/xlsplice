@@ -15,10 +15,12 @@ mod support;
 use std::path::PathBuf;
 
 use serde_json::json;
-use support::{Workspace, envelope, in_text, under_json, verb};
+use support::{Workspace, envelope, in_text, targets, under_json};
 use xlsplice::answer;
+use xlsplice::batch::Destination;
 use xlsplice::batch::{OperationReport, Parts, Report, WriteType};
 use xlsplice::reference::{Address, Cell};
+use xlsplice::verb::{self, Trace};
 
 /// The version declared in `Cargo.toml`, read from the manifest rather than
 /// from the crate's own constant, so a hardcoded version would be caught.
@@ -39,13 +41,25 @@ fn every_verb_leads_with_ok_and_the_schema_version_and_carries_no_error() {
     let package = workspace.feature_package("feature.xlsx");
     let writable = workspace.feature_package("writable.xlsx");
     let answers = [
-        ("sheets", verb::sheets(&package)),
-        ("names", verb::names(&package)),
-        ("get", verb::get(&package, &["Inputs!A1"])),
+        ("sheets", verb::sheets(&package, &Trace::Off)),
+        ("names", verb::names(&package, &Trace::Off)),
+        (
+            "get",
+            verb::get(&package, &targets(&["Inputs!A1"]), &Trace::Off),
+        ),
         ("version", answer::version()),
         (
             "set",
-            verb::set(&writable, "Inputs!A1", WriteType::Number, "42", None, false),
+            verb::set(
+                &writable,
+                "Inputs!A1",
+                WriteType::Number,
+                "42",
+                false,
+                &Destination::InPlace,
+                false,
+                &Trace::Off,
+            ),
         ),
     ];
 
@@ -74,7 +88,8 @@ fn every_member_of_a_list_carries_the_keys_the_others_carry() {
 
     let body = envelope(&under_json(verb::get(
         &package,
-        &["Inputs!E2", "Inputs!A6", "Inputs!D1"],
+        &targets(&["Inputs!E2", "Inputs!A6", "Inputs!D1"]),
+        &Trace::Off,
     )));
 
     assert_eq!(
@@ -195,9 +210,9 @@ fn a_verb_that_found_nothing_says_nothing_at_all_down_a_pipe() {
     let workspace = Workspace::new("empty");
     let package = workspace.package("bare.xlsx", &support::workbook_xml("<sheets/>"));
 
-    assert_eq!(in_text(verb::sheets(&package)).stdout, "");
+    assert_eq!(in_text(verb::sheets(&package, &Trace::Off)).stdout, "");
     assert_eq!(
-        envelope(&under_json(verb::sheets(&package)))["sheets"],
+        envelope(&under_json(verb::sheets(&package, &Trace::Off)))["sheets"],
         json!([])
     );
 }
@@ -210,7 +225,7 @@ fn a_verb_that_fails_is_the_error_envelope_and_the_code_it_carries() {
     let workspace = Workspace::new("failure");
     let package = workspace.feature_package("feature.xlsx");
 
-    let out = under_json(verb::get(&package, &["Missing!A1"]));
+    let out = under_json(verb::get(&package, &targets(&["Missing!A1"]), &Trace::Off));
 
     assert_eq!(out.exit, 3);
     let body = envelope(&out);

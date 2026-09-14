@@ -10,16 +10,26 @@ use std::path::Path;
 
 use support::{
     assert_only_these_differ, assert_same_bytes, assert_spliced, copy_of, envelope, exit_code,
-    fixture, in_text, part_text, run, stderr, under_json, verb,
+    fixture, in_text, op, part_text, run, stderr, under_json,
 };
+use xlsplice::batch::Batch;
+use xlsplice::batch::Destination;
 use xlsplice::batch::WriteType;
+use xlsplice::verb::{self, Trace};
 
 const SHEET1: &str = "xl/worksheets/sheet1.xml";
 const SHEET2: &str = "xl/worksheets/sheet2.xml";
 
 /// A `clear` that must succeed, and the envelope it answers with.
 fn clear(package: &Path, target: &str) -> serde_json::Value {
-    let rendered = under_json(verb::clear(package, target, None, false));
+    let rendered = under_json(verb::clear(
+        package,
+        target,
+        false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
+    ));
     assert_eq!(rendered.exit, 0, "clear {target}: {}", rendered.stdout);
     envelope(&rendered)
 }
@@ -70,8 +80,10 @@ fn clearing_an_inline_string_takes_the_whole_of_it_away() {
         "Sheet1!A1",
         WriteType::Text,
         "written",
-        None,
         false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
     ));
     assert_eq!(out.exit, 0, "{}", out.stdout);
     assert!(part_text(&package, SHEET1).contains(r#"<is><t>written</t></is>"#));
@@ -106,7 +118,14 @@ fn clearing_a_formula_cell_is_refused_and_the_package_is_untouched() {
     let package = copy_of("formula", "feature.xlsx");
 
     for target in ["Inputs!D1", "Inputs!E2", "Inputs!E3"] {
-        let out = under_json(verb::clear(&package, target, None, false));
+        let out = under_json(verb::clear(
+            &package,
+            target,
+            false,
+            &Destination::InPlace,
+            false,
+            &Trace::Off,
+        ));
 
         assert_eq!(out.exit, 4, "{target}");
         assert_eq!(
@@ -147,11 +166,14 @@ fn a_clear_through_a_batch_produces_the_same_bytes_as_the_command_line() {
     let from_batch = copy_of("clear-batch", "plain.xlsx");
 
     clear(&from_command_line, "Sheet1!C1");
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &from_batch,
-        vec![verb::clearing("Sheet1!C1")],
-        None,
+        &Batch {
+            operations: vec![op::clearing("Sheet1!C1")],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
     assert_eq!(out.exit, 0, "{}", out.stdout);
 
@@ -163,14 +185,17 @@ fn a_clear_through_a_batch_produces_the_same_bytes_as_the_command_line() {
 fn a_batch_may_clear_one_cell_and_write_another() {
     let package = copy_of("mixed", "plain.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![
-            verb::clearing("Sheet1!C1"),
-            verb::writing("Sheet1!A1", WriteType::Number, "9"),
-        ],
-        None,
+        &Batch {
+            operations: vec![
+                op::clearing("Sheet1!C1"),
+                op::writing("Sheet1!A1", WriteType::Number, "9"),
+            ],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -189,7 +214,14 @@ fn clearing_a_cell_the_sheet_does_not_hold_changes_nothing() {
     let package = copy_of("absent", "plain.xlsx");
 
     for target in ["Sheet1!Z1", "Sheet1!A9"] {
-        let out = under_json(verb::clear(&package, target, None, false));
+        let out = under_json(verb::clear(
+            &package,
+            target,
+            false,
+            &Destination::InPlace,
+            false,
+            &Trace::Off,
+        ));
 
         assert_eq!(out.exit, 0, "{target}: {}", out.stdout);
         assert_eq!(
@@ -205,7 +237,14 @@ fn clearing_a_cell_the_sheet_does_not_hold_changes_nothing() {
 fn the_text_output_is_one_tab_separated_row_per_operation() {
     let package = copy_of("rows", "plain.xlsx");
 
-    let out = in_text(verb::clear(&package, "Sheet1!C1", None, false));
+    let out = in_text(verb::clear(
+        &package,
+        "Sheet1!C1",
+        false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
+    ));
 
     assert_eq!(out.exit, 0, "{}", out.stderr);
     assert_eq!(out.stdout, "Sheet1!C1\t\tSheet1!C1\ttrue\n");

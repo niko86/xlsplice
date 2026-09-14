@@ -22,10 +22,12 @@ use std::path::{Path, PathBuf};
 
 use support::{
     assert_only_these_differ, assert_same_bytes, assert_same_parts, assert_spliced, copy_of,
-    envelope, exit_code, files_in, fixture, in_text, part, part_text, run, stderr, under_json,
-    verb,
+    envelope, exit_code, files_in, fixture, in_text, part, part_text, run, stderr, targets,
+    under_json,
 };
+use xlsplice::batch::Destination;
 use xlsplice::batch::WriteType;
+use xlsplice::verb::{self, Trace};
 
 const SHEET1: &str = "xl/worksheets/sheet1.xml";
 const SHARED_STRINGS: &str = "xl/sharedStrings.xml";
@@ -45,7 +47,16 @@ fn set_with(
     out: Option<PathBuf>,
     dry_run: bool,
 ) -> serde_json::Value {
-    let rendered = under_json(verb::set(package, target, kind, value, out, dry_run));
+    let rendered = under_json(verb::set(
+        package,
+        target,
+        kind,
+        value,
+        false,
+        &Destination::from(out),
+        dry_run,
+        &Trace::Off,
+    ));
     assert_eq!(
         rendered.exit, 0,
         "set {target} {value}: {}",
@@ -127,7 +138,7 @@ fn what_was_written_is_what_get_reads_back() {
         let package = copy_of(&format!("read-back-{kind_name}-{given}"), "plain.xlsx");
         set(&package, "Sheet1!A1", kind, given);
 
-        let out = under_json(verb::get(&package, &["Sheet1!A1"]));
+        let out = under_json(verb::get(&package, &targets(&["Sheet1!A1"]), &Trace::Off));
         assert_eq!(out.exit, 0, "{kind_name} {given}: {}", out.stderr);
         let cell = envelope(&out)["cells"][0].clone();
 
@@ -467,8 +478,10 @@ fn a_destination_that_cannot_be_written_fails_and_leaves_the_input_alone() {
         "Sheet1!A1",
         WriteType::Number,
         "42",
-        Some(nowhere.clone()),
         false,
+        &Destination::Out(nowhere.clone()),
+        false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 1);
@@ -495,8 +508,10 @@ fn a_destination_that_cannot_be_replaced_leaves_no_temporary_file_behind() {
         "Sheet1!A1",
         WriteType::Number,
         "42",
-        Some(occupied.clone()),
         false,
+        &Destination::Out(occupied.clone()),
+        false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 1);
@@ -521,8 +536,10 @@ fn a_cell_the_sheet_does_not_hold_is_written_in() {
             target,
             WriteType::Number,
             "42",
-            None,
             false,
+            &Destination::InPlace,
+            false,
+            &Trace::Off,
         ));
 
         assert_eq!(out.exit, 0, "{target}: {}", out.stdout);
@@ -550,8 +567,10 @@ fn a_cell_holding_a_formula_is_refused_and_the_package_is_untouched() {
             target,
             WriteType::Number,
             "0",
-            None,
             false,
+            &Destination::InPlace,
+            false,
+            &Trace::Off,
         ));
 
         assert_eq!(out.exit, 4, "{target}");
@@ -581,7 +600,16 @@ fn a_value_that_is_not_of_the_type_asked_for_is_a_usage_error() {
         (WriteType::Number, "NaN"),
         (WriteType::Bool, "maybe"),
     ] {
-        let out = under_json(verb::set(&package, "Sheet1!A1", kind, value, None, false));
+        let out = under_json(verb::set(
+            &package,
+            "Sheet1!A1",
+            kind,
+            value,
+            false,
+            &Destination::InPlace,
+            false,
+            &Trace::Off,
+        ));
 
         assert_eq!(out.exit, 2, "--type {} {value}", kind.as_str());
         assert_eq!(envelope(&out)["error"]["code"], serde_json::json!("usage"));
@@ -644,8 +672,10 @@ fn the_text_output_is_one_tab_separated_row_per_operation() {
         "MergedInput",
         WriteType::Text,
         "x",
-        None,
         false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stderr);

@@ -16,9 +16,12 @@ use std::path::{Path, PathBuf};
 
 use support::{
     Workspace, assert_only_these_differ, assert_same_bytes, assert_spliced, copy_of, envelope,
-    exit_code, fixture, part_text, run, stderr, under_json, verb,
+    exit_code, fixture, op, part_text, run, stderr, targets, under_json,
 };
+use xlsplice::batch::Batch;
+use xlsplice::batch::Destination;
 use xlsplice::batch::WriteType;
+use xlsplice::verb::{self, Trace};
 
 const SHEET1: &str = "xl/worksheets/sheet1.xml";
 const CHAIN: &str = "xl/calcChain.xml";
@@ -48,12 +51,20 @@ fn two_chained_formulas(workspace: &Workspace) -> PathBuf {
 
 /// Write a number into `target`, licensed or not, and give back the envelope.
 fn write(package: &Path, target: &str, licensed: bool) -> xlsplice::render::Rendered {
-    let operation = verb::writing(target, WriteType::Number, "99");
+    let operation = op::writing(target, WriteType::Number, "99");
     let operation = match licensed {
-        true => verb::replacing(operation),
+        true => op::replacing(operation),
         false => operation,
     };
-    under_json(verb::batch(package, vec![operation], None, false))
+    under_json(verb::run(
+        package,
+        &Batch {
+            operations: vec![operation],
+        },
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
+    ))
 }
 
 #[test]
@@ -85,7 +96,14 @@ fn a_plain_formula_cell_is_refused_without_the_flag_and_the_file_is_untouched() 
 fn clearing_a_plain_formula_cell_is_refused_without_the_flag_too() {
     let package = copy_of("clear-refused", "feature.xlsx");
 
-    let out = under_json(verb::clear(&package, "Inputs!D1", None, false));
+    let out = under_json(verb::clear(
+        &package,
+        "Inputs!D1",
+        false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
+    ));
 
     assert_eq!(out.exit, 4);
     assert!(
@@ -112,7 +130,11 @@ fn with_the_flag_the_formula_goes_and_the_value_lands() {
         r#"<c r="D1"><f>SUM(A1:A5)</f><v>15</v></c>"#,
         r#"<c r="D1"><v>99</v></c>"#,
     );
-    let cell = envelope(&under_json(verb::get(&package, &["Inputs!D1"])));
+    let cell = envelope(&under_json(verb::get(
+        &package,
+        &targets(&["Inputs!D1"]),
+        &Trace::Off,
+    )));
     assert_eq!(cell["cells"][0]["formula"], serde_json::json!(null));
     assert_eq!(cell["cells"][0]["value"], serde_json::json!(99));
 }
@@ -121,11 +143,14 @@ fn with_the_flag_the_formula_goes_and_the_value_lands() {
 fn clearing_a_formula_cell_with_the_flag_empties_it() {
     let package = copy_of("clear-replaced", "feature.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![verb::replacing(verb::clearing("Inputs!D1"))],
-        None,
+        &Batch {
+            operations: vec![op::replacing(op::clearing("Inputs!D1"))],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -214,15 +239,18 @@ fn emptying_the_chain_removes_the_part_its_relationship_and_its_override() {
     let package = one_chained_formula(&workspace);
     let before = support::parts(&package).len();
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![verb::replacing(verb::writing(
-            "Inputs!A1",
-            WriteType::Number,
-            "7",
-        ))],
-        None,
+        &Batch {
+            operations: vec![op::replacing(op::writing(
+                "Inputs!A1",
+                WriteType::Number,
+                "7",
+            ))],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -258,14 +286,17 @@ fn a_batch_that_empties_the_chain_between_its_operations_still_removes_it() {
     let workspace = Workspace::new("emptied-between");
     let package = two_chained_formulas(&workspace);
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![
-            verb::replacing(verb::writing("Inputs!A1", WriteType::Number, "1")),
-            verb::replacing(verb::writing("Inputs!B1", WriteType::Number, "2")),
-        ],
-        None,
+        &Batch {
+            operations: vec![
+                op::replacing(op::writing("Inputs!A1", WriteType::Number, "1")),
+                op::replacing(op::writing("Inputs!B1", WriteType::Number, "2")),
+            ],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -289,15 +320,18 @@ fn a_package_with_no_calc_chain_needs_no_maintenance() {
     let package =
         workspace.sheet_package("no-chain.xlsx", "", r#"<c r="A1"><f>1+1</f><v>2</v></c>"#);
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![verb::replacing(verb::writing(
-            "Inputs!A1",
-            WriteType::Number,
-            "7",
-        ))],
-        None,
+        &Batch {
+            operations: vec![op::replacing(op::writing(
+                "Inputs!A1",
+                WriteType::Number,
+                "7",
+            ))],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
@@ -313,14 +347,17 @@ fn a_package_with_no_calc_chain_needs_no_maintenance() {
 fn the_flag_on_one_operation_does_not_license_another() {
     let package = copy_of("one-licence", "feature.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![
-            verb::replacing(verb::writing("Inputs!D1", WriteType::Number, "1")),
-            verb::writing("Inputs!E1", WriteType::Number, "2"),
-        ],
-        None,
+        &Batch {
+            operations: vec![
+                op::replacing(op::writing("Inputs!D1", WriteType::Number, "1")),
+                op::writing("Inputs!E1", WriteType::Number, "2"),
+            ],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 4);
@@ -341,14 +378,17 @@ fn the_flag_on_one_operation_does_not_license_another() {
 fn two_replacements_take_two_entries_out_of_one_chain() {
     let package = copy_of("two-entries", "feature.xlsx");
 
-    let out = under_json(verb::batch(
+    let out = under_json(verb::run(
         &package,
-        vec![
-            verb::replacing(verb::writing("Inputs!D1", WriteType::Number, "1")),
-            verb::replacing(verb::writing("Inputs!E1", WriteType::Number, "2")),
-        ],
-        None,
+        &Batch {
+            operations: vec![
+                op::replacing(op::writing("Inputs!D1", WriteType::Number, "1")),
+                op::replacing(op::writing("Inputs!E1", WriteType::Number, "2")),
+            ],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);

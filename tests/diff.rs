@@ -11,8 +11,11 @@ mod support;
 use std::path::PathBuf;
 
 use serde_json::json;
-use support::{Copied, Workspace, copy_of, exit_code, fixture, json, run, stderr, stdout, verb};
+use support::{Copied, Workspace, copy_of, exit_code, fixture, json, op, run, stderr, stdout};
+use xlsplice::batch::Batch;
+use xlsplice::batch::Destination;
 use xlsplice::batch::WriteType;
+use xlsplice::verb::{self, Trace};
 
 const SHEET1: &str = "xl/worksheets/sheet1.xml";
 const CUSTOM: &str = "docProps/custom.xml";
@@ -89,8 +92,10 @@ fn a_write_shows_up_as_exactly_the_part_it_touched() {
         "Inputs!A1",
         WriteType::Number,
         "99",
-        None,
         false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
     ));
     assert_eq!(out.exit, 0, "{}", out.stdout);
 
@@ -105,11 +110,14 @@ fn a_write_shows_up_as_exactly_the_part_it_touched() {
 #[test]
 fn a_part_a_write_added_is_reported_as_added() {
     let (before, after) = copies("added", "plain.xlsx");
-    let out = support::under_json(verb::batch(
+    let out = support::under_json(verb::run(
         &after,
-        vec![verb::stamping("Reference", WriteType::Text, "R-1")],
-        None,
+        &Batch {
+            operations: vec![op::stamping("Reference", WriteType::Text, "R-1")],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
     assert_eq!(out.exit, 0, "{}", out.stdout);
 
@@ -131,11 +139,14 @@ fn a_part_a_write_added_is_reported_as_added() {
 #[test]
 fn a_part_only_the_first_package_holds_is_reported_as_removed() {
     let (before, after) = copies("removed", "plain.xlsx");
-    let out = support::under_json(verb::batch(
+    let out = support::under_json(verb::run(
         &after,
-        vec![verb::stamping("Reference", WriteType::Text, "R-1")],
-        None,
+        &Batch {
+            operations: vec![op::stamping("Reference", WriteType::Text, "R-1")],
+        },
+        &Destination::InPlace,
         false,
+        &Trace::Off,
     ));
     assert_eq!(out.exit, 0, "{}", out.stdout);
 
@@ -161,8 +172,10 @@ fn the_exit_code_is_zero_either_way_without_the_flag() {
         "Inputs!A1",
         WriteType::Number,
         "99",
-        None,
         false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
     ));
 
     for (label, a, b) in [
@@ -185,8 +198,10 @@ fn the_flag_exits_one_on_a_difference_and_zero_without_one() {
         "Inputs!A1",
         WriteType::Number,
         "99",
-        None,
         false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
     ));
 
     for (label, a, b, expected) in [
@@ -215,8 +230,10 @@ fn a_difference_under_the_flag_is_still_a_successful_answer() {
         "Inputs!A1",
         WriteType::Number,
         "99",
-        None,
         false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
     ));
 
     let out = run(&[
@@ -319,8 +336,10 @@ fn neither_package_is_touched() {
         "Inputs!A1",
         WriteType::Number,
         "99",
-        None,
         false,
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
     ));
     let (was, then) = (
         std::fs::read(&before).expect("readable"),

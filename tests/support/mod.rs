@@ -211,6 +211,84 @@ impl Workspace {
     }
 }
 
+/// A writable copy of a package, and the directory holding it, as one value.
+///
+/// The directory goes when this does, which is the whole point. A copy that
+/// hands back a bare path leaves the removal to whoever still holds the
+/// workspace, so every suite invented the same tuple and every test carried a
+/// binding whose only job was to stay alive — and a test that wrote
+/// `copy(..).1` deleted the package before its own assertion ran. Here the
+/// value a test uses is the value that owns the directory: nothing to
+/// remember, and nothing to hold wrongly.
+///
+/// It stands in for the path it is. It derefs to one, and it is `AsRef<Path>`
+/// and `AsRef<OsStr>` besides, for the generic callers — a `Command`
+/// argument, say — that deref coercion does not reach.
+pub struct Copied {
+    workspace: Workspace,
+    path: PathBuf,
+}
+
+impl Copied {
+    /// The workspace the copy lives in, for a test that wants a second file
+    /// beside it.
+    pub fn workspace(&self) -> &Workspace {
+        &self.workspace
+    }
+
+    /// A path beside this one, in the same directory and with the same
+    /// lifetime — what a test comparing two packages writes its second to.
+    pub fn beside(&self, name: &str) -> PathBuf {
+        self.workspace.dir().join(name)
+    }
+}
+
+impl std::ops::Deref for Copied {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<Path> for Copied {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<std::ffi::OsStr> for Copied {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.path.as_os_str()
+    }
+}
+
+/// A writable copy of the committed fixture called `name`, in a workspace of
+/// its own named after the test that asked.
+pub fn copy_of(label: &str, name: &str) -> Copied {
+    copy_from(label, &fixture(name))
+}
+
+/// The same for a package that is not a fixture: what a corpus suite writes
+/// to, a corpus package being vendor material that is read and never written.
+pub fn copy_from(label: &str, path: &Path) -> Copied {
+    let workspace = Workspace::new(label);
+    let path = workspace.copy_from(path);
+    Copied { workspace, path }
+}
+
+/// A package built in a workspace of its own, owning both.
+///
+/// The copies above start from bytes Excel saved; this starts from bytes a
+/// test writes, which is what the shapes no fixture carries are made of. What
+/// it answers is the same value, so a built package is no more to hold than a
+/// copied one.
+pub fn built(label: &str, build: impl FnOnce(&Workspace) -> PathBuf) -> Copied {
+    let workspace = Workspace::new(label);
+    let path = build(&workspace);
+    Copied { workspace, path }
+}
+
 /// The committed fixture called `name`, in `tests/fixtures/`.
 ///
 /// A fixture is a package Excel saved and its bytes are the baseline every

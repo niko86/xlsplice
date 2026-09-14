@@ -6,23 +6,16 @@
 
 mod support;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use support::{
-    Workspace, assert_only_these_differ, assert_same_bytes, assert_spliced, envelope, exit_code,
+    assert_only_these_differ, assert_same_bytes, assert_spliced, copy_of, envelope, exit_code,
     fixture, in_text, part_text, run, stderr, under_json, verb,
 };
 use xlsplice::batch::WriteType;
 
 const SHEET1: &str = "xl/worksheets/sheet1.xml";
 const SHEET2: &str = "xl/worksheets/sheet2.xml";
-
-/// A writable copy of a fixture, and the workspace holding it.
-fn copy(label: &str, name: &str) -> (Workspace, PathBuf) {
-    let workspace = Workspace::new(label);
-    let path = workspace.copy_of(name);
-    (workspace, path)
-}
 
 /// A `clear` that must succeed, and the envelope it answers with.
 fn clear(package: &Path, target: &str) -> serde_json::Value {
@@ -35,7 +28,7 @@ fn clear(package: &Path, target: &str) -> serde_json::Value {
 /// else. The plain fixture's date cell is the one Excel saved with both.
 #[test]
 fn clearing_a_styled_cell_keeps_the_element_and_the_style() {
-    let (_workspace, package) = copy("styled", "plain.xlsx");
+    let package = copy_of("styled", "plain.xlsx");
 
     let body = clear(&package, "Sheet1!C1");
 
@@ -53,7 +46,7 @@ fn clearing_a_styled_cell_keeps_the_element_and_the_style() {
 /// left claiming the cell holds a string index it no longer has.
 #[test]
 fn clearing_a_shared_string_cell_takes_the_type_away_with_the_value() {
-    let (_workspace, package) = copy("shared", "plain.xlsx");
+    let package = copy_of("shared", "plain.xlsx");
 
     clear(&package, "Sheet1!B1");
 
@@ -70,7 +63,7 @@ fn clearing_a_shared_string_cell_takes_the_type_away_with_the_value() {
 /// `set --type text` produces is exactly what `clear` has to undo.
 #[test]
 fn clearing_an_inline_string_takes_the_whole_of_it_away() {
-    let (_workspace, package) = copy("inline", "plain.xlsx");
+    let package = copy_of("inline", "plain.xlsx");
 
     let out = under_json(verb::set(
         &package,
@@ -97,7 +90,7 @@ fn clearing_an_inline_string_takes_the_whole_of_it_away() {
 /// is written and the report says nothing changed.
 #[test]
 fn clearing_a_cell_that_is_already_empty_changes_nothing() {
-    let (_workspace, package) = copy("already", "feature.xlsx");
+    let package = copy_of("already", "feature.xlsx");
 
     let body = clear(&package, "Inputs!B2");
 
@@ -110,7 +103,7 @@ fn clearing_a_cell_that_is_already_empty_changes_nothing() {
 /// mis-addressed clear cannot destroy a template's formula either.
 #[test]
 fn clearing_a_formula_cell_is_refused_and_the_package_is_untouched() {
-    let (_workspace, package) = copy("formula", "feature.xlsx");
+    let package = copy_of("formula", "feature.xlsx");
 
     for target in ["Inputs!D1", "Inputs!E2", "Inputs!E3"] {
         let out = under_json(verb::clear(&package, target, None, false));
@@ -127,7 +120,7 @@ fn clearing_a_formula_cell_is_refused_and_the_package_is_untouched() {
 
 #[test]
 fn clearing_through_a_defined_name_lands_in_the_anchor() {
-    let (_workspace, package) = copy("by-name", "feature.xlsx");
+    let package = copy_of("by-name", "feature.xlsx");
 
     let body = clear(&package, "Notes!LocalNote");
 
@@ -150,8 +143,8 @@ fn clearing_through_a_defined_name_lands_in_the_anchor() {
 /// operation, so they produce the same bytes.
 #[test]
 fn a_clear_through_a_batch_produces_the_same_bytes_as_the_command_line() {
-    let (_one, from_command_line) = copy("clear-cli", "plain.xlsx");
-    let (_two, from_batch) = copy("clear-batch", "plain.xlsx");
+    let from_command_line = copy_of("clear-cli", "plain.xlsx");
+    let from_batch = copy_of("clear-batch", "plain.xlsx");
 
     clear(&from_command_line, "Sheet1!C1");
     let out = under_json(verb::batch(
@@ -168,7 +161,7 @@ fn a_clear_through_a_batch_produces_the_same_bytes_as_the_command_line() {
 /// A batch may clear one cell and write another in one invocation.
 #[test]
 fn a_batch_may_clear_one_cell_and_write_another() {
-    let (_workspace, package) = copy("mixed", "plain.xlsx");
+    let package = copy_of("mixed", "plain.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -193,7 +186,7 @@ fn a_batch_may_clear_one_cell_and_write_another() {
 /// would be a change with nothing behind it.
 #[test]
 fn clearing_a_cell_the_sheet_does_not_hold_changes_nothing() {
-    let (_workspace, package) = copy("absent", "plain.xlsx");
+    let package = copy_of("absent", "plain.xlsx");
 
     for target in ["Sheet1!Z1", "Sheet1!A9"] {
         let out = under_json(verb::clear(&package, target, None, false));
@@ -210,7 +203,7 @@ fn clearing_a_cell_the_sheet_does_not_hold_changes_nothing() {
 
 #[test]
 fn the_text_output_is_one_tab_separated_row_per_operation() {
-    let (_workspace, package) = copy("rows", "plain.xlsx");
+    let package = copy_of("rows", "plain.xlsx");
 
     let out = in_text(verb::clear(&package, "Sheet1!C1", None, false));
 
@@ -238,7 +231,7 @@ fn the_help_lists_the_operands_and_the_writing_flags() {
 /// not go unexercised.
 #[test]
 fn clear_writes_the_package_from_the_command_line() {
-    let (_workspace, package) = copy("argv", "plain.xlsx");
+    let package = copy_of("argv", "plain.xlsx");
 
     let out = run(&["clear", &package.display().to_string(), "Sheet1!C1"]);
 

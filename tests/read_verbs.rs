@@ -14,12 +14,12 @@
 
 mod support;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::json;
 use support::{
-    CONTENT_TYPES, CONTENT_TYPES_PART, ROOT_RELS, ROOT_RELS_PART, WORKBOOK_PART, Workspace,
-    envelope, exit_code, feature_workbook, in_text, run, stderr, stdout, under_json, verb,
+    CONTENT_TYPES, CONTENT_TYPES_PART, Copied, ROOT_RELS, ROOT_RELS_PART, WORKBOOK_PART, Workspace,
+    built, envelope, exit_code, feature_workbook, in_text, run, stderr, stdout, under_json, verb,
     workbook_xml,
 };
 use xlsplice::Result;
@@ -27,10 +27,8 @@ use xlsplice::answer::Answer;
 
 /// The feature workbook, written to a package, and the workspace holding it
 /// alive for as long as the test needs it.
-fn feature_package(label: &str) -> (Workspace, PathBuf) {
-    let workspace = Workspace::new(label);
-    let path = workspace.package("feature.xlsx", &feature_workbook());
-    (workspace, path)
+fn feature_package(label: &str) -> Copied {
+    built(label, |w| w.package("feature.xlsx", &feature_workbook()))
 }
 
 /// A read verb: a package in, an answer out.
@@ -41,7 +39,7 @@ const BOTH: [(&str, Read); 2] = [("sheets", verb::sheets), ("names", verb::names
 
 #[test]
 fn sheets_reports_every_sheet_with_its_state_in_workbook_order() {
-    let (_workspace, package) = feature_package("sheets-order");
+    let package = feature_package("sheets-order");
 
     let out = in_text(verb::sheets(&package));
 
@@ -55,7 +53,7 @@ fn sheets_reports_every_sheet_with_its_state_in_workbook_order() {
 
 #[test]
 fn sheets_json_carries_the_same_sheets_in_the_envelope() {
-    let (_workspace, package) = feature_package("sheets-json");
+    let package = feature_package("sheets-json");
 
     let out = under_json(verb::sheets(&package));
 
@@ -76,7 +74,7 @@ fn sheets_json_carries_the_same_sheets_in_the_envelope() {
 
 #[test]
 fn names_reports_the_scope_the_reference_the_anchor_and_the_reason() {
-    let (_workspace, package) = feature_package("names-rows");
+    let package = feature_package("names-rows");
 
     let out = in_text(verb::names(&package));
 
@@ -97,7 +95,7 @@ fn names_reports_the_scope_the_reference_the_anchor_and_the_reason() {
 
 #[test]
 fn a_workbook_scoped_name_anchors_at_the_merged_ranges_top_left() {
-    let (_workspace, package) = feature_package("names-merged");
+    let package = feature_package("names-merged");
 
     let body = envelope(&under_json(verb::names(&package)));
     let merged = &body["names"][0];
@@ -115,7 +113,7 @@ fn a_workbook_scoped_name_anchors_at_the_merged_ranges_top_left() {
 
 #[test]
 fn a_sheet_scoped_name_reports_the_sheet_it_is_scoped_to() {
-    let (_workspace, package) = feature_package("names-local");
+    let package = feature_package("names-local");
 
     let local = envelope(&under_json(verb::names(&package)))["names"][1].clone();
 
@@ -127,7 +125,7 @@ fn a_sheet_scoped_name_reports_the_sheet_it_is_scoped_to() {
 
 #[test]
 fn a_name_that_resolves_to_no_cell_carries_the_reason_and_no_anchor() {
-    let (_workspace, package) = feature_package("names-reasons");
+    let package = feature_package("names-reasons");
 
     let body = envelope(&under_json(verb::names(&package)));
     let reasons: Vec<_> = body["names"]
@@ -150,7 +148,7 @@ fn a_name_that_resolves_to_no_cell_carries_the_reason_and_no_anchor() {
 
 #[test]
 fn a_reference_spelled_in_another_case_resolves_to_the_packages_spelling() {
-    let (_workspace, package) = feature_package("names-case");
+    let package = feature_package("names-case");
 
     let loud = envelope(&under_json(verb::names(&package)))["names"][2].clone();
 
@@ -310,7 +308,7 @@ fn both_verbs_need_a_package_to_read() {
 /// to an operand, and what comes back on stdout is what the library answered.
 #[test]
 fn the_double_dash_still_hands_the_path_over_as_an_operand() {
-    let (_workspace, package) = feature_package("double-dash");
+    let package = feature_package("double-dash");
     let package = package.to_str().expect("a UTF-8 path");
     let expected = [
         (
@@ -337,7 +335,7 @@ fn the_double_dash_still_hands_the_path_over_as_an_operand() {
 
 #[test]
 fn quiet_and_verbose_move_stderr_only() {
-    let (_workspace, package) = feature_package("streams");
+    let package = feature_package("streams");
     let package = package.to_str().expect("a UTF-8 path");
 
     let plain = run(&["sheets", package]);

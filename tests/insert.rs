@@ -15,19 +15,12 @@ use std::path::PathBuf;
 
 use serde_json::json;
 use support::{
-    Workspace, assert_only_these_differ, assert_same_bytes, assert_spliced, envelope, exit_code,
-    fixture, json, part_text, run, stderr, under_json, verb,
+    Workspace, assert_only_these_differ, assert_same_bytes, assert_spliced, copy_of, envelope,
+    exit_code, fixture, json, part_text, run, stderr, under_json, verb,
 };
 use xlsplice::batch::WriteType;
 
 const SHEET1: &str = "xl/worksheets/sheet1.xml";
-
-/// A writable copy of one of the fixtures, and the workspace holding it.
-fn copy(label: &str, name: &str) -> (Workspace, PathBuf) {
-    let workspace = Workspace::new(label);
-    let package = workspace.copy_of(name);
-    (workspace, package)
-}
 
 /// Write a number into `target` and give back the worksheet part as it was
 /// left, having asserted the write landed.
@@ -90,7 +83,7 @@ fn a_cell_goes_into_its_row_in_column_order() {
             r#"<v>2</v></c><c r="F1"><v>9</v></c></row>"#,
         ),
     ] {
-        let (_workspace, package) = copy("in-row", "feature.xlsx");
+        let package = copy_of("in-row", "feature.xlsx");
 
         let written = writing(&package, target);
 
@@ -108,7 +101,7 @@ fn a_cell_goes_into_its_row_in_column_order() {
 /// first cell the row has.
 #[test]
 fn a_cell_goes_in_front_of_the_first_cell_a_row_holds() {
-    let (_workspace, package) = copy("first-in-row", "feature.xlsx");
+    let package = copy_of("first-in-row", "feature.xlsx");
 
     let written = writing(&package, "Inputs!A7");
 
@@ -136,7 +129,7 @@ fn a_row_goes_into_the_sheet_data_in_row_order() {
             r#"<c r="G7" s="3"/></row><row r="9"><c r="A9"><v>9</v></c></row></sheetData>"#,
         ),
     ] {
-        let (_workspace, package) = copy("in-data", "feature.xlsx");
+        let package = copy_of("in-data", "feature.xlsx");
 
         let written = writing(&package, target);
 
@@ -200,7 +193,7 @@ fn an_inserted_cell_takes_the_style_excel_would_give_it() {
         ("Inputs!G1", r#"<c r="G1" s="2"><v>9</v></c>"#),
         ("Inputs!B1", r#"<c r="B1"><v>9</v></c>"#),
     ] {
-        let (_workspace, package) = copy("styles", "feature.xlsx");
+        let package = copy_of("styles", "feature.xlsx");
 
         let written = writing(&package, target);
 
@@ -212,7 +205,7 @@ fn an_inserted_cell_takes_the_style_excel_would_give_it() {
 /// cell one: the row is not custom-formatted, because nothing said it was.
 #[test]
 fn an_inserted_row_carries_its_number_and_nothing_else() {
-    let (_workspace, package) = copy("new-row", "feature.xlsx");
+    let package = copy_of("new-row", "feature.xlsx");
 
     let written = writing(&package, "Inputs!G9");
 
@@ -252,7 +245,7 @@ fn every_write_type_goes_into_a_cell_that_was_not_there() {
             r#"<c r="B1"><v>46276</v></c>"#,
         ),
     ] {
-        let (_workspace, package) = copy("types", "feature.xlsx");
+        let package = copy_of("types", "feature.xlsx");
 
         let out = under_json(verb::set(&package, target, write_type, value, None, false));
 
@@ -300,7 +293,7 @@ fn a_sheet_with_no_sheet_data_element_is_not_found_and_the_package_is_untouched(
 /// two land in the one part without treading on each other.
 #[test]
 fn a_batch_may_insert_a_cell_and_write_an_existing_one() {
-    let (_workspace, package) = copy("mixed", "feature.xlsx");
+    let package = copy_of("mixed", "feature.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -328,7 +321,7 @@ fn a_batch_may_insert_a_cell_and_write_an_existing_one() {
 /// says two insertions in one batch do not collide.
 #[test]
 fn two_cells_put_into_one_row_land_in_column_order() {
-    let (_workspace, package) = copy("two-in-row", "feature.xlsx");
+    let package = copy_of("two-in-row", "feature.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -354,7 +347,7 @@ fn two_cells_put_into_one_row_land_in_column_order() {
 /// row has to read in.
 #[test]
 fn two_cells_of_one_row_the_sheet_does_not_hold_go_into_the_one_row() {
-    let (_workspace, package) = copy("row-once", "feature.xlsx");
+    let package = copy_of("row-once", "feature.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -386,7 +379,7 @@ fn two_cells_of_one_row_the_sheet_does_not_hold_go_into_the_one_row() {
 /// has no custom format, so only the columns have anything to say.
 #[test]
 fn each_cell_of_a_row_being_put_in_takes_its_own_style() {
-    let (_workspace, package) = copy("row-styles", "feature.xlsx");
+    let package = copy_of("row-styles", "feature.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -411,7 +404,7 @@ fn each_cell_of_a_row_being_put_in_takes_its_own_style() {
 /// order.
 #[test]
 fn cells_of_several_rows_the_sheet_does_not_hold_put_each_row_in_once() {
-    let (_workspace, package) = copy("rows-once", "feature.xlsx");
+    let package = copy_of("rows-once", "feature.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -442,7 +435,7 @@ fn cells_of_several_rows_the_sheet_does_not_hold_put_each_row_in_once() {
 /// both land, in the one part.
 #[test]
 fn a_new_row_and_a_cell_in_an_existing_row_land_together() {
-    let (_workspace, package) = copy("mixed-rows", "feature.xlsx");
+    let package = copy_of("mixed-rows", "feature.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -468,7 +461,7 @@ fn a_new_row_and_a_cell_in_an_existing_row_land_together() {
 /// both go in, in row order.
 #[test]
 fn two_cells_of_two_rows_the_sheet_does_not_hold_both_go_in() {
-    let (_workspace, package) = copy("two-rows", "feature.xlsx");
+    let package = copy_of("two-rows", "feature.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -525,7 +518,7 @@ fn insertion_works_through_apply() {
 /// like any other, and the cell goes in where it anchors.
 #[test]
 fn a_write_through_a_defined_name_puts_the_anchor_in() {
-    let (_workspace, package) = copy("via-name", "feature.xlsx");
+    let package = copy_of("via-name", "feature.xlsx");
 
     let out = under_json(verb::set(
         &package,
@@ -551,7 +544,7 @@ fn a_write_through_a_defined_name_puts_the_anchor_in() {
 /// the result goes mean what they always mean.
 #[test]
 fn a_dry_run_reports_the_insertion_and_writes_nothing() {
-    let (_workspace, package) = copy("dry", "feature.xlsx");
+    let package = copy_of("dry", "feature.xlsx");
 
     let out = under_json(verb::set(
         &package,

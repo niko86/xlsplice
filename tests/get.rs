@@ -16,16 +16,15 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 use support::{
-    Workspace, envelope, exit_code, in_text, run, stderr, under_json, verb, workbook_xml,
+    Copied, Workspace, built, envelope, exit_code, in_text, run, stderr, under_json, verb,
+    workbook_xml,
 };
 use xlsplice::render::Rendered;
 
 /// The feature package, and the workspace holding it alive for as long as the
 /// test needs it.
-fn feature(label: &str) -> (Workspace, PathBuf) {
-    let workspace = Workspace::new(label);
-    let path = workspace.feature_package("feature.xlsx");
-    (workspace, path)
+fn feature(label: &str) -> Copied {
+    built(label, |w| w.feature_package("feature.xlsx"))
 }
 
 /// The message of a failed envelope.
@@ -45,7 +44,7 @@ fn cell(package: &Path, target: &str) -> serde_json::Value {
 
 #[test]
 fn every_stored_type_comes_back_with_its_type_its_value_and_its_raw_text() {
-    let (_workspace, package) = feature("types");
+    let package = feature("types");
 
     let seen: Vec<_> = [
         "Inputs!A1",
@@ -93,7 +92,7 @@ fn every_stored_type_comes_back_with_its_type_its_value_and_its_raw_text() {
 
 #[test]
 fn a_boolean_cell_reports_a_boolean_either_way_round() {
-    let (_workspace, package) = feature("booleans");
+    let package = feature("booleans");
 
     assert_eq!(cell(&package, "Inputs!D1")["value"], json!(true));
     let no = cell(&package, "Inputs!K1");
@@ -104,7 +103,7 @@ fn a_boolean_cell_reports_a_boolean_either_way_round() {
 
 #[test]
 fn a_shared_string_cell_reports_the_text_and_keeps_the_index_as_its_raw() {
-    let (_workspace, package) = feature("shared");
+    let package = feature("shared");
 
     let hello = cell(&package, "Inputs!B1");
 
@@ -119,7 +118,7 @@ fn a_shared_string_cell_reports_the_text_and_keeps_the_index_as_its_raw() {
 
 #[test]
 fn rich_text_runs_are_concatenated_and_phonetic_text_is_left_out() {
-    let (_workspace, package) = feature("runs");
+    let package = feature("runs");
 
     assert_eq!(cell(&package, "Inputs!I1")["value"], json!("rich text"));
     assert_eq!(
@@ -140,7 +139,7 @@ fn rich_text_runs_are_concatenated_and_phonetic_text_is_left_out() {
 /// fields agreeing is the honest answer rather than an oversight.
 #[test]
 fn an_inline_strings_raw_text_is_the_text_the_cell_itself_holds() {
-    let (_workspace, package) = feature("inline-raw");
+    let package = feature("inline-raw");
 
     let runs = cell(&package, "Inputs!H1");
 
@@ -150,7 +149,7 @@ fn an_inline_strings_raw_text_is_the_text_the_cell_itself_holds() {
 
 #[test]
 fn an_absent_cell_is_empty_and_carries_neither_value_nor_style() {
-    let (_workspace, package) = feature("absent");
+    let package = feature("absent");
 
     let absent = cell(&package, "Inputs!Z1");
 
@@ -169,7 +168,7 @@ fn an_absent_cell_is_empty_and_carries_neither_value_nor_style() {
 /// which of the two reasons it is not there is no business of the caller's.
 #[test]
 fn a_cell_in_a_row_the_sheet_does_not_hold_is_empty_too() {
-    let (_workspace, package) = feature("no-row");
+    let package = feature("no-row");
 
     let absent = cell(&package, "Inputs!C4");
 
@@ -224,7 +223,7 @@ fn dataless(workspace: &Workspace) -> PathBuf {
 
 #[test]
 fn a_cell_holding_a_style_and_no_value_is_empty_and_still_reports_the_style() {
-    let (_workspace, package) = feature("styled-empty");
+    let package = feature("styled-empty");
 
     let styled = cell(&package, "Inputs!A6");
 
@@ -235,7 +234,7 @@ fn a_cell_holding_a_style_and_no_value_is_empty_and_still_reports_the_style() {
 
 #[test]
 fn every_cell_reports_the_style_index_it_carries() {
-    let (_workspace, package) = feature("styles");
+    let package = feature("styles");
 
     assert_eq!(cell(&package, "Inputs!B1")["style"], json!(1));
     assert_eq!(cell(&package, "Inputs!C1")["style"], json!(2));
@@ -248,7 +247,7 @@ fn every_cell_reports_the_style_index_it_carries() {
 
 #[test]
 fn a_plain_formula_reports_its_text_and_nothing_else() {
-    let (_workspace, package) = feature("formula-plain");
+    let package = feature("formula-plain");
 
     let formula = cell(&package, "Inputs!D2")["formula"].clone();
 
@@ -260,7 +259,7 @@ fn a_plain_formula_reports_its_text_and_nothing_else() {
 
 #[test]
 fn a_shared_master_reports_its_range_and_a_child_reports_its_group() {
-    let (_workspace, package) = feature("formula-shared");
+    let package = feature("formula-shared");
 
     assert_eq!(
         cell(&package, "Inputs!E2")["formula"],
@@ -274,7 +273,7 @@ fn a_shared_master_reports_its_range_and_a_child_reports_its_group() {
 
 #[test]
 fn a_formula_cell_still_reports_its_cached_value() {
-    let (_workspace, package) = feature("cached");
+    let package = feature("cached");
 
     let cached = cell(&package, "Inputs!D2");
 
@@ -285,7 +284,7 @@ fn a_formula_cell_still_reports_its_cached_value() {
 
 #[test]
 fn reading_through_the_merged_ranges_name_gives_the_anchors_content() {
-    let (_workspace, package) = feature("merged");
+    let package = feature("merged");
 
     let anchor = cell(&package, "MergedInput");
 
@@ -300,14 +299,14 @@ fn reading_through_the_merged_ranges_name_gives_the_anchors_content() {
 
 #[test]
 fn an_address_goes_through_no_name_at_all() {
-    let (_workspace, package) = feature("no-name");
+    let package = feature("no-name");
 
     assert_eq!(cell(&package, "Inputs!B2")["name"], json!(null));
 }
 
 #[test]
 fn a_sheet_scoped_name_is_read_through_the_sheet_it_is_scoped_to() {
-    let (_workspace, package) = feature("sheet-scoped");
+    let package = feature("sheet-scoped");
 
     let note = cell(&package, "Notes!LocalNote");
 
@@ -318,7 +317,7 @@ fn a_sheet_scoped_name_is_read_through_the_sheet_it_is_scoped_to() {
 
 #[test]
 fn a_target_is_matched_without_regard_to_case_and_answers_in_the_packages_spelling() {
-    let (_workspace, package) = feature("case");
+    let package = feature("case");
 
     for target in ["INPUTS!b1", "inputs!B1"] {
         assert_eq!(
@@ -338,14 +337,14 @@ fn a_target_is_matched_without_regard_to_case_and_answers_in_the_packages_spelli
 
 #[test]
 fn dollars_in_an_address_are_no_more_significant_than_in_a_reference() {
-    let (_workspace, package) = feature("dollars");
+    let package = feature("dollars");
 
     assert_eq!(cell(&package, "Inputs!$B$1")["address"], json!("Inputs!B1"));
 }
 
 #[test]
 fn several_targets_come_back_one_per_target_in_the_order_they_were_given() {
-    let (_workspace, package) = feature("several");
+    let package = feature("several");
 
     let out = under_json(verb::get(
         &package,
@@ -376,7 +375,7 @@ fn several_targets_come_back_one_per_target_in_the_order_they_were_given() {
 
 #[test]
 fn one_target_is_one_tab_separated_line_with_every_field_in_its_place() {
-    let (_workspace, package) = feature("rows");
+    let package = feature("rows");
 
     let out = in_text(verb::get(
         &package,
@@ -397,7 +396,7 @@ fn one_target_is_one_tab_separated_line_with_every_field_in_its_place() {
 
 #[test]
 fn the_envelope_leads_with_ok_and_the_schema_version() {
-    let (_workspace, package) = feature("envelope");
+    let package = feature("envelope");
 
     let body = envelope(&under_json(verb::get(&package, &["Inputs!A1"])));
 
@@ -408,7 +407,7 @@ fn the_envelope_leads_with_ok_and_the_schema_version() {
 
 #[test]
 fn an_unknown_sheet_is_not_found_and_the_message_lists_the_sheets() {
-    let (_workspace, package) = feature("no-sheet");
+    let package = feature("no-sheet");
 
     let out = under_json(verb::get(&package, &["Missing!A1"]));
 
@@ -423,7 +422,7 @@ fn an_unknown_sheet_is_not_found_and_the_message_lists_the_sheets() {
 
 #[test]
 fn an_unknown_name_is_not_found_and_the_message_lists_the_names_of_its_scope() {
-    let (_workspace, package) = feature("no-name-found");
+    let package = feature("no-name-found");
 
     let out = under_json(verb::get(&package, &["Absent"]));
 
@@ -440,7 +439,7 @@ fn an_unknown_name_is_not_found_and_the_message_lists_the_names_of_its_scope() {
 
 #[test]
 fn an_unknown_sheet_scoped_name_names_the_sheet_it_was_looked_for_on() {
-    let (_workspace, package) = feature("no-local-name");
+    let package = feature("no-local-name");
 
     let out = under_json(verb::get(&package, &["Notes!Absent"]));
 
@@ -452,7 +451,7 @@ fn an_unknown_sheet_scoped_name_names_the_sheet_it_was_looked_for_on() {
 
 #[test]
 fn a_name_that_is_not_a_reference_is_refused_with_what_it_refers_to() {
-    let (_workspace, package) = feature("refused");
+    let package = feature("refused");
     let cases = [
         ("Rate", "0.175"),
         ("Total", "SUM(Inputs!$D$1:$D$9)"),
@@ -483,7 +482,7 @@ fn a_name_that_is_not_a_reference_is_refused_with_what_it_refers_to() {
 /// puts one there.
 #[test]
 fn a_cell_outside_every_row_the_sheet_holds_is_empty_rather_than_missing() {
-    let (_workspace, package) = feature("no-row");
+    let package = feature("no-row");
 
     for target in ["Inputs!A99", "Parameters!A1"] {
         let out = under_json(verb::get(&package, &[target]));
@@ -517,7 +516,7 @@ fn a_name_whose_sheet_is_not_in_the_package_is_not_found() {
 
 #[test]
 fn one_failing_target_fails_the_whole_read_and_leaves_stdout_empty() {
-    let (_workspace, package) = feature("all-or-nothing");
+    let package = feature("all-or-nothing");
 
     let out = in_text(verb::get(&package, &["Inputs!A1", "Missing!A1"]));
 
@@ -559,7 +558,7 @@ fn a_sheet_whose_name_needs_quoting_is_addressed_and_reported_quoted() {
 
 #[test]
 fn get_needs_a_package_and_at_least_one_target() {
-    let (_workspace, package) = feature("usage");
+    let package = feature("usage");
 
     assert_eq!(exit_code(&run(&["get"])), 2);
     assert_eq!(
@@ -572,7 +571,7 @@ fn get_needs_a_package_and_at_least_one_target() {
 /// operand, and what comes back on stdout is what the library answered.
 #[test]
 fn the_double_dash_still_hands_the_operands_over() {
-    let (_workspace, package) = feature("double-dash");
+    let package = feature("double-dash");
 
     let out = run(&[
         "get",
@@ -599,7 +598,7 @@ fn a_path_that_is_not_a_package_is_unreadable() {
 
 #[test]
 fn quiet_and_verbose_move_stderr_only() {
-    let (_workspace, package) = feature("get-streams");
+    let package = feature("get-streams");
     let package = package.to_str().expect("a UTF-8 path");
 
     let plain = run(&["get", package, "Inputs!A1"]);

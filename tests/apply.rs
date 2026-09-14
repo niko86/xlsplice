@@ -11,11 +11,11 @@
 
 mod support;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use support::{
-    Workspace, assert_only_these_differ, assert_same_bytes, exit_code, fixture, json, part_text,
-    run, run_in, run_with_stdin, stderr, stdout,
+    Workspace, assert_only_these_differ, assert_same_bytes, copy_of, exit_code, fixture, json,
+    part_text, run, run_in, run_with_stdin, stderr, stdout,
 };
 
 const SHEET1: &str = "xl/worksheets/sheet1.xml";
@@ -27,13 +27,6 @@ const ACROSS_TWO_SHEETS: &str = r#"[
   {"op": "set", "target": "Notes!A5", "type": "text", "value": "noted"}
 ]"#;
 
-/// A writable copy of the feature fixture, and the workspace holding it.
-fn copy(label: &str) -> (Workspace, PathBuf) {
-    let workspace = Workspace::new(label);
-    let package = workspace.copy_of("feature.xlsx");
-    (workspace, package)
-}
-
 /// The batch written to a file in `workspace`, and its path as a string.
 fn batch_file(workspace: &Workspace, name: &str, json: &str) -> String {
     workspace.file(name, json.as_bytes()).display().to_string()
@@ -41,8 +34,9 @@ fn batch_file(workspace: &Workspace, name: &str, json: &str) -> String {
 
 #[test]
 fn a_batch_across_two_sheets_applies_in_one_invocation() {
-    let (workspace, package) = copy("two-sheets");
-    let batch = batch_file(&workspace, "batch.json", ACROSS_TWO_SHEETS);
+    let package = copy_of("two-sheets", "feature.xlsx");
+    let workspace = package.workspace();
+    let batch = batch_file(workspace, "batch.json", ACROSS_TWO_SHEETS);
     let file = package.display().to_string();
 
     let out = run(&["apply", &file, &batch, "--json"]);
@@ -75,9 +69,10 @@ fn a_batch_across_two_sheets_applies_in_one_invocation() {
 /// that cannot be carried out stops the ones that could.
 #[test]
 fn one_bad_operation_in_the_middle_writes_nothing_and_names_its_index() {
-    let (workspace, package) = copy("bad-middle");
+    let package = copy_of("bad-middle", "feature.xlsx");
+    let workspace = package.workspace();
     let batch = batch_file(
-        &workspace,
+        workspace,
         "batch.json",
         r#"[
           {"op": "set", "target": "Inputs!A1", "type": "number", "value": "1"},
@@ -107,9 +102,10 @@ fn one_bad_operation_in_the_middle_writes_nothing_and_names_its_index() {
 /// value of the wrong type.
 #[test]
 fn an_operation_naming_a_sheet_the_package_lacks_names_its_index() {
-    let (workspace, package) = copy("bad-sheet");
+    let package = copy_of("bad-sheet", "feature.xlsx");
+    let workspace = package.workspace();
     let batch = batch_file(
-        &workspace,
+        workspace,
         "batch.json",
         r#"[
           {"op": "set", "target": "Inputs!A1", "type": "number", "value": "1"},
@@ -134,7 +130,7 @@ fn an_operation_naming_a_sheet_the_package_lacks_names_its_index() {
 
 #[test]
 fn a_dash_reads_the_batch_from_stdin() {
-    let (_workspace, package) = copy("stdin");
+    let package = copy_of("stdin", "feature.xlsx");
     let file = package.display().to_string();
 
     let out = run_with_stdin(&["apply", &file, "-", "--json"], ACROSS_TWO_SHEETS);
@@ -149,7 +145,8 @@ fn a_dash_reads_the_batch_from_stdin() {
 
 #[test]
 fn a_batch_operand_that_is_not_there_is_unreadable_and_the_package_is_untouched() {
-    let (workspace, package) = copy("no-batch");
+    let package = copy_of("no-batch", "feature.xlsx");
+    let workspace = package.workspace();
     let missing = workspace.dir().join("no-such-batch.json");
     let file = package.display().to_string();
 
@@ -162,7 +159,7 @@ fn a_batch_operand_that_is_not_there_is_unreadable_and_the_package_is_untouched(
 
 #[test]
 fn a_missing_batch_operand_is_a_usage_error() {
-    let (_workspace, package) = copy("no-operand");
+    let package = copy_of("no-operand", "feature.xlsx");
 
     let out = run(&["apply", &package.display().to_string(), "--json"]);
 
@@ -176,7 +173,8 @@ fn a_missing_batch_operand_is_a_usage_error() {
 /// character to be a minus, so the child runs in the directory holding it.
 #[test]
 fn a_batch_path_beginning_with_a_minus_is_an_operand_after_the_double_dash() {
-    let (workspace, package) = copy("dashed-path");
+    let package = copy_of("dashed-path", "feature.xlsx");
+    let workspace = package.workspace();
     workspace.file("-batch.json", ACROSS_TWO_SHEETS.as_bytes());
     let file = package.display().to_string();
 
@@ -188,9 +186,10 @@ fn a_batch_path_beginning_with_a_minus_is_an_operand_after_the_double_dash() {
 
 #[test]
 fn an_unknown_operation_kind_is_a_usage_error_listing_the_known_kinds() {
-    let (workspace, package) = copy("unknown-kind");
+    let package = copy_of("unknown-kind", "feature.xlsx");
+    let workspace = package.workspace();
     let batch = batch_file(
-        &workspace,
+        workspace,
         "batch.json",
         r#"[{"op": "sheet.rename", "target": "Inputs", "value": "X"}]"#,
     );
@@ -213,9 +212,10 @@ fn an_unknown_operation_kind_is_a_usage_error_listing_the_known_kinds() {
 
 #[test]
 fn a_field_no_operation_knows_is_ignored() {
-    let (workspace, package) = copy("unknown-field");
+    let package = copy_of("unknown-field", "feature.xlsx");
+    let workspace = package.workspace();
     let batch = batch_file(
-        &workspace,
+        workspace,
         "batch.json",
         r#"[{"op": "set", "target": "Inputs!A1", "type": "number", "value": "7",
              "comment": "a field no ticket has added"}]"#,
@@ -232,8 +232,9 @@ fn a_field_no_operation_knows_is_ignored() {
 /// `apply` takes them the way `set` does.
 #[test]
 fn out_and_dry_run_work_as_they_do_for_set() {
-    let (workspace, package) = copy("flags");
-    let batch = batch_file(&workspace, "batch.json", ACROSS_TWO_SHEETS);
+    let package = copy_of("flags", "feature.xlsx");
+    let workspace = package.workspace();
+    let batch = batch_file(workspace, "batch.json", ACROSS_TWO_SHEETS);
     let file = package.display().to_string();
     let elsewhere = workspace.dir().join("elsewhere.xlsx");
 
@@ -260,9 +261,10 @@ fn out_and_dry_run_work_as_they_do_for_set() {
 /// is asserted in `formulas.rs`.
 #[test]
 fn replace_formula_licenses_the_operation_that_carries_it_and_no_other() {
-    let (workspace, package) = copy("replace-formula");
+    let package = copy_of("replace-formula", "feature.xlsx");
+    let workspace = package.workspace();
     let batch = batch_file(
-        &workspace,
+        workspace,
         "batch.json",
         r#"[{"op": "set", "target": "Inputs!D1", "type": "number", "value": "1",
              "replace_formula": true},
@@ -288,8 +290,9 @@ fn replace_formula_licenses_the_operation_that_carries_it_and_no_other() {
 /// nothing and writes nothing, as any batch that changes nothing does.
 #[test]
 fn an_empty_batch_changes_nothing_and_writes_nothing() {
-    let (workspace, package) = copy("empty-batch");
-    let batch = batch_file(&workspace, "batch.json", "[]");
+    let package = copy_of("empty-batch", "feature.xlsx");
+    let workspace = package.workspace();
+    let batch = batch_file(workspace, "batch.json", "[]");
     let file = package.display().to_string();
 
     let out = run(&["apply", &file, &batch, "--json"]);
@@ -303,7 +306,8 @@ fn an_empty_batch_changes_nothing_and_writes_nothing() {
 /// rather than a crash.
 #[test]
 fn a_directory_in_place_of_a_batch_is_unreadable() {
-    let (workspace, package) = copy("batch-is-a-dir");
+    let package = copy_of("batch-is-a-dir", "feature.xlsx");
+    let workspace = package.workspace();
     let file = package.display().to_string();
 
     let out = run(&[

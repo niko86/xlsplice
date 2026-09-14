@@ -15,21 +15,13 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 use support::{
-    Workspace, assert_only_these_differ, assert_same_bytes, assert_spliced, envelope, exit_code,
-    fixture, in_text, json, part_text, run, stderr, stdout, under_json, verb,
+    Workspace, assert_only_these_differ, assert_same_bytes, assert_spliced, copy_of, envelope,
+    exit_code, fixture, in_text, json, part_text, run, stderr, stdout, under_json, verb,
 };
 use xlsplice::batch::WriteType;
 
 const WORKBOOK: &str = "xl/workbook.xml";
 const SHEET1: &str = "xl/worksheets/sheet1.xml";
-
-/// A writable copy of the feature fixture: the package almost every test here
-/// starts from, because its workbook carries the element Excel writes.
-fn copy(label: &str) -> (Workspace, PathBuf) {
-    let workspace = Workspace::new(label);
-    let package = workspace.copy_of("feature.xlsx");
-    (workspace, package)
-}
 
 /// A package of one sheet whose workbook part carries `tail` after its
 /// sheets, which is where the calculation element goes and so where
@@ -74,7 +66,7 @@ fn set(package: &Path) -> serde_json::Value {
 
 #[test]
 fn reading_reports_the_flag_absent_and_leaves_the_package_alone() {
-    let (_workspace, package) = copy("read-unset");
+    let package = copy_of("read-unset", "feature.xlsx");
 
     assert!(!reported(&package), "no fixture carries the flag");
     assert_same_bytes(&fixture("feature.xlsx"), &package);
@@ -83,7 +75,7 @@ fn reading_reports_the_flag_absent_and_leaves_the_package_alone() {
 /// What the tool writes is what it reads back.
 #[test]
 fn reading_reports_the_flag_the_tool_has_just_set() {
-    let (_workspace, package) = copy("read-set");
+    let package = copy_of("read-set", "feature.xlsx");
     set(&package);
 
     assert!(reported(&package));
@@ -91,7 +83,7 @@ fn reading_reports_the_flag_the_tool_has_just_set() {
 
 #[test]
 fn setting_on_the_self_closing_element_excel_writes_moves_nothing_else() {
-    let (_workspace, package) = copy("self-closing");
+    let package = copy_of("self-closing", "feature.xlsx");
 
     let body = set(&package);
 
@@ -174,7 +166,7 @@ fn the_element_goes_after_the_defined_names_where_there_are_any() {
 
 #[test]
 fn setting_a_flag_already_set_changes_nothing_and_writes_nothing() {
-    let (_workspace, package) = copy("already-set");
+    let package = copy_of("already-set", "feature.xlsx");
     set(&package);
     let once = std::fs::read(&package).expect("the package the test wrote is readable");
 
@@ -194,7 +186,7 @@ fn setting_a_flag_already_set_changes_nothing_and_writes_nothing() {
 /// does not recalculate, so the element goes back to exactly what it was.
 #[test]
 fn a_batch_may_ask_for_the_flag_off_again_and_the_element_returns_to_itself() {
-    let (_workspace, package) = copy("off-again");
+    let package = copy_of("off-again", "feature.xlsx");
     set(&package);
     assert!(reported(&package));
 
@@ -221,7 +213,7 @@ fn a_batch_may_ask_for_the_flag_off_again_and_the_element_returns_to_itself() {
 /// Asking for off where it is already off is a batch that changes nothing.
 #[test]
 fn asking_for_the_flag_off_where_it_is_already_off_changes_nothing() {
-    let (_workspace, package) = copy("off-already");
+    let package = copy_of("off-already", "feature.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -237,7 +229,7 @@ fn asking_for_the_flag_off_where_it_is_already_off_changes_nothing() {
 
 #[test]
 fn the_operation_reports_no_target_and_no_address() {
-    let (_workspace, package) = copy("no-target");
+    let package = copy_of("no-target", "feature.xlsx");
 
     let body = set(&package);
 
@@ -258,7 +250,7 @@ fn the_operation_reports_no_target_and_no_address() {
 /// the element it leaves.
 #[test]
 fn a_cell_write_alone_does_not_touch_the_calculation_element() {
-    let (_workspace, package) = copy("cell-only");
+    let package = copy_of("cell-only", "feature.xlsx");
 
     let out = under_json(verb::set(
         &package,
@@ -277,7 +269,7 @@ fn a_cell_write_alone_does_not_touch_the_calculation_element() {
 /// A batch holding both touches both parts, and each for its own reason.
 #[test]
 fn a_batch_of_a_cell_write_and_a_calc_touches_both_parts() {
-    let (_workspace, package) = copy("both");
+    let package = copy_of("both", "feature.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -300,7 +292,7 @@ fn a_batch_of_a_cell_write_and_a_calc_touches_both_parts() {
 
 #[test]
 fn the_flag_reaches_the_package_from_the_command_line() {
-    let (_workspace, package) = copy("argv");
+    let package = copy_of("argv", "feature.xlsx");
 
     let out = run(&[
         "calc",
@@ -316,7 +308,8 @@ fn the_flag_reaches_the_package_from_the_command_line() {
 /// nothing to do; saying so beats accepting them and quietly ignoring them.
 #[test]
 fn reading_with_out_or_dry_run_is_a_usage_error() {
-    let (workspace, package) = copy("read-with-out");
+    let package = copy_of("read-with-out", "feature.xlsx");
+    let workspace = package.workspace();
     let file = package.display().to_string();
     let elsewhere = workspace.dir().join("elsewhere.xlsx");
     let elsewhere = elsewhere.display().to_string();
@@ -336,7 +329,7 @@ fn reading_with_out_or_dry_run_is_a_usage_error() {
 
 #[test]
 fn reading_is_one_tab_separated_row_down_a_pipe() {
-    let (_workspace, package) = copy("rows");
+    let package = copy_of("rows", "feature.xlsx");
 
     let out = run(&["calc", &package.display().to_string()]);
 
@@ -348,7 +341,7 @@ fn reading_is_one_tab_separated_row_down_a_pipe() {
 /// with the target and address columns empty because there are none.
 #[test]
 fn setting_is_one_row_per_operation_down_a_pipe() {
-    let (_workspace, package) = copy("write-rows");
+    let package = copy_of("write-rows", "feature.xlsx");
 
     let out = in_text(verb::batch(
         &package,

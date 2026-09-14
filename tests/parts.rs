@@ -13,7 +13,7 @@ mod support;
 
 use std::collections::BTreeMap;
 
-use support::{Workspace, compare, part, part_text, timestamp};
+use support::{Copied, Workspace, built, compare, part, part_text, timestamp};
 use xlsplice::batch::{Opened, Operation, WriteType};
 use xlsplice::package::{Content, Package};
 
@@ -27,16 +27,12 @@ const ZIP_EPOCH: &str = "1980-01-01 00:00:00";
 
 /// Rebuild the feature package with `edits`, and give back both paths: the
 /// package as it was, and the one the rebuild produced.
-fn rebuilt(
-    label: &str,
-    edits: &BTreeMap<String, Content>,
-) -> (Workspace, std::path::PathBuf, std::path::PathBuf) {
-    let workspace = Workspace::new(label);
-    let before = workspace.feature_package("feature.xlsx");
+fn rebuilt(label: &str, edits: &BTreeMap<String, Content>) -> (Copied, std::path::PathBuf) {
+    let before = built(label, |w| w.feature_package("feature.xlsx"));
     let mut package = Package::open(&before).expect("the package must open");
     let bytes = package.rebuild(edits).expect("the container must rebuild");
-    let after = workspace.file("after.xlsx", &bytes);
-    (workspace, before, after)
+    let after = before.workspace().file("after.xlsx", &bytes);
+    (before, after)
 }
 
 #[test]
@@ -46,7 +42,7 @@ fn a_created_part_is_added_at_the_zip_epoch_and_every_other_part_is_copied_raw()
         Content::Bytes(b"<properties/>".to_vec()),
     )]);
 
-    let (_workspace, before, after) = rebuilt("create", &edits);
+    let (before, after) = rebuilt("create", &edits);
 
     let comparison = compare(&before, &after);
     assert_eq!(comparison.added, [CREATED], "the part was created");
@@ -78,7 +74,7 @@ fn a_created_part_is_added_at_the_zip_epoch_and_every_other_part_is_copied_raw()
 fn a_removed_part_is_left_out_and_every_other_part_is_copied_raw() {
     let edits = BTreeMap::from([(SHEET3.to_owned(), Content::Gone)]);
 
-    let (_workspace, before, after) = rebuilt("remove", &edits);
+    let (before, after) = rebuilt("remove", &edits);
 
     let comparison = compare(&before, &after);
     assert_eq!(comparison.removed, [SHEET3], "the part was removed");

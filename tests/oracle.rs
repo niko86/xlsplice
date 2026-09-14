@@ -55,11 +55,11 @@
 
 mod support;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use support::corpus;
 use support::oracle::{Verdict, asked, decided, opened_by, requires};
-use support::{Workspace, fixture, part_text, verb};
+use support::{Workspace, copy_of, fixture, part_text, verb};
 use xlsplice::batch::WriteType;
 
 /// The four fixtures, which Excel saved and so must open clean.
@@ -76,17 +76,6 @@ const SHEET1: &str = "xl/worksheets/sheet1.xml";
 /// bounded, so that a case which stopped reaching Excel is as much a failure
 /// as one added without the `--ignored` gate.
 const CASES: usize = 22;
-
-/// A writable copy of a fixture, and the workspace holding it alive.
-///
-/// Even a test that writes nothing takes a copy: Excel is being pointed at
-/// the file, and an Excel that decided to save would be writing over the
-/// baseline every other suite compares against.
-fn copy(label: &str, name: &str) -> (Workspace, PathBuf) {
-    let workspace = Workspace::new(label);
-    let path = workspace.copy_of(name);
-    (workspace, path)
-}
 
 /// Ask the oracle, and assert the answer, unless there is no oracle to ask.
 ///
@@ -106,7 +95,7 @@ fn assert_verdict(package: &Path, wanted: Verdict, what: &str) -> bool {
 #[ignore = "drives Excel"]
 fn the_fixtures_excel_saved_open_clean() {
     for name in FIXTURES {
-        let (_workspace, path) = copy("oracle-fixture", name);
+        let path = copy_of("oracle-fixture", name);
 
         assert_verdict(&path, Verdict::Clean, name);
     }
@@ -120,7 +109,8 @@ fn the_fixtures_excel_saved_open_clean() {
 #[test]
 #[ignore = "drives Excel"]
 fn a_worksheet_whose_envelope_is_out_of_order_demands_repair() {
-    let (workspace, path) = copy("oracle-broken", "plain.xlsx");
+    let path = copy_of("oracle-broken", "plain.xlsx");
+    let workspace = path.workspace();
     let sheet = part_text(&path, SHEET1);
     let dimension = element(&sheet, "<dimension");
     let reordered = sheet.replacen(&dimension, "", 1).replacen(
@@ -141,7 +131,7 @@ fn a_worksheet_whose_envelope_is_out_of_order_demands_repair() {
 #[test]
 #[ignore = "drives Excel"]
 fn a_number_write_opens_clean() {
-    let (_workspace, path) = copy("oracle-number", "plain.xlsx");
+    let path = copy_of("oracle-number", "plain.xlsx");
     verb::set(&path, "Sheet1!A1", WriteType::Number, "42", None, false)
         .expect("a number write must land");
 
@@ -151,7 +141,7 @@ fn a_number_write_opens_clean() {
 #[test]
 #[ignore = "drives Excel"]
 fn a_text_write_opens_clean() {
-    let (_workspace, path) = copy("oracle-text", "plain.xlsx");
+    let path = copy_of("oracle-text", "plain.xlsx");
     verb::set(&path, "Sheet1!A2", WriteType::Text, "written", None, false)
         .expect("a text write must land");
 
@@ -161,7 +151,7 @@ fn a_text_write_opens_clean() {
 #[test]
 #[ignore = "drives Excel"]
 fn a_boolean_write_opens_clean() {
-    let (_workspace, path) = copy("oracle-boolean", "plain.xlsx");
+    let path = copy_of("oracle-boolean", "plain.xlsx");
     verb::set(&path, "Sheet1!D1", WriteType::Bool, "false", None, false)
         .expect("a boolean write must land");
 
@@ -175,7 +165,7 @@ fn a_boolean_write_opens_clean() {
 #[test]
 #[ignore = "drives Excel"]
 fn a_shared_string_cell_overwritten_inline_opens_clean() {
-    let (_workspace, path) = copy("oracle-shared", "plain.xlsx");
+    let path = copy_of("oracle-shared", "plain.xlsx");
     verb::set(&path, "Sheet1!B1", WriteType::Text, "goodbye", None, false)
         .expect("a write over a shared string must land");
     assert!(
@@ -193,7 +183,7 @@ fn a_shared_string_cell_overwritten_inline_opens_clean() {
 #[test]
 #[ignore = "drives Excel"]
 fn a_date_write_opens_clean() {
-    let (_workspace, path) = copy("oracle-date", "plain.xlsx");
+    let path = copy_of("oracle-date", "plain.xlsx");
     verb::set(
         &path,
         "Sheet1!C1",
@@ -213,7 +203,7 @@ fn a_date_write_opens_clean() {
 #[test]
 #[ignore = "drives Excel"]
 fn an_inserted_cell_opens_clean() {
-    let (_workspace, path) = copy("oracle-cell", "feature.xlsx");
+    let path = copy_of("oracle-cell", "feature.xlsx");
     verb::set(&path, "Inputs!B1", WriteType::Number, "9", None, false)
         .expect("a write to an absent cell must land");
     assert!(
@@ -231,7 +221,7 @@ fn an_inserted_cell_opens_clean() {
 #[test]
 #[ignore = "drives Excel"]
 fn an_inserted_row_opens_clean() {
-    let (_workspace, path) = copy("oracle-row", "feature.xlsx");
+    let path = copy_of("oracle-row", "feature.xlsx");
     verb::set(&path, "Inputs!A9", WriteType::Number, "9", None, false)
         .expect("a write to an absent row must land");
     let written = part_text(&path, SHEET1);
@@ -254,7 +244,7 @@ fn an_inserted_row_opens_clean() {
 #[test]
 #[ignore = "drives Excel"]
 fn a_date_inheriting_a_date_style_from_its_column_opens_clean() {
-    let (_workspace, path) = copy("oracle-date-column", "feature.xlsx");
+    let path = copy_of("oracle-date-column", "feature.xlsx");
     verb::set(
         &path,
         "Inputs!G1",
@@ -283,7 +273,7 @@ fn a_date_inheriting_a_date_style_from_its_column_opens_clean() {
 #[test]
 #[ignore = "drives Excel"]
 fn a_date_inheriting_a_date_style_from_its_row_opens_clean() {
-    let (_workspace, path) = copy("oracle-date-row", "dated-row.xlsx");
+    let path = copy_of("oracle-date-row", "dated-row.xlsx");
     verb::set(
         &path,
         "Inputs!B7",
@@ -308,7 +298,7 @@ fn a_date_inheriting_a_date_style_from_its_row_opens_clean() {
 #[test]
 #[ignore = "drives Excel"]
 fn a_replaced_formula_and_the_chain_entry_it_took_with_it_open_clean() {
-    let (_workspace, path) = copy("oracle-formula", "feature.xlsx");
+    let path = copy_of("oracle-formula", "feature.xlsx");
     verb::batch(
         &path,
         vec![verb::replacing(verb::writing(
@@ -372,7 +362,7 @@ fn a_package_whose_calc_chain_became_empty_opens_clean() {
 #[test]
 #[ignore = "drives Excel"]
 fn a_created_custom_properties_part_opens_clean() {
-    let (_workspace, path) = copy("oracle-props", "plain.xlsx");
+    let path = copy_of("oracle-props", "plain.xlsx");
     assert!(
         !support::parts(&path)
             .iter()
@@ -402,7 +392,8 @@ fn a_created_custom_properties_part_opens_clean() {
 #[test]
 #[ignore = "drives Excel"]
 fn a_created_calculation_element_opens_clean() {
-    let (workspace, path) = copy("oracle-calc", "plain.xlsx");
+    let path = copy_of("oracle-calc", "plain.xlsx");
+    let workspace = path.workspace();
     let workbook = part_text(&path, "xl/workbook.xml");
     let without = workbook.replacen(r#"<calcPr calcId="181029"/>"#, "", 1);
     assert_ne!(
@@ -428,7 +419,7 @@ fn a_created_calculation_element_opens_clean() {
 #[test]
 #[ignore = "drives Excel"]
 fn a_write_into_a_macro_enabled_package_opens_clean() {
-    let (_workspace, path) = copy("oracle-macros", "macros.xlsm");
+    let path = copy_of("oracle-macros", "macros.xlsm");
     verb::set(&path, "Sheet1!A1", WriteType::Number, "42", None, false)
         .expect("a write into a macro-enabled package must land");
     assert_eq!(
@@ -451,7 +442,7 @@ fn a_write_into_a_macro_enabled_package_opens_clean() {
 #[test]
 #[ignore = "drives Excel"]
 fn a_cleared_cell_opens_clean() {
-    let (_workspace, path) = copy("oracle-clear", "plain.xlsx");
+    let path = copy_of("oracle-clear", "plain.xlsx");
     verb::clear(&path, "Sheet1!C1", None, false).expect("a clear must land");
     assert!(
         part_text(&path, SHEET1).contains(r#"<c r="C1" s="1"/>"#),
@@ -468,7 +459,7 @@ fn a_cleared_cell_opens_clean() {
 #[test]
 #[ignore = "drives Excel"]
 fn a_property_taken_out_opens_clean() {
-    let (_workspace, path) = copy("oracle-unset", "feature.xlsx");
+    let path = copy_of("oracle-unset", "feature.xlsx");
     verb::batch(&path, vec![verb::unstamping("Stamp.Flag")], None, false)
         .expect("a property removed must land");
     let written = part_text(&path, "docProps/custom.xml");
@@ -492,7 +483,7 @@ fn a_property_taken_out_opens_clean() {
 #[test]
 #[ignore = "drives Excel"]
 fn a_write_through_a_name_into_a_merged_anchor_opens_clean() {
-    let (_workspace, path) = copy("oracle-merged", "feature.xlsx");
+    let path = copy_of("oracle-merged", "feature.xlsx");
     verb::set(
         &path,
         "MergedInput",
@@ -518,7 +509,7 @@ fn a_write_through_a_name_into_a_merged_anchor_opens_clean() {
 #[test]
 #[ignore = "drives Excel"]
 fn a_mixed_batch_opens_clean() {
-    let (_workspace, path) = copy("oracle-batch", "feature.xlsx");
+    let path = copy_of("oracle-batch", "feature.xlsx");
     verb::batch(
         &path,
         vec![
@@ -666,7 +657,7 @@ impl Opened {
 /// it — nothing is launched, so this one runs in an ordinary build.
 #[test]
 fn a_machine_without_excel_answers_unavailable_rather_than_guessing() {
-    let (_workspace, path) = copy("oracle-absent", "plain.xlsx");
+    let path = copy_of("oracle-absent", "plain.xlsx");
 
     let said = opened_by(Path::new("/Applications/No Such Excel.app"), &path);
 

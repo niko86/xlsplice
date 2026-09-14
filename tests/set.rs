@@ -21,7 +21,7 @@ mod support;
 use std::path::{Path, PathBuf};
 
 use support::{
-    Workspace, assert_only_these_differ, assert_same_bytes, assert_same_parts, assert_spliced,
+    assert_only_these_differ, assert_same_bytes, assert_same_parts, assert_spliced, copy_of,
     envelope, exit_code, files_in, fixture, in_text, part, part_text, run, stderr, under_json,
     verb,
 };
@@ -30,13 +30,6 @@ use xlsplice::batch::WriteType;
 const SHEET1: &str = "xl/worksheets/sheet1.xml";
 const SHARED_STRINGS: &str = "xl/sharedStrings.xml";
 const VBA: &str = "xl/vbaProject.bin";
-
-/// A writable copy of a fixture, and the workspace holding it alive.
-fn copy(label: &str, name: &str) -> (Workspace, PathBuf) {
-    let workspace = Workspace::new(label);
-    let path = workspace.copy_of(name);
-    (workspace, path)
-}
 
 /// A `set` that must succeed, and the envelope it answers with.
 fn set(package: &Path, target: &str, kind: WriteType, value: &str) -> serde_json::Value {
@@ -87,7 +80,7 @@ fn every_type_lands_in_every_fixture_and_moves_nothing_else_in_the_package() {
             (WriteType::Bool, "true", r#"<c r="A1" t="b"><v>1</v></c>"#),
         ] {
             let kind_name = kind.as_str();
-            let (_workspace, package) = copy(&format!("{kind_name}-{name}"), name);
+            let package = copy_of(&format!("{kind_name}-{name}"), name);
 
             let body = set(&package, target, kind, value);
 
@@ -131,7 +124,7 @@ fn what_was_written_is_what_get_reads_back() {
         (WriteType::Bool, "0", "b", serde_json::json!(false)),
     ] {
         let kind_name = kind.as_str();
-        let (_workspace, package) = copy(&format!("read-back-{kind_name}-{given}"), "plain.xlsx");
+        let package = copy_of(&format!("read-back-{kind_name}-{given}"), "plain.xlsx");
         set(&package, "Sheet1!A1", kind, given);
 
         let out = under_json(verb::get(&package, &["Sheet1!A1"]));
@@ -145,7 +138,7 @@ fn what_was_written_is_what_get_reads_back() {
 
 #[test]
 fn text_lands_as_an_inline_string_and_the_shared_string_table_is_not_touched() {
-    let (_workspace, package) = copy("text", "plain.xlsx");
+    let package = copy_of("text", "plain.xlsx");
 
     let body = set(&package, "Sheet1!B1", WriteType::Text, "goodbye");
 
@@ -166,7 +159,7 @@ fn text_lands_as_an_inline_string_and_the_shared_string_table_is_not_touched() {
 
 #[test]
 fn a_boolean_lands_as_a_boolean_cell_keeping_the_style_the_cell_carried() {
-    let (_workspace, package) = copy("bool", "plain.xlsx");
+    let package = copy_of("bool", "plain.xlsx");
 
     set(&package, "Sheet1!C1", WriteType::Bool, "false");
 
@@ -181,7 +174,7 @@ fn a_boolean_lands_as_a_boolean_cell_keeping_the_style_the_cell_carried() {
 
 #[test]
 fn a_write_through_a_defined_name_lands_in_the_anchor_of_the_range_it_names() {
-    let (_workspace, package) = copy("name", "feature.xlsx");
+    let package = copy_of("name", "feature.xlsx");
 
     let body = set(&package, "MergedInput", WriteType::Text, "  padded  ");
 
@@ -208,7 +201,7 @@ fn a_write_through_a_defined_name_lands_in_the_anchor_of_the_range_it_names() {
 
 #[test]
 fn a_number_in_the_macro_package_leaves_the_vba_project_byte_for_byte() {
-    let (_workspace, package) = copy("macros", "macros.xlsm");
+    let package = copy_of("macros", "macros.xlsm");
 
     set(&package, "Sheet1!A1", WriteType::Number, "-2.5");
 
@@ -242,7 +235,7 @@ fn each_write_type_reads_its_value_the_way_the_command_line_says() {
         (WriteType::Bool, "true", r#"<c r="A1" t="b"><v>1</v></c>"#),
     ] {
         let kind = kind.as_str();
-        let (_workspace, package) = copy(&format!("argv-{kind}"), "plain.xlsx");
+        let package = copy_of(&format!("argv-{kind}"), "plain.xlsx");
 
         let out = run(&[
             "set",
@@ -268,7 +261,7 @@ fn each_write_type_reads_its_value_the_way_the_command_line_says() {
 /// the binary, and takes `set` end to end while it is there.
 #[test]
 fn a_value_beginning_with_a_minus_is_an_operand_after_the_double_dash() {
-    let (_workspace, package) = copy("negative", "plain.xlsx");
+    let package = copy_of("negative", "plain.xlsx");
 
     let out = run(&[
         "set",
@@ -291,7 +284,7 @@ fn a_value_beginning_with_a_minus_is_an_operand_after_the_double_dash() {
 
 #[test]
 fn the_spliced_part_keeps_the_method_and_timestamp_its_entry_carried() {
-    let (_workspace, package) = copy("entry", "plain.xlsx");
+    let package = copy_of("entry", "plain.xlsx");
 
     set(&package, "Sheet1!A1", WriteType::Number, "42");
 
@@ -309,7 +302,8 @@ fn the_spliced_part_keeps_the_method_and_timestamp_its_entry_carried() {
 
 #[test]
 fn writing_to_another_path_leaves_the_input_byte_for_byte_as_it_was() {
-    let (workspace, package) = copy("out", "plain.xlsx");
+    let package = copy_of("out", "plain.xlsx");
+    let workspace = package.workspace();
     let elsewhere = workspace.dir().join("written.xlsx");
 
     let body = set_with(
@@ -348,7 +342,8 @@ fn writing_to_another_path_leaves_the_input_byte_for_byte_as_it_was() {
 
 #[test]
 fn an_in_place_write_leaves_no_temporary_file_behind() {
-    let (workspace, package) = copy("temporary", "plain.xlsx");
+    let package = copy_of("temporary", "plain.xlsx");
+    let workspace = package.workspace();
 
     set(&package, "Sheet1!A2", WriteType::Number, "7");
 
@@ -361,7 +356,7 @@ fn an_in_place_write_leaves_no_temporary_file_behind() {
 
 #[test]
 fn writing_the_value_that_is_already_there_changes_nothing_and_says_so() {
-    let (_workspace, package) = copy("unchanged", "plain.xlsx");
+    let package = copy_of("unchanged", "plain.xlsx");
 
     // The cell holds 2.5; 2.50 is the same number in a longer spelling, so
     // the shortest round-trip form of it is the text already in the part.
@@ -374,7 +369,8 @@ fn writing_the_value_that_is_already_there_changes_nothing_and_says_so() {
 
 #[test]
 fn a_write_of_the_present_value_to_another_path_copies_the_input_byte_for_byte() {
-    let (workspace, package) = copy("unchanged-out", "plain.xlsx");
+    let package = copy_of("unchanged-out", "plain.xlsx");
+    let workspace = package.workspace();
     let elsewhere = workspace.dir().join("copy.xlsx");
 
     let body = set_with(
@@ -392,8 +388,8 @@ fn a_write_of_the_present_value_to_another_path_copies_the_input_byte_for_byte()
 
 #[test]
 fn two_runs_over_the_same_input_produce_the_same_bytes() {
-    let (_first, one) = copy("determinism-one", "feature.xlsx");
-    let (_second, two) = copy("determinism-two", "feature.xlsx");
+    let one = copy_of("determinism-one", "feature.xlsx");
+    let two = copy_of("determinism-two", "feature.xlsx");
 
     for package in [&one, &two] {
         set(package, "Inputs!A1", WriteType::Text, "hello");
@@ -404,7 +400,7 @@ fn two_runs_over_the_same_input_produce_the_same_bytes() {
 
 #[test]
 fn writing_a_second_time_over_the_same_package_changes_nothing_more() {
-    let (_workspace, package) = copy("idempotent", "feature.xlsx");
+    let package = copy_of("idempotent", "feature.xlsx");
 
     set(&package, "Inputs!A1", WriteType::Number, "9");
     let once = std::fs::read(&package).expect("the written package must be readable");
@@ -420,7 +416,8 @@ fn writing_a_second_time_over_the_same_package_changes_nothing_more() {
 
 #[test]
 fn a_dry_run_writes_nothing_and_still_reports_everything() {
-    let (workspace, package) = copy("dry-run", "plain.xlsx");
+    let package = copy_of("dry-run", "plain.xlsx");
+    let workspace = package.workspace();
 
     let body = set_with(&package, "Sheet1!A1", WriteType::Number, "99", None, true);
 
@@ -442,7 +439,8 @@ fn a_dry_run_writes_nothing_and_still_reports_everything() {
 
 #[test]
 fn a_dry_run_to_another_path_writes_nothing_there_either() {
-    let (workspace, package) = copy("dry-run-out", "plain.xlsx");
+    let package = copy_of("dry-run-out", "plain.xlsx");
+    let workspace = package.workspace();
     let elsewhere = workspace.dir().join("never.xlsx");
 
     set_with(
@@ -460,7 +458,8 @@ fn a_dry_run_to_another_path_writes_nothing_there_either() {
 
 #[test]
 fn a_destination_that_cannot_be_written_fails_and_leaves_the_input_alone() {
-    let (workspace, package) = copy("unwritable", "plain.xlsx");
+    let package = copy_of("unwritable", "plain.xlsx");
+    let workspace = package.workspace();
     let nowhere = workspace.dir().join("no-such-directory").join("out.xlsx");
 
     let out = under_json(verb::set(
@@ -484,7 +483,8 @@ fn a_destination_that_cannot_be_written_fails_and_leaves_the_input_alone() {
 
 #[test]
 fn a_destination_that_cannot_be_replaced_leaves_no_temporary_file_behind() {
-    let (workspace, package) = copy("unrenameable", "plain.xlsx");
+    let package = copy_of("unrenameable", "plain.xlsx");
+    let workspace = package.workspace();
     // A directory cannot be renamed over, so this fails at the rename rather
     // than before it, which is the other side of the landing.
     let occupied = workspace.dir().join("occupied.xlsx");
@@ -513,7 +513,7 @@ fn a_destination_that_cannot_be_replaced_leaves_no_temporary_file_behind() {
 /// it at all is this one's.
 #[test]
 fn a_cell_the_sheet_does_not_hold_is_written_in() {
-    let (_workspace, package) = copy("absent", "plain.xlsx");
+    let package = copy_of("absent", "plain.xlsx");
 
     for target in ["Sheet1!Z1", "Sheet1!A9"] {
         let out = under_json(verb::set(
@@ -537,7 +537,7 @@ fn a_cell_the_sheet_does_not_hold_is_written_in() {
 
 #[test]
 fn a_cell_holding_a_formula_is_refused_and_the_package_is_untouched() {
-    let (_workspace, package) = copy("formula", "feature.xlsx");
+    let package = copy_of("formula", "feature.xlsx");
 
     // D1 is a plain formula, E2 the master of a shared group, E3 a child.
     for (target, expected) in [
@@ -574,7 +574,7 @@ fn a_cell_holding_a_formula_is_refused_and_the_package_is_untouched() {
 /// package is opened and nothing in it is touched.
 #[test]
 fn a_value_that_is_not_of_the_type_asked_for_is_a_usage_error() {
-    let (_workspace, package) = copy("mistyped", "plain.xlsx");
+    let package = copy_of("mistyped", "plain.xlsx");
 
     for (kind, value) in [
         (WriteType::Number, "hello"),
@@ -637,7 +637,7 @@ fn a_type_outside_the_ones_offered_is_rejected_before_the_package_is_opened() {
 
 #[test]
 fn the_text_output_is_one_tab_separated_row_per_operation() {
-    let (_workspace, package) = copy("rows", "feature.xlsx");
+    let package = copy_of("rows", "feature.xlsx");
 
     let out = in_text(verb::set(
         &package,

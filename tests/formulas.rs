@@ -15,8 +15,8 @@ mod support;
 use std::path::{Path, PathBuf};
 
 use support::{
-    Workspace, assert_only_these_differ, assert_same_bytes, assert_spliced, envelope, exit_code,
-    fixture, part_text, run, stderr, under_json, verb,
+    Workspace, assert_only_these_differ, assert_same_bytes, assert_spliced, copy_of, envelope,
+    exit_code, fixture, part_text, run, stderr, under_json, verb,
 };
 use xlsplice::batch::WriteType;
 
@@ -24,12 +24,6 @@ const SHEET1: &str = "xl/worksheets/sheet1.xml";
 const CHAIN: &str = "xl/calcChain.xml";
 const CONTENT_TYPES: &str = "[Content_Types].xml";
 const WORKBOOK_RELS: &str = "xl/_rels/workbook.xml.rels";
-
-fn copy(label: &str) -> (Workspace, PathBuf) {
-    let workspace = Workspace::new(label);
-    let package = workspace.copy_of("feature.xlsx");
-    (workspace, package)
-}
 
 /// A package holding one formula, with a calc chain of one entry, the
 /// relationship that reaches it and its content-type override. Built in
@@ -64,7 +58,7 @@ fn write(package: &Path, target: &str, licensed: bool) -> xlsplice::render::Rend
 
 #[test]
 fn a_plain_formula_cell_is_refused_without_the_flag_and_the_file_is_untouched() {
-    let (_workspace, package) = copy("plain-refused");
+    let package = copy_of("plain-refused", "feature.xlsx");
 
     for target in ["Inputs!D1", "Inputs!E1"] {
         let out = write(&package, target, false);
@@ -89,7 +83,7 @@ fn a_plain_formula_cell_is_refused_without_the_flag_and_the_file_is_untouched() 
 
 #[test]
 fn clearing_a_plain_formula_cell_is_refused_without_the_flag_too() {
-    let (_workspace, package) = copy("clear-refused");
+    let package = copy_of("clear-refused", "feature.xlsx");
 
     let out = under_json(verb::clear(&package, "Inputs!D1", None, false));
 
@@ -107,7 +101,7 @@ fn clearing_a_plain_formula_cell_is_refused_without_the_flag_too() {
 /// formula at all where one was.
 #[test]
 fn with_the_flag_the_formula_goes_and_the_value_lands() {
-    let (_workspace, package) = copy("plain-replaced");
+    let package = copy_of("plain-replaced", "feature.xlsx");
 
     let out = write(&package, "Inputs!D1", true);
 
@@ -125,7 +119,7 @@ fn with_the_flag_the_formula_goes_and_the_value_lands() {
 
 #[test]
 fn clearing_a_formula_cell_with_the_flag_empties_it() {
-    let (_workspace, package) = copy("clear-replaced");
+    let package = copy_of("clear-replaced", "feature.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -148,7 +142,7 @@ fn clearing_a_formula_cell_with_the_flag_empties_it() {
 /// the range so the caller can see what it would have taken with it.
 #[test]
 fn the_shared_master_is_refused_even_with_the_flag() {
-    let (_workspace, package) = copy("master");
+    let package = copy_of("master", "feature.xlsx");
 
     for licensed in [false, true] {
         let out = write(&package, "Inputs!E2", licensed);
@@ -166,7 +160,7 @@ fn the_shared_master_is_refused_even_with_the_flag() {
 
 #[test]
 fn a_shared_child_is_replaced_with_the_flag() {
-    let (_workspace, package) = copy("child");
+    let package = copy_of("child", "feature.xlsx");
 
     let out = write(&package, "Inputs!E3", true);
 
@@ -186,7 +180,7 @@ fn a_shared_child_is_replaced_with_the_flag() {
 /// every other part of the package is untouched.
 #[test]
 fn the_calc_chain_loses_exactly_that_cell_and_nothing_else_moves() {
-    let (_workspace, package) = copy("chain-entry");
+    let package = copy_of("chain-entry", "feature.xlsx");
 
     let out = write(&package, "Inputs!D1", true);
 
@@ -317,7 +311,7 @@ fn a_package_with_no_calc_chain_needs_no_maintenance() {
 /// The flag is one operation's, not the batch's.
 #[test]
 fn the_flag_on_one_operation_does_not_license_another() {
-    let (_workspace, package) = copy("one-licence");
+    let package = copy_of("one-licence", "feature.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -345,7 +339,7 @@ fn the_flag_on_one_operation_does_not_license_another() {
 /// which is one part spliced once with both edits in it.
 #[test]
 fn two_replacements_take_two_entries_out_of_one_chain() {
-    let (_workspace, package) = copy("two-entries");
+    let package = copy_of("two-entries", "feature.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -367,7 +361,7 @@ fn two_replacements_take_two_entries_out_of_one_chain() {
 /// The flag reaches the command line under the name the message gives.
 #[test]
 fn the_flag_works_from_the_command_line() {
-    let (_workspace, package) = copy("argv");
+    let package = copy_of("argv", "feature.xlsx");
     let file = package.display().to_string();
 
     let refused = run(&["set", &file, "Inputs!D1", "5", "--type", "number"]);
@@ -418,7 +412,7 @@ fn the_fixture_is_the_baseline_and_stays_put() {
 /// Neither declaration part is touched while the chain still holds entries.
 #[test]
 fn a_chain_that_survives_leaves_the_declarations_alone() {
-    let (_workspace, package) = copy("declarations-kept");
+    let package = copy_of("declarations-kept", "feature.xlsx");
 
     let out = write(&package, "Inputs!D1", true);
 

@@ -12,25 +12,17 @@
 
 mod support;
 
-use std::path::PathBuf;
-
 use serde_json::json;
 use support::{
-    Workspace, assert_only_these_differ, assert_same_bytes, assert_spliced, envelope, exit_code,
-    fixture, in_text, json, part, part_text, run, stderr, stdout, timestamp, under_json, verb,
+    Workspace, assert_only_these_differ, assert_same_bytes, assert_spliced, copy_of, envelope,
+    exit_code, fixture, in_text, json, part, part_text, run, stderr, stdout, timestamp, under_json,
+    verb,
 };
 use xlsplice::batch::WriteType;
 
 const CUSTOM: &str = "docProps/custom.xml";
 const CONTENT_TYPES: &str = "[Content_Types].xml";
 const ROOT_RELS: &str = "_rels/.rels";
-
-/// A writable copy of one of the fixtures, and the workspace holding it.
-fn copy(label: &str, fixture: &str) -> (Workspace, PathBuf) {
-    let workspace = Workspace::new(label);
-    let package = workspace.copy_of(fixture);
-    (workspace, package)
-}
 
 /// What `props get FILE --json` reports.
 fn reported(package: &std::path::Path) -> serde_json::Value {
@@ -41,7 +33,7 @@ fn reported(package: &std::path::Path) -> serde_json::Value {
 
 #[test]
 fn reading_reports_every_type_with_a_value_of_that_type() {
-    let (_workspace, package) = copy("read", "feature.xlsx");
+    let package = copy_of("read", "feature.xlsx");
 
     assert_eq!(
         reported(&package),
@@ -57,7 +49,7 @@ fn reading_reports_every_type_with_a_value_of_that_type() {
 
 #[test]
 fn reading_is_one_tab_separated_row_per_property_down_a_pipe() {
-    let (_workspace, package) = copy("rows", "feature.xlsx");
+    let package = copy_of("rows", "feature.xlsx");
 
     let out = run(&["props", "get", &package.display().to_string()]);
 
@@ -75,7 +67,7 @@ fn reading_is_one_tab_separated_row_per_property_down_a_pipe() {
 /// is rather than something wrong with it.
 #[test]
 fn a_package_carrying_no_properties_reports_none() {
-    let (_workspace, package) = copy("none", "plain.xlsx");
+    let package = copy_of("none", "plain.xlsx");
 
     assert_eq!(reported(&package), json!([]));
     assert_eq!(
@@ -119,7 +111,7 @@ fn writing_each_type_over_one_already_there_keeps_its_identifier() {
             "<vt:filetime>2030-01-02T03:04:05Z</vt:filetime>",
         ),
     ] {
-        let (_workspace, package) = copy(name, "feature.xlsx");
+        let package = copy_of(name, "feature.xlsx");
 
         let out = under_json(verb::batch(
             &package,
@@ -153,7 +145,7 @@ fn a_number_is_the_integer_variant_where_it_fits_and_the_real_one_otherwise() {
         ("-2.5", json!({"type": "r8", "value": -2.5})),
         ("3000000000", json!({"type": "r8", "value": 3000000000i64})),
     ] {
-        let (_workspace, package) = copy("numbers", "feature.xlsx");
+        let package = copy_of("numbers", "feature.xlsx");
 
         let out = under_json(verb::batch(
             &package,
@@ -171,7 +163,7 @@ fn a_number_is_the_integer_variant_where_it_fits_and_the_real_one_otherwise() {
 
 #[test]
 fn a_property_that_is_not_there_is_added_after_the_last_with_the_next_identifier() {
-    let (_workspace, package) = copy("add", "feature.xlsx");
+    let package = copy_of("add", "feature.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -197,7 +189,7 @@ fn a_property_that_is_not_there_is_added_after_the_last_with_the_next_identifier
 /// what the batch settles rather than any one operation.
 #[test]
 fn several_properties_added_in_one_batch_take_consecutive_identifiers() {
-    let (_workspace, package) = copy("add-several", "feature.xlsx");
+    let package = copy_of("add-several", "feature.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -227,7 +219,7 @@ fn several_properties_added_in_one_batch_take_consecutive_identifiers() {
 /// so.
 #[test]
 fn setting_on_a_package_with_no_part_adds_the_part_and_both_declarations() {
-    let (_workspace, package) = copy("create", "plain.xlsx");
+    let package = copy_of("create", "plain.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -289,7 +281,7 @@ fn setting_on_a_package_with_no_part_adds_the_part_and_both_declarations() {
 /// the order they had.
 #[test]
 fn a_created_part_is_the_last_entry_and_carries_the_zip_epoch() {
-    let (_workspace, package) = copy("created-entry", "plain.xlsx");
+    let package = copy_of("created-entry", "plain.xlsx");
 
     under_json(verb::batch(
         &package,
@@ -317,7 +309,7 @@ fn a_created_part_is_the_last_entry_and_carries_the_zip_epoch() {
 /// them, and it is written once.
 #[test]
 fn several_properties_on_a_package_with_no_part_go_into_the_one_part() {
-    let (_workspace, package) = copy("create-several", "plain.xlsx");
+    let package = copy_of("create-several", "plain.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -342,7 +334,7 @@ fn several_properties_on_a_package_with_no_part_go_into_the_one_part() {
 
 #[test]
 fn writing_a_property_the_value_it_already_holds_changes_nothing() {
-    let (_workspace, package) = copy("unchanged", "feature.xlsx");
+    let package = copy_of("unchanged", "feature.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -359,7 +351,7 @@ fn writing_a_property_the_value_it_already_holds_changes_nothing() {
 
 #[test]
 fn unsetting_takes_out_only_the_property_named() {
-    let (_workspace, package) = copy("unset", "feature.xlsx");
+    let package = copy_of("unset", "feature.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -391,7 +383,7 @@ fn unsetting_takes_out_only_the_property_named() {
 #[test]
 fn unsetting_a_property_that_is_not_there_is_not_found() {
     for (label, fixture_name) in [("missing", "feature.xlsx"), ("no-part", "plain.xlsx")] {
-        let (_workspace, package) = copy(label, fixture_name);
+        let package = copy_of(label, fixture_name);
 
         let out = under_json(verb::batch(
             &package,
@@ -414,7 +406,7 @@ fn unsetting_a_property_that_is_not_there_is_not_found() {
 /// and is added rather than written over.
 #[test]
 fn a_name_differing_in_case_is_another_property() {
-    let (_workspace, package) = copy("case", "feature.xlsx");
+    let package = copy_of("case", "feature.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -434,7 +426,7 @@ fn a_name_differing_in_case_is_another_property() {
 /// things by one batch.
 #[test]
 fn two_operations_naming_one_property_are_refused_before_anything_is_read() {
-    let (_workspace, package) = copy("repeated", "feature.xlsx");
+    let package = copy_of("repeated", "feature.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -461,7 +453,7 @@ fn two_operations_naming_one_property_are_refused_before_anything_is_read() {
 /// that gave it, whatever else the batch holds.
 #[test]
 fn a_value_that_is_not_what_its_type_says_names_the_operation_it_came_from() {
-    let (_workspace, package) = copy("bad-value", "feature.xlsx");
+    let package = copy_of("bad-value", "feature.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -490,7 +482,7 @@ fn a_value_that_is_not_what_its_type_says_names_the_operation_it_came_from() {
 /// nothing to it.
 #[test]
 fn a_date_on_a_property_is_a_moment_and_not_a_serial() {
-    let (_workspace, package) = copy("moment", "feature.xlsx");
+    let package = copy_of("moment", "feature.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -543,7 +535,7 @@ fn both_operations_work_through_apply() {
 
 #[test]
 fn a_write_reaches_the_package_from_the_command_line() {
-    let (_workspace, package) = copy("argv", "feature.xlsx");
+    let package = copy_of("argv", "feature.xlsx");
     let file = package.display().to_string();
 
     let set = run(&[
@@ -572,7 +564,7 @@ fn a_write_reaches_the_package_from_the_command_line() {
 /// A writing verb's flags mean the same thing here as everywhere.
 #[test]
 fn a_dry_run_reports_what_would_change_and_writes_nothing() {
-    let (_workspace, package) = copy("dry", "feature.xlsx");
+    let package = copy_of("dry", "feature.xlsx");
 
     let out = under_json(verb::batch(
         &package,
@@ -590,7 +582,8 @@ fn a_dry_run_reports_what_would_change_and_writes_nothing() {
 
 #[test]
 fn out_leaves_the_package_alone_and_writes_the_result_elsewhere() {
-    let (workspace, package) = copy("out", "plain.xlsx");
+    let package = copy_of("out", "plain.xlsx");
+    let workspace = package.workspace();
     let elsewhere = workspace.dir().join("stamped.xlsx");
 
     let out = under_json(verb::batch(
@@ -607,7 +600,7 @@ fn out_leaves_the_package_alone_and_writes_the_result_elsewhere() {
 
 #[test]
 fn the_report_is_one_row_per_operation_down_a_pipe() {
-    let (_workspace, package) = copy("write-rows", "feature.xlsx");
+    let package = copy_of("write-rows", "feature.xlsx");
 
     let out = in_text(verb::batch(
         &package,
@@ -658,7 +651,7 @@ fn the_help_lists_the_three_actions_and_what_each_takes() {
 /// with it.
 #[test]
 fn a_cell_write_does_not_touch_the_properties() {
-    let (_workspace, package) = copy("cells", "feature.xlsx");
+    let package = copy_of("cells", "feature.xlsx");
 
     let out = under_json(verb::set(
         &package,

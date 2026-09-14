@@ -8,9 +8,11 @@
 
 mod support;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use support::{Workspace, assert_same_bytes, envelope, fixture, part_text, under_json, verb};
+use support::{
+    Workspace, assert_same_bytes, copy_of, envelope, fixture, part_text, under_json, verb,
+};
 use xlsplice::batch::WriteType;
 
 const SHEET1: &str = "xl/worksheets/sheet1.xml";
@@ -19,17 +21,10 @@ const SHEET1: &str = "xl/worksheets/sheet1.xml";
 /// for 2026-09-11 under a date format.
 const DATE_CELL: &str = r#"<c r="C1" s="1"><v>46276</v></c>"#;
 
-/// A writable copy of the plain fixture, and the workspace holding it.
-fn copy(label: &str) -> (Workspace, PathBuf) {
-    let workspace = Workspace::new(label);
-    let package = workspace.copy_of("plain.xlsx");
-    (workspace, package)
-}
-
 /// Write `value` as a date into the plain fixture's date cell, and give back
 /// the text of the worksheet it produced.
 fn written(label: &str, value: &str) -> String {
-    let (_workspace, package) = copy(label);
+    let package = copy_of(label, "plain.xlsx");
     let out = under_json(verb::set(
         &package,
         "Sheet1!C1",
@@ -91,7 +86,7 @@ fn writing_a_date_keeps_the_format_that_makes_it_look_like_one() {
 
 #[test]
 fn get_reads_the_serial_back() {
-    let (_workspace, package) = copy("read-back");
+    let package = copy_of("read-back", "plain.xlsx");
 
     let out = under_json(verb::set(
         &package,
@@ -164,7 +159,7 @@ fn the_same_package_without_the_flag_yields_the_unshifted_serial() {
 #[test]
 fn a_date_before_the_phantom_leap_day_exits_2_and_leaves_the_package_alone() {
     for value in ["1900-01-01", "1899-12-31", "59"] {
-        let (_workspace, package) = copy("early");
+        let package = copy_of("early", "plain.xlsx");
 
         let out = under_json(verb::set(
             &package,
@@ -191,7 +186,7 @@ fn a_date_before_the_phantom_leap_day_exits_2_and_leaves_the_package_alone() {
 
 #[test]
 fn a_spelling_that_is_not_a_date_exits_2_and_names_the_operation() {
-    let (_workspace, package) = copy("not-a-date");
+    let package = copy_of("not-a-date", "plain.xlsx");
 
     let out = under_json(verb::set(
         &package,
@@ -219,8 +214,8 @@ fn a_spelling_that_is_not_a_date_exits_2_and_names_the_operation() {
 /// operation, so they produce the same bytes.
 #[test]
 fn a_date_through_a_batch_produces_the_same_bytes_as_the_command_line() {
-    let (_one, from_command_line) = copy("date-cli");
-    let (_two, from_batch) = copy("date-batch");
+    let from_command_line = copy_of("date-cli", "plain.xlsx");
+    let from_batch = copy_of("date-batch", "plain.xlsx");
 
     let out = under_json(verb::set(
         &from_command_line,

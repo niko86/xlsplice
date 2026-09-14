@@ -11,7 +11,7 @@ mod support;
 use std::path::PathBuf;
 
 use serde_json::json;
-use support::{Workspace, exit_code, fixture, json, run, stderr, stdout, verb};
+use support::{Copied, Workspace, copy_of, exit_code, fixture, json, run, stderr, stdout, verb};
 use xlsplice::batch::WriteType;
 
 const SHEET1: &str = "xl/worksheets/sheet1.xml";
@@ -21,12 +21,11 @@ const ROOT_RELS: &str = "_rels/.rels";
 
 /// A workspace holding a writable copy of `name` and the untouched fixture to
 /// compare it against.
-fn copies(label: &str, name: &str) -> (Workspace, PathBuf, PathBuf) {
-    let workspace = Workspace::new(label);
-    let before = workspace.copy_of(name);
-    let after = workspace.dir().join(format!("after-{name}"));
+fn copies(label: &str, name: &str) -> (Copied, PathBuf) {
+    let before = copy_of(label, name);
+    let after = before.beside(&format!("after-{name}"));
     std::fs::copy(&before, &after).expect("a test must be able to copy its own package");
-    (workspace, before, after)
+    (before, after)
 }
 
 /// What `diff A B --json` answers, having asserted it succeeded.
@@ -59,7 +58,7 @@ fn moved(body: &serde_json::Value) -> Vec<(String, String)> {
 
 #[test]
 fn a_package_against_itself_is_identical_part_for_part() {
-    let (_workspace, before, after) = copies("same", "feature.xlsx");
+    let (before, after) = copies("same", "feature.xlsx");
 
     let body = compared(&before, &after);
 
@@ -84,7 +83,7 @@ fn a_package_against_the_same_file_is_identical() {
 
 #[test]
 fn a_write_shows_up_as_exactly_the_part_it_touched() {
-    let (_workspace, before, after) = copies("written", "feature.xlsx");
+    let (before, after) = copies("written", "feature.xlsx");
     let out = support::under_json(verb::set(
         &after,
         "Inputs!A1",
@@ -105,7 +104,7 @@ fn a_write_shows_up_as_exactly_the_part_it_touched() {
 /// declare it as differing.
 #[test]
 fn a_part_a_write_added_is_reported_as_added() {
-    let (_workspace, before, after) = copies("added", "plain.xlsx");
+    let (before, after) = copies("added", "plain.xlsx");
     let out = support::under_json(verb::batch(
         &after,
         vec![verb::stamping("Reference", WriteType::Text, "R-1")],
@@ -131,7 +130,7 @@ fn a_part_a_write_added_is_reported_as_added() {
 /// same write compared the other way round is the same part gone.
 #[test]
 fn a_part_only_the_first_package_holds_is_reported_as_removed() {
-    let (_workspace, before, after) = copies("removed", "plain.xlsx");
+    let (before, after) = copies("removed", "plain.xlsx");
     let out = support::under_json(verb::batch(
         &after,
         vec![verb::stamping("Reference", WriteType::Text, "R-1")],
@@ -156,7 +155,7 @@ fn a_part_only_the_first_package_holds_is_reported_as_removed() {
 /// the answer is where the difference is read.
 #[test]
 fn the_exit_code_is_zero_either_way_without_the_flag() {
-    let (_workspace, before, after) = copies("no-flag", "feature.xlsx");
+    let (before, after) = copies("no-flag", "feature.xlsx");
     support::under_json(verb::set(
         &after,
         "Inputs!A1",
@@ -167,8 +166,8 @@ fn the_exit_code_is_zero_either_way_without_the_flag() {
     ));
 
     for (label, a, b) in [
-        ("identical", &before, &before),
-        ("different", &before, &after),
+        ("identical", &*before, &*before),
+        ("different", &*before, &*after),
     ] {
         let out = run(&["diff", &a.display().to_string(), &b.display().to_string()]);
 
@@ -180,7 +179,7 @@ fn the_exit_code_is_zero_either_way_without_the_flag() {
 /// diff(1) does and what a caller reaching for the flag is reaching for.
 #[test]
 fn the_flag_exits_one_on_a_difference_and_zero_without_one() {
-    let (_workspace, before, after) = copies("flag", "feature.xlsx");
+    let (before, after) = copies("flag", "feature.xlsx");
     support::under_json(verb::set(
         &after,
         "Inputs!A1",
@@ -191,8 +190,8 @@ fn the_flag_exits_one_on_a_difference_and_zero_without_one() {
     ));
 
     for (label, a, b, expected) in [
-        ("identical", &before, &before, 0),
-        ("different", &before, &after, 1),
+        ("identical", &*before, &*before, 0),
+        ("different", &*before, &*after, 1),
     ] {
         let out = run(&[
             "diff",
@@ -210,7 +209,7 @@ fn the_flag_exits_one_on_a_difference_and_zero_without_one() {
 /// failure that shares its number.
 #[test]
 fn a_difference_under_the_flag_is_still_a_successful_answer() {
-    let (_workspace, before, after) = copies("flag-json", "feature.xlsx");
+    let (before, after) = copies("flag-json", "feature.xlsx");
     support::under_json(verb::set(
         &after,
         "Inputs!A1",
@@ -287,7 +286,7 @@ fn a_package_that_is_not_there_is_unreadable() {
 
 #[test]
 fn the_rows_are_one_part_each_tab_separated_down_a_pipe() {
-    let (_workspace, before, after) = copies("rows", "plain.xlsx");
+    let (before, after) = copies("rows", "plain.xlsx");
 
     let out = run(&[
         "diff",
@@ -314,7 +313,7 @@ fn the_rows_are_one_part_each_tab_separated_down_a_pipe() {
 /// Neither package is written to, whatever the comparison says.
 #[test]
 fn neither_package_is_touched() {
-    let (_workspace, before, after) = copies("untouched", "feature.xlsx");
+    let (before, after) = copies("untouched", "feature.xlsx");
     support::under_json(verb::set(
         &after,
         "Inputs!A1",

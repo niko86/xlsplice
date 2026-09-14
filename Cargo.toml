@@ -2,6 +2,13 @@
 name = "xlsplice"
 version = "0.1.0"
 edition = "2024"
+# The floor, and `src/out.rs` is what sets it: the panic hook reads
+# `PanicHookInfo::payload_as_str`, stable since 1.91.0. Edition 2024 needs
+# 1.85 and the let chains in `src/worksheet.rs` need 1.88, so this is the
+# binding one. Stated so that a toolchain below it is refused by name, before
+# anything compiles, rather than surfacing as an unstable-feature error from
+# the middle of the build.
+rust-version = "1.91"
 license = "MIT"
 
 [dependencies]

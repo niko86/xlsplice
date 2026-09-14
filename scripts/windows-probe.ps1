@@ -11,6 +11,11 @@
 # for "Excel had to repair this", because that is the one thing the macOS
 # backend reads off the screen and Windows must read some other way.
 #
+# Three readings are taken of each: what `Open` gives back and says about the
+# workbook, whether the workbook count moved at all, and what happens when
+# Excel is told it may not repair (`CorruptLoad = xlNormalLoad`). Any of the
+# three could be the signal; the point of running this is to find out which.
+#
 # It writes only inside its own temporary directory. Nothing is written to the
 # repository, and no fixture is opened for writing.
 
@@ -85,15 +90,25 @@ Say "Workbooks now: $($excel.Workbooks.Count)"
 function Probe([string]$label, [string]$path) {
     Head "Opening $label"
     $before = Get-ChildItem -Path $work -File | Select-Object -ExpandProperty Name
+    $was = $excel.Workbooks.Count
     $opened = $null
     $failed = $null
-    $elapsed = Measure-Command {
-        try { $script:opened = $excel.Workbooks.Open($path) }
-        catch { $script:failed = $_ }
-    }
-    Say "seconds      : $([math]::Round($elapsed.TotalSeconds, 2))"
+    # A stopwatch, not `Measure-Command`. That runs its block in a child scope,
+    # so the first version of this assigned `$script:opened` in there and read
+    # `$opened` out here — two different variables inside a function. Every
+    # reading below was skipped, nothing was ever closed, and both packages
+    # answered "no workbook object came back" whatever Excel had done with
+    # them. The run of 2026-09-14 was thrown away for it.
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    try { $opened = $excel.Workbooks.Open($path) }
+    catch { $failed = $_ }
+    $watch.Stop()
+    Say "seconds      : $([math]::Round($watch.Elapsed.TotalSeconds, 2))"
+    # Before and after, because whether a workbook appeared at all is itself a
+    # candidate signal, and a count on its own cannot say that.
+    Say "Workbooks    : $was before, $($excel.Workbooks.Count) after"
     if ($failed) {
-        Say "threw        : $failed"
+        Say "threw        : $($failed.Exception.Message)"
     }
     if ($opened) {
         Say "Name         : $($opened.Name)"
@@ -102,12 +117,10 @@ function Probe([string]$label, [string]$path) {
         Say "ReadOnly     : $($opened.ReadOnly)"
         Say "Sheets       : $($opened.Sheets.Count)"
         Say "A1           : $($opened.Sheets.Item(1).Range('A1').Value2)"
-        Say "Workbooks    : $($excel.Workbooks.Count)"
         try { $opened.Close($false) } catch { Say "close threw  : $_" }
     }
     else {
         Say "no workbook object came back"
-        Say "Workbooks    : $($excel.Workbooks.Count)"
     }
     # A repair leaves traces on Windows that it does not leave on a Mac: a log
     # beside the file, or a renamed recovery. Whatever appears here is a
@@ -115,6 +128,19 @@ function Probe([string]$label, [string]$path) {
     $after = Get-ChildItem -Path $work -File | Select-Object -ExpandProperty Name
     $new = $after | Where-Object { $before -notcontains $_ }
     if ($new) { Say "new files    : $($new -join ', ')" } else { Say "new files    : none" }
+
+    # And again, telling Excel it may not repair. `CorruptLoad` is the
+    # fifteenth argument of `Open`, and `xlNormalLoad` (0) asks for the file as
+    # it stands or not at all. If a broken package throws here where a good one
+    # does not, that is the signal the backend wants: it needs no screen, no
+    # dialog and no log.
+    $m = [Type]::Missing
+    try {
+        $strict = $excel.Workbooks.Open($path, $m, $m, $m, $m, $m, $m, $m, $m, $m, $m, $m, $m, $m, 0)
+        Say "xlNormalLoad : opened as $($strict.Name)"
+        try { $strict.Close($false) } catch { Say "close threw  : $_" }
+    }
+    catch { Say "xlNormalLoad : threw, $($_.Exception.Message)" }
 }
 
 Probe "the package Excel saved" $good

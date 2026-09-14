@@ -202,12 +202,10 @@ pub fn requires(set_to: Option<&str>) -> bool {
 /// refusing is enough to fail the whole question. A probe that is stricter
 /// than what it stands in for does not report a blocked suite, it blocks one.
 fn reads_the_screen() -> Option<String> {
-    let asked = run(
-        r#"tell application "System Events"
+    let asked = run(r#"tell application "System Events"
 	if not (exists process "Finder") then return "no Finder to ask about"
 	return (count of windows of process "Finder") as text
-end tell"#,
-    );
+end tell"#);
     let Err(why) = asked else { return None };
     (why.contains("assistive access") || why.contains("-25211")).then(|| {
         format!(

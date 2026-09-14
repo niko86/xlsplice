@@ -46,6 +46,7 @@
 //! what it holds. Leaving it alone is what makes re-running a hydration safe.
 
 use std::collections::BTreeMap;
+use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 
 use roxmltree::{Document, Node};
@@ -57,7 +58,7 @@ use crate::calculation;
 use crate::date;
 use crate::declared;
 use crate::error::{Error, Result};
-use crate::package::{Content, Package};
+use crate::package::{Content, FromBytes, FromFile, Package};
 use crate::properties;
 use crate::reference::Address;
 use crate::relationships::{PACKAGE_ROOT, Relationships, part_or_conventional};
@@ -204,7 +205,7 @@ impl Operation {
     /// is opened. So the batch can hold its operations up against each other
     /// before a single part comes out of the container, which is what lets
     /// two operations on one cell be refused rather than spliced.
-    pub fn at(&self, opened: &Opened) -> Result<Option<Resolution>> {
+    pub fn at<R: Read + Seek>(&self, opened: &Opened<R>) -> Result<Option<Resolution>> {
         match self {
             Operation::Set { target, .. } | Operation::Clear { target, .. } => {
                 opened.resolve(target).map(Some)
@@ -222,7 +223,11 @@ impl Operation {
     /// The operation reads whatever parts it needs out of `opened`, which
     /// memoises them, and answers without changing anything: a batch is
     /// applied only once every operation has answered.
-    pub fn edits(&self, at: Option<Resolution>, opened: &mut Opened) -> Result<Asked> {
+    pub fn edits<R: Read + Seek>(
+        &self,
+        at: Option<Resolution>,
+        opened: &mut Opened<R>,
+    ) -> Result<Asked> {
         match self {
             Operation::Calc { full_calc_on_load } => calculated(*full_calc_on_load, opened),
             Operation::Set { .. } | Operation::Clear { .. } => self.written_into(at, opened),
@@ -268,7 +273,11 @@ impl Operation {
 
     /// The edits that put this operation's value into the cell `at`, and take
     /// a formula it replaced out of the calc chain.
-    fn written_into(&self, at: Option<Resolution>, opened: &mut Opened) -> Result<Asked> {
+    fn written_into<R: Read + Seek>(
+        &self,
+        at: Option<Resolution>,
+        opened: &mut Opened<R>,
+    ) -> Result<Asked> {
         match at {
             Some(at) => {
                 let written = self.written(opened.dates())?;
@@ -507,17 +516,35 @@ pub struct Asked {
 /// opened, because every target goes through them; every other part is read
 /// by the operation that wants it, and memoised by the package, so the second
 /// operation to want a part pays nothing for it (ADR-0005).
-pub struct Opened {
-    package: Package,
+pub struct Opened<R> {
+    package: Package<R>,
     workbook: Workbook,
     rels: Relationships,
 }
 
-impl Opened {
+impl Opened<FromFile> {
     /// Open the package at `path` and read the two parts every target is
     /// resolved through.
     pub fn open(path: &Path) -> Result<Self> {
-        let mut package = Package::open(path)?;
+        Opened::over(Package::open(path)?)
+    }
+}
+
+impl Opened<FromBytes> {
+    /// Open a package whose bytes are already in hand.
+    ///
+    /// The operations see the same package they would have seen had those
+    /// bytes been a file: what an open package is over is no part of what an
+    /// operation may do to it.
+    pub fn of(bytes: Vec<u8>) -> Result<Self> {
+        Opened::over(Package::of(bytes)?)
+    }
+}
+
+impl<R: Read + Seek> Opened<R> {
+    /// Read the two parts every target is resolved through, whatever the
+    /// package is over.
+    fn over(mut package: Package<R>) -> Result<Self> {
         let workbook = Workbook::read(&mut package)?;
         let rels = Relationships::read(&mut package, workbook.part())?;
         Ok(Opened {
@@ -575,7 +602,7 @@ impl Opened {
 
     /// The package itself, for the declarations a part removed has to be
     /// taken out of. Nothing else reaches past this into the container.
-    fn package(&mut self) -> &mut Package {
+    fn package(&mut self) -> &mut Package<R> {
         &mut self.package
     }
 
@@ -890,7 +917,11 @@ struct Applied {
 /// read once, spliced once with all of their splices, and written once. The
 /// parts are taken in path order, which is the order the report lists them
 /// in.
-fn apply(opened: &mut Opened, operations: &[Operation], asked: &[Asked]) -> Result<Applied> {
+fn apply<R: Read + Seek>(
+    opened: &mut Opened<R>,
+    operations: &[Operation],
+    asked: &[Asked],
+) -> Result<Applied> {
     let by_part = by_part(asked);
     let mut wanted: BTreeMap<String, PartEdit> = BTreeMap::new();
     for (part, edits) in &by_part {
@@ -952,8 +983,8 @@ fn apply(opened: &mut Opened, operations: &[Operation], asked: &[Asked]) -> Resu
 /// batch leaves it. The part then goes with the relationship that reaches it
 /// and its content type, because a package naming a part it does not hold is
 /// the sort of inconsistency Excel offers to repair.
-fn withdraw_an_emptied_calc_chain(
-    opened: &mut Opened,
+fn withdraw_an_emptied_calc_chain<R: Read + Seek>(
+    opened: &mut Opened<R>,
     wanted: &mut BTreeMap<String, PartEdit>,
 ) -> Result<()> {
     let Some(part) = opened.calc_chain() else {
@@ -997,8 +1028,8 @@ fn withdraw_an_emptied_calc_chain(
 /// holding them, and its content type and the relationship reaching it go in
 /// with it, because a package holding a part it does not declare is the sort
 /// of inconsistency Excel offers to repair.
-fn add_the_new_properties(
-    opened: &mut Opened,
+fn add_the_new_properties<R: Read + Seek>(
+    opened: &mut Opened<R>,
     operations: &[Operation],
     wanted: &mut BTreeMap<String, PartEdit>,
     changed: &mut [bool],
@@ -1074,8 +1105,8 @@ fn add_the_new_properties(
 ///
 /// The cells of one row go in in column order whatever order the batch named
 /// them in, because that is the order a row has to read in.
-fn put_the_new_rows_in(
-    opened: &mut Opened,
+fn put_the_new_rows_in<R: Read + Seek>(
+    opened: &mut Opened<R>,
     asked: &[Asked],
     wanted: &mut BTreeMap<String, PartEdit>,
     changed: &mut [bool],
@@ -1289,7 +1320,7 @@ struct Wrote {
 ///
 /// The flag is the workbook part's, so this is the one operation that names
 /// its part rather than being handed it, and the one that reads no cell.
-fn calculated(full_calc_on_load: bool, opened: &mut Opened) -> Result<Asked> {
+fn calculated<R: Read + Seek>(full_calc_on_load: bool, opened: &mut Opened<R>) -> Result<Asked> {
     let part = opened.workbook_part().to_owned();
     let xml = opened.text(&part)?;
     let splices = calculation::set_full_calc_on_load(xml, full_calc_on_load)
@@ -1307,7 +1338,11 @@ fn calculated(full_calc_on_load: bool, opened: &mut Opened) -> Result<Asked> {
 /// keeps its identifier and moves nothing else. One the part does not hold is
 /// added by the batch instead — see [`add_the_new_properties`] — so this asks
 /// for nothing and the batch marks the operation as having changed something.
-fn property_written(name: &str, value: &properties::Value, opened: &mut Opened) -> Result<Asked> {
+fn property_written<R: Read + Seek>(
+    name: &str,
+    value: &properties::Value,
+    opened: &mut Opened<R>,
+) -> Result<Asked> {
     let (part, held) = opened.properties()?;
     if !held {
         return Ok(nothing_asked());
@@ -1330,7 +1365,7 @@ fn property_written(name: &str, value: &properties::Value, opened: &mut Opened) 
 ///
 /// A property that is not there is the caller pointing at something the
 /// package does not have, which is the one thing an unset can be wrong about.
-fn property_withdrawn(name: &str, opened: &mut Opened) -> Result<Asked> {
+fn property_withdrawn<R: Read + Seek>(name: &str, opened: &mut Opened<R>) -> Result<Asked> {
     let (part, held) = opened.properties()?;
     let splices = match held {
         false => None,
@@ -1358,7 +1393,7 @@ fn nothing_asked() -> Asked {
 
 /// Why there is no property called `name` to take out, and what is there
 /// instead.
-fn no_such_property(name: &str, opened: &mut Opened) -> Error {
+fn no_such_property<R: Read + Seek>(name: &str, opened: &mut Opened<R>) -> Error {
     let held = (|| -> Result<Vec<String>> {
         let (part, held) = opened.properties()?;
         match held {
@@ -1392,7 +1427,10 @@ fn no_such_property(name: &str, opened: &mut Opened) -> Error {
 /// and a workbook that gives the sheet no number gives the chain no way to
 /// name it: rather than guess at which entry is which, the chain is left as it
 /// is, because a wrong entry removed is worse than a stale one kept.
-fn uncalculated(opened: &mut Opened, at: &Resolution) -> Result<Option<(String, PartEdit)>> {
+fn uncalculated<R: Read + Seek>(
+    opened: &mut Opened<R>,
+    at: &Resolution,
+) -> Result<Option<(String, PartEdit)>> {
     let (Some(part), Some(sheet)) = (opened.calc_chain(), opened.sheet_number(&at.address.sheet))
     else {
         return Ok(None);
@@ -1456,6 +1494,7 @@ mod tests {
     use super::*;
 
     use crate::error::ErrorCode;
+    use crate::reference::Cell;
 
     #[test]
     fn a_destination_is_the_input_in_place_and_the_given_path_otherwise() {
@@ -1823,5 +1862,370 @@ mod tests {
         let operation = writing("Inputs!A1", WriteType::Number, "1");
 
         assert_eq!(Batch::of(operation.clone()).operations, [operation]);
+    }
+
+    /// The parts of a package these tests open: one sheet, reached the way
+    /// Excel reaches it, and the declarations a part put in or taken out has
+    /// to be declared in. Built here rather than copied from a fixture,
+    /// because a settlement is about what it does to the parts rather than
+    /// about any real workbook.
+    const TYPES: &str = concat!(
+        r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">"#,
+        r#"<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>"#,
+        r#"<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>"#,
+        r#"<Override PartName="/xl/calcChain.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.calcChain+xml"/>"#,
+        "</Types>"
+    );
+
+    const ROOT_RELS: &str = concat!(
+        r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
+        r#"<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>"#,
+        "</Relationships>"
+    );
+
+    const WORKBOOK: &str = concat!(
+        r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" "#,
+        r#"xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">"#,
+        r#"<sheets><sheet name="Inputs" sheetId="1" r:id="rId1"/></sheets></workbook>"#
+    );
+
+    const WORKBOOK_RELS: &str = concat!(
+        r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
+        r#"<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>"#,
+        r#"<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/calcChain" Target="calcChain.xml"/>"#,
+        "</Relationships>"
+    );
+
+    const SHEET: &str = concat!(
+        r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">"#,
+        r#"<sheetData><row r="1"><c r="A1"><f>1+1</f><v>2</v></c></row>"#,
+        r#"<row r="4"><c r="A4"><v>4</v></c></row></sheetData></worksheet>"#
+    );
+
+    const CHAIN: &str = r#"<calcChain xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><c r="A1" i="1"/></calcChain>"#;
+
+    const SHEET_PART: &str = "xl/worksheets/sheet1.xml";
+    const CHAIN_PART: &str = "xl/calcChain.xml";
+    const TYPES_PART: &str = "[Content_Types].xml";
+    const ROOT_RELS_PART: &str = "_rels/.rels";
+
+    /// The package as it is, with `parts` put in or over what it holds.
+    ///
+    /// The settlements are asked about a package rather than about a file, so
+    /// the package is built where it is read and there is nothing to clean up
+    /// after (ADR-0005).
+    fn opened(parts: &[(&str, &str)]) -> Opened<FromBytes> {
+        let mut all: Vec<(&str, &str)> = vec![
+            (TYPES_PART, TYPES),
+            (ROOT_RELS_PART, ROOT_RELS),
+            ("xl/workbook.xml", WORKBOOK),
+            ("xl/_rels/workbook.xml.rels", WORKBOOK_RELS),
+            (SHEET_PART, SHEET),
+        ];
+        for (part, text) in parts {
+            match all.iter_mut().find(|(held, _)| held == part) {
+                Some(entry) => entry.1 = text,
+                None => all.push((part, text)),
+            }
+        }
+        Opened::of(crate::package::container_of(&all)).expect("the parts make a package")
+    }
+
+    /// What the batch wants of `part` once the splices it holds are applied.
+    fn spliced_text(wanted: &BTreeMap<String, PartEdit>, part: &str, was: &str) -> String {
+        let PartEdit::Splice(splices) = wanted.get(part).unwrap_or_else(|| {
+            panic!(
+                "the batch wants nothing spliced in '{part}': {:?}",
+                wanted.keys()
+            )
+        }) else {
+            panic!("'{part}' is not being spliced");
+        };
+        splice::apply(was, splices).expect("the splices apply")
+    }
+
+    /// The splice that takes the one entry out of the chain, which is what an
+    /// operation replacing that cell's formula would have answered with.
+    fn emptying_the_chain() -> Splice {
+        let from = CHAIN.find("<c ").expect("the chain holds an entry");
+        let to = CHAIN.find("</calcChain>").expect("the chain closes");
+        Splice::new(from..to, "")
+    }
+
+    #[test]
+    fn a_chain_with_no_entries_left_is_withdrawn_with_the_declarations_that_name_it() {
+        let mut opened = opened(&[(CHAIN_PART, CHAIN)]);
+        let mut wanted = BTreeMap::from([(
+            CHAIN_PART.to_owned(),
+            PartEdit::Splice(vec![emptying_the_chain()]),
+        )]);
+
+        withdraw_an_emptied_calc_chain(&mut opened, &mut wanted).expect("the chain is readable");
+
+        assert_eq!(
+            wanted.get(CHAIN_PART),
+            Some(&PartEdit::Remove),
+            "an emptied chain is not a chain"
+        );
+        assert!(
+            !spliced_text(&wanted, TYPES_PART, TYPES).contains("calcChain"),
+            "the content type of a part that has gone goes with it"
+        );
+        assert!(
+            !spliced_text(&wanted, "xl/_rels/workbook.xml.rels", WORKBOOK_RELS)
+                .contains("calcChain"),
+            "and so does the relationship that reached it"
+        );
+    }
+
+    #[test]
+    fn a_chain_that_still_holds_an_entry_is_spliced_and_left_where_it_is() {
+        let two = CHAIN.replace("</calcChain>", r#"<c r="A4" i="1"/></calcChain>"#);
+        let mut opened = opened(&[(CHAIN_PART, &two)]);
+        let from = two.find("<c ").expect("the chain holds an entry");
+        let to = two.find(r#"<c r="A4""#).expect("it holds a second");
+        let mut wanted = BTreeMap::from([(
+            CHAIN_PART.to_owned(),
+            PartEdit::Splice(vec![Splice::new(from..to, "")]),
+        )]);
+
+        withdraw_an_emptied_calc_chain(&mut opened, &mut wanted).expect("the chain is readable");
+
+        assert_eq!(
+            wanted.len(),
+            1,
+            "nothing is declared differently: {:?}",
+            wanted.keys()
+        );
+        assert!(matches!(wanted[CHAIN_PART], PartEdit::Splice(_)));
+    }
+
+    #[test]
+    fn a_package_holding_no_chain_has_none_to_withdraw() {
+        let mut opened = opened(&[]);
+        let mut wanted = BTreeMap::from([(
+            SHEET_PART.to_owned(),
+            PartEdit::Splice(vec![Splice::new(0..0, "")]),
+        )]);
+
+        withdraw_an_emptied_calc_chain(&mut opened, &mut wanted).expect("there is nothing to read");
+
+        assert_eq!(wanted.len(), 1, "the sheet's own edit, and nothing else");
+    }
+
+    /// A property the package has no part for brings the part with it, and the
+    /// declarations that reach a part it does not hold yet.
+    #[test]
+    fn a_property_added_to_a_package_with_no_properties_part_creates_one_and_declares_it() {
+        let mut opened = opened(&[]);
+        let operations = [Operation::PropsSet {
+            name: "Reference".to_owned(),
+            write_type: WriteType::Text,
+            value: "R-1".to_owned(),
+        }];
+        let mut wanted = BTreeMap::new();
+        let mut changed = [false];
+
+        add_the_new_properties(&mut opened, &operations, &mut wanted, &mut changed)
+            .expect("the property is added");
+
+        let Some(PartEdit::Create(bytes)) = wanted.get(properties::CONVENTIONAL_PART) else {
+            panic!("the properties part is created: {:?}", wanted.keys());
+        };
+        let part = String::from_utf8(bytes.clone()).expect("a part of XML text");
+        assert!(part.contains("Reference"), "{part}");
+        assert!(part.contains("R-1"), "{part}");
+        assert!(
+            spliced_text(&wanted, TYPES_PART, TYPES).contains(properties::CONTENT_TYPE),
+            "a part the package holds is a part it declares"
+        );
+        assert!(
+            spliced_text(&wanted, ROOT_RELS_PART, ROOT_RELS).contains("docProps/custom.xml"),
+            "and a part it holds is one it can reach"
+        );
+        assert_eq!(changed, [true], "the operation that added it changed it");
+    }
+
+    /// Two properties over one snapshot are one part, because neither could
+    /// have seen the other put in.
+    #[test]
+    fn two_properties_added_at_once_go_into_one_created_part() {
+        let mut opened = opened(&[]);
+        let operations = [
+            Operation::PropsSet {
+                name: "Reference".to_owned(),
+                write_type: WriteType::Text,
+                value: "R-1".to_owned(),
+            },
+            Operation::PropsSet {
+                name: "Revision".to_owned(),
+                write_type: WriteType::Number,
+                value: "2".to_owned(),
+            },
+        ];
+        let mut wanted = BTreeMap::new();
+        let mut changed = [false, false];
+
+        add_the_new_properties(&mut opened, &operations, &mut wanted, &mut changed)
+            .expect("both properties are added");
+
+        let Some(PartEdit::Create(bytes)) = wanted.get(properties::CONVENTIONAL_PART) else {
+            panic!("the properties part is created: {:?}", wanted.keys());
+        };
+        let part = String::from_utf8(bytes.clone()).expect("a part of XML text");
+        assert!(
+            part.contains("Reference") && part.contains("Revision"),
+            "{part}"
+        );
+        assert_eq!(changed, [true, true]);
+    }
+
+    /// A property already there is written by the operation's own splice, so
+    /// the settlement has nothing to add and says nothing about it.
+    #[test]
+    fn a_property_the_package_already_holds_is_not_added_again() {
+        let held =
+            properties::part_holding(&[("Reference", &properties::Value::Text("R-0".to_owned()))]);
+        let held = String::from_utf8(held).expect("a part of XML text");
+        let declared_rels = ROOT_RELS.replace(
+            "</Relationships>",
+            &format!(
+                r#"<Relationship Id="rId2" Type="{}" Target="docProps/custom.xml"/></Relationships>"#,
+                properties::CUSTOM_PROPERTIES
+            ),
+        );
+        let mut opened = opened(&[
+            (properties::CONVENTIONAL_PART, &held),
+            (ROOT_RELS_PART, &declared_rels),
+        ]);
+        let operations = [Operation::PropsSet {
+            name: "Reference".to_owned(),
+            write_type: WriteType::Text,
+            value: "R-1".to_owned(),
+        }];
+        let mut wanted = BTreeMap::new();
+        let mut changed = [false];
+
+        add_the_new_properties(&mut opened, &operations, &mut wanted, &mut changed)
+            .expect("the property is there");
+
+        assert!(wanted.is_empty(), "nothing to add: {:?}", wanted.keys());
+        assert_eq!(
+            changed,
+            [false],
+            "whether it changed is the splice's to say"
+        );
+    }
+
+    /// Two cells of one absent row are one row, holding both, in column order
+    /// whatever order the batch named them in.
+    #[test]
+    fn two_cells_of_one_absent_row_are_put_in_as_one_row() {
+        let mut opened = opened(&[]);
+        let asked = [new_cell("Inputs!B2", 2, 2), new_cell("Inputs!A2", 1, 2)];
+        let mut wanted = BTreeMap::new();
+        let mut changed = [false, false];
+
+        put_the_new_rows_in(&mut opened, &asked, &mut wanted, &mut changed)
+            .expect("the row goes in");
+
+        let sheet = spliced_text(&wanted, SHEET_PART, SHEET);
+        assert!(
+            sheet.contains(concat!(
+                r#"<row r="2"><c r="A2" t="inlineStr"><is><t>A2</t></is></c>"#,
+                r#"<c r="B2" t="inlineStr"><is><t>B2</t></is></c></row>"#
+            )),
+            "one row, its cells in column order: {sheet}"
+        );
+        assert_eq!(changed, [true, true]);
+    }
+
+    /// Two absent rows are two rows, each put in where it belongs.
+    #[test]
+    fn cells_of_two_absent_rows_are_two_rows() {
+        let mut opened = opened(&[]);
+        let asked = [new_cell("Inputs!A3", 1, 3), new_cell("Inputs!A2", 1, 2)];
+        let mut wanted = BTreeMap::new();
+        let mut changed = [false, false];
+
+        put_the_new_rows_in(&mut opened, &asked, &mut wanted, &mut changed)
+            .expect("both rows go in");
+
+        let sheet = spliced_text(&wanted, SHEET_PART, SHEET);
+        let (row2, row3) = (
+            sheet.find(r#"<row r="2""#).expect("row 2 went in"),
+            sheet.find(r#"<row r="3""#).expect("row 3 went in"),
+        );
+        let row4 = sheet.find(r#"<row r="4""#).expect("row 4 was there");
+        assert!(
+            row2 < row3 && row3 < row4,
+            "each row in its own place: {sheet}"
+        );
+    }
+
+    /// Two operations landing on one worksheet read it once between them:
+    /// the package memoises the text of a part it has read, which is what
+    /// lets an operation own its own reading without every operation paying
+    /// for it (ADR-0005).
+    #[test]
+    fn a_part_two_operations_both_read_is_read_once() {
+        let mut opened = opened(&[]);
+        let write = |target: &str| Operation::Set {
+            target: target.to_owned(),
+            write_type: WriteType::Number,
+            value: "7".to_owned(),
+            replace_formula: false,
+        };
+        let (one, two) = (write("Inputs!A4"), write("Inputs!B4"));
+        let at = |operation: &Operation| {
+            operation
+                .at(&opened)
+                .expect("both cells are in the package")
+        };
+
+        let opening = opened.reads();
+        let (at_one, at_two) = (at(&one), at(&two));
+        one.edits(at_one, &mut opened).expect("A4 must be writable");
+        let after_one = opened.reads();
+        two.edits(at_two, &mut opened).expect("B4 must be writable");
+
+        assert_eq!(
+            opening, 3,
+            "opening a package reads the root relationships, the workbook part \
+             they name, and that part's own relationships, and resolving a \
+             target reads nothing more"
+        );
+        assert_eq!(
+            after_one,
+            opening + 1,
+            "the first operation read the worksheet its cell sits in"
+        );
+        assert_eq!(
+            opened.reads(),
+            after_one,
+            "the second operation read no part the first had not"
+        );
+    }
+
+    /// One operation putting one cell into a row the sheet does not hold.
+    fn new_cell(target: &str, column: u32, row: u32) -> Asked {
+        let cell = Cell::new(column, row).expect("a cell on the grid");
+        Asked {
+            at: Some(Resolution {
+                target: target.to_owned(),
+                name: None,
+                address: Address {
+                    sheet: "Inputs".to_owned(),
+                    cell,
+                },
+                part: SHEET_PART.to_owned(),
+            }),
+            parts: Vec::new(),
+            into_a_new_row: Some(NewCell {
+                at: cell,
+                style: None,
+                written: Written::text(&cell.a1()),
+            }),
+        }
     }
 }

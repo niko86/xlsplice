@@ -1,5 +1,4 @@
-//! Part edits: what the package does with a part created, one removed, and
-//! one read twice.
+//! Part edits: what the package does with a part created and one removed.
 //!
 //! A splice is one species of part edit and the whole of what `set` asks for,
 //! so it is asserted beside `set` in `set.rs`, and what a batch of several
@@ -8,13 +7,19 @@
 //! the vocabulary #10 and #12 will need is held to the same byte-level
 //! guarantee as the one that is in use. What the container came out holding
 //! is read by the comparator in `support`, never by the tool itself.
+//!
+//! These are about real containers, so they are about files: what a rebuild
+//! keeps of a part it did not touch is a question about compressed bytes,
+//! methods and timestamps, which is what a fixture on disk has and a package
+//! a test wrote itself does not. The memo these tests used to watch is a
+//! promise about one package rather than about a container, and is held to
+//! in `batch.rs`, where the package it is asked of is built where it is read.
 
 mod support;
 
 use std::collections::BTreeMap;
 
-use support::{Copied, Workspace, built, compare, part, part_text, timestamp};
-use xlsplice::batch::{Opened, Operation, WriteType};
+use support::{Copied, built, compare, part, part_text, timestamp};
 use xlsplice::package::{Content, Package};
 
 const SHEET3: &str = "xl/worksheets/sheet3.xml";
@@ -94,51 +99,4 @@ fn a_removed_part_is_left_out_and_every_other_part_is_copied_raw() {
         "every part that stayed was copied raw"
     );
     assert!(comparison.order_kept, "the parts were reordered");
-}
-
-/// Two operations landing on one worksheet read it once between them: the
-/// package memoises the text of a part it has read, which is what lets an
-/// operation own its own reading without every operation paying for it
-/// (ADR-0005).
-#[test]
-fn a_part_two_operations_both_read_is_read_once() {
-    let workspace = Workspace::new("memoised");
-    let package = workspace.feature_package("feature.xlsx");
-    let mut opened = Opened::open(&package).expect("the package must open");
-    let write = |target: &str| Operation::Set {
-        target: target.to_owned(),
-        write_type: WriteType::Number,
-        value: "7".to_owned(),
-        replace_formula: false,
-    };
-
-    let opening = opened.reads();
-    let one = write("Inputs!A1");
-    let two = write("Inputs!A2");
-    let at = |operation: &Operation| {
-        operation
-            .at(&opened)
-            .expect("both cells are in the package")
-    };
-    let (at_one, at_two) = (at(&one), at(&two));
-    one.edits(at_one, &mut opened).expect("A1 must be writable");
-    let after_one = opened.reads();
-    two.edits(at_two, &mut opened).expect("A2 must be writable");
-
-    assert_eq!(
-        opening, 3,
-        "opening a package reads the root relationships, the workbook part \
-         they name, and that part's own relationships, and resolving a target \
-         reads nothing more"
-    );
-    assert_eq!(
-        after_one,
-        opening + 1,
-        "the first operation read the worksheet its cell sits in"
-    );
-    assert_eq!(
-        opened.reads(),
-        after_one,
-        "the second operation read no part the first had not"
-    );
 }

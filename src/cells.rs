@@ -12,6 +12,8 @@
 //! string table, which may be the largest part in the package, is read only
 //! if some cell turns out to be a shared string.
 
+use std::io::{Read, Seek};
+
 use roxmltree::Document;
 
 use crate::error::{Error, Result};
@@ -67,8 +69,8 @@ pub struct CellReport {
 /// Any target that cannot be resolved fails the whole read, because a caller
 /// asking for several cells is asking about one package and a partial answer
 /// would have to be told apart from a whole one.
-pub fn read(
-    package: &mut Package,
+pub fn read<R: Read + Seek>(
+    package: &mut Package<R>,
     workbook: &Workbook,
     targets: &[String],
 ) -> Result<Vec<CellReport>> {
@@ -101,7 +103,10 @@ pub fn read(
 ///
 /// Each part is parsed once however many targets landed on it, so reading a
 /// column of cells costs one parse rather than one per cell.
-fn read_cells(package: &mut Package, resolved: &[Resolution]) -> Result<Vec<Option<Stored>>> {
+fn read_cells<R: Read + Seek>(
+    package: &mut Package<R>,
+    resolved: &[Resolution],
+) -> Result<Vec<Option<Stored>>> {
     let mut stored: Vec<Option<Stored>> = vec![None; resolved.len()];
     for part in parts_of(resolved.iter()) {
         let xml = package.read_part_text(&part)?;

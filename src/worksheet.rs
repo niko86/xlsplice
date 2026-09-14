@@ -14,6 +14,8 @@
 //! is what has to be put in and where: a cell into its row, or a row holding
 //! it into the sheet data.
 
+use std::io::{Read, Seek};
+
 use roxmltree::{Document, Node};
 
 use crate::error::{Error, Result};
@@ -645,8 +647,8 @@ pub fn value_splices(node: Node<'_, '_>, source: &str, written: &Written) -> Res
 /// `sheet1.xml` for the first tab would hand back another sheet's cells on
 /// any package whose sheets have been reordered, and a wrong answer is worse
 /// than no answer.
-pub fn part_of_sheet(
-    package: &Package,
+pub fn part_of_sheet<R: Read + Seek>(
+    package: &Package<R>,
     rels: &Relationships,
     workbook: &Workbook,
     sheet: &str,
@@ -660,7 +662,7 @@ pub fn part_of_sheet(
             Error::not_found(format!(
                 "sheet '{sheet}' has no worksheet part in {}: the workbook part does not point \
                  at one, or points at a part the package does not hold.",
-                package.path().display()
+                package.name()
             ))
         })
 }

@@ -22,7 +22,7 @@ use crate::calculation;
 use crate::cells;
 use crate::diff::{self, Difference};
 use crate::error::Error;
-use crate::package::Package;
+use crate::package::{FromFile, Package};
 use crate::properties;
 use crate::workbook::Workbook;
 
@@ -56,7 +56,7 @@ impl Trace<'_> {
 ///
 /// The package comes back too, because a verb that reads cells goes on to
 /// read more of its parts.
-fn open(path: &Path, trace: &Trace) -> crate::Result<(Package, Workbook)> {
+fn open(path: &Path, trace: &Trace) -> crate::Result<(Package<FromFile>, Workbook)> {
     trace.say(&format!("opening {}", path.display()));
     let mut package = Package::open(path)?;
     trace.say(&format!(

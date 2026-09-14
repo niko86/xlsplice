@@ -9,6 +9,8 @@
 //! A relationship whose target is external names a URL rather than a part, so
 //! it resolves to nothing at all.
 
+use std::io::{Read, Seek};
+
 use roxmltree::Document;
 
 use crate::error::{Error, Result};
@@ -49,7 +51,7 @@ struct Entry {
 impl Relationships {
     /// The relationships of `owner`, which is the empty string for the
     /// package root. A part with no `_rels` beside it simply has none.
-    pub fn read(package: &mut Package, owner: &str) -> Result<Self> {
+    pub fn read<R: Read + Seek>(package: &mut Package<R>, owner: &str) -> Result<Self> {
         let part = rels_path(owner);
         if !package.has_part(&part) {
             return Ok(Relationships {
@@ -57,7 +59,7 @@ impl Relationships {
                 entries: Vec::new(),
             });
         }
-        let file = package.path().display().to_string();
+        let file = package.name().to_owned();
         let xml = package.read_part_text(&part)?;
         let document = Document::parse(xml)
             .map_err(|err| Error::unreadable(format!("{file}: {part} is not valid XML: {err}")))?;
@@ -99,8 +101,8 @@ impl Relationships {
 /// it named is still in its conventional place, and a read has no reason to
 /// refuse it. Nothing comes back when neither is there, and the caller says
 /// what that means for the part it was after.
-pub fn part_or_conventional(
-    package: &Package,
+pub fn part_or_conventional<R: Read + Seek>(
+    package: &Package<R>,
     named: Option<String>,
     conventional: &str,
 ) -> Option<String> {

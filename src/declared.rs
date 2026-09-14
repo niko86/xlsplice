@@ -11,6 +11,8 @@
 //! So the two are declared together and withdrawn together, here. Nothing
 //! else in xlsplice writes to either part.
 
+use std::io::{Read, Seek};
+
 use roxmltree::{Document, Node};
 
 use crate::error::{Error, Result};
@@ -33,8 +35,8 @@ pub const CONTENT_TYPES: &str = "[Content_Types].xml";
 /// A declaration already there is left alone rather than written twice, so
 /// declaring a part the package half-declares finishes the job instead of
 /// making a second mess of it.
-pub fn declared(
-    package: &mut Package,
+pub fn declared<R: Read + Seek>(
+    package: &mut Package<R>,
     owner: &str,
     part: &str,
     content_type: &str,
@@ -59,7 +61,11 @@ pub fn declared(
 }
 
 /// The splice that says what kind of thing `part` is.
-fn override_for(package: &mut Package, part: &str, content_type: &str) -> Result<Vec<Splice>> {
+fn override_for<R: Read + Seek>(
+    package: &mut Package<R>,
+    part: &str,
+    content_type: &str,
+) -> Result<Vec<Splice>> {
     let xml = must_read(package, CONTENT_TYPES, part)?;
     let named = format!("/{part}");
     let document = Document::parse(&xml)
@@ -73,8 +79,8 @@ fn override_for(package: &mut Package, part: &str, content_type: &str) -> Result
 }
 
 /// The splice that gives `owner` a relationship reaching `part`.
-fn relationship_for(
-    package: &mut Package,
+fn relationship_for<R: Read + Seek>(
+    package: &mut Package<R>,
     owner: &str,
     part: &str,
     kind: &str,
@@ -107,7 +113,11 @@ fn relationship_for(
 /// A package missing one of these is not one a part can be added to: its
 /// declarations are where a part is declared, and there is nowhere else to
 /// put one.
-fn must_read(package: &mut Package, part: &str, declaring: &str) -> Result<String> {
+fn must_read<R: Read + Seek>(
+    package: &mut Package<R>,
+    part: &str,
+    declaring: &str,
+) -> Result<String> {
     if !package.has_part(part) {
         return Err(Error::unreadable(format!(
             "the package has no {part}, so there is nowhere to declare '{declaring}'. \
@@ -148,8 +158,8 @@ fn next_id(root: Node) -> String {
 /// under `xl/` is the workbook part. A declaration that is not there is not an
 /// error: a package another tool has mangled may already be missing one, and
 /// withdrawing what is left is still the right answer.
-pub fn withdrawn(
-    package: &mut Package,
+pub fn withdrawn<R: Read + Seek>(
+    package: &mut Package<R>,
     owner: &str,
     part: &str,
 ) -> Result<Vec<(String, Vec<Splice>)>> {
@@ -171,7 +181,7 @@ pub fn withdrawn(
 /// package. A part covered by a `Default` for its extension has no override
 /// and needs none taken out: the default goes on covering the parts that are
 /// still there.
-fn override_of(package: &mut Package, part: &str) -> Result<Vec<Splice>> {
+fn override_of<R: Read + Seek>(package: &mut Package<R>, part: &str) -> Result<Vec<Splice>> {
     if !package.has_part(CONTENT_TYPES) {
         return Ok(Vec::new());
     }
@@ -186,7 +196,11 @@ fn override_of(package: &mut Package, part: &str) -> Result<Vec<Splice>> {
 
 /// The splice that takes the relationship pointing at `part` out of `owner`'s
 /// relationships.
-fn relationship_to(package: &mut Package, owner: &str, part: &str) -> Result<Vec<Splice>> {
+fn relationship_to<R: Read + Seek>(
+    package: &mut Package<R>,
+    owner: &str,
+    part: &str,
+) -> Result<Vec<Splice>> {
     let rels = rels_path(owner);
     if !package.has_part(&rels) {
         return Ok(Vec::new());

@@ -11,6 +11,8 @@
 //! xlsplice's own guarantee is stated at, and it is the level a caller can
 //! act on.
 
+use std::io::{Read, Seek};
+
 use crate::error::Result;
 use crate::package::Package;
 
@@ -66,7 +68,10 @@ pub struct Difference {
 /// The parts of `before` come first, in the order it holds them, so that a
 /// caller reading the list reads the package it started from; the parts only
 /// `after` holds follow, in its order.
-pub fn compare(before: &mut Package, after: &mut Package) -> Result<Difference> {
+pub fn compare<R: Read + Seek>(
+    before: &mut Package<R>,
+    after: &mut Package<R>,
+) -> Result<Difference> {
     let (theirs, mine) = (after.part_paths().to_vec(), before.part_paths().to_vec());
     let mut parts = Vec::with_capacity(mine.len() + theirs.len());
     for part in &mine {
@@ -95,49 +100,11 @@ pub fn compare(before: &mut Package, after: &mut Package) -> Result<Difference> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::package::{FromBytes, container_of};
 
-    /// A package holding `parts`, written into a fresh temporary directory
-    /// that goes when the test does.
-    struct Written {
-        dir: std::path::PathBuf,
-    }
-
-    impl Written {
-        fn new(label: &str) -> Self {
-            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-            let dir = std::env::temp_dir().join(format!(
-                "xlsplice-diff-{}-{}-{label}",
-                std::process::id(),
-                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            ));
-            std::fs::create_dir_all(&dir).expect("a test must be able to write a directory");
-            Written { dir }
-        }
-
-        fn package(&self, name: &str, parts: &[(&str, &str)]) -> Package {
-            let path = self.dir.join(name);
-            let options = zip::write::SimpleFileOptions::default();
-            let mut writer = zip::ZipWriter::new(
-                std::fs::File::create(&path).expect("a test must be able to write a package"),
-            );
-            for (part, text) in parts {
-                use std::io::Write;
-                writer
-                    .start_file(*part, options)
-                    .expect("a part must start");
-                writer
-                    .write_all(text.as_bytes())
-                    .expect("a part must be written");
-            }
-            writer.finish().expect("the container must close");
-            Package::open(&path).expect("the test package must open")
-        }
-    }
-
-    impl Drop for Written {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.dir);
-        }
+    /// A package holding `parts`, built where it is read.
+    fn package(parts: &[(&str, &str)]) -> Package<FromBytes> {
+        Package::of(container_of(parts)).expect("the test package must open")
     }
 
     /// The statuses of a comparison, by part, in the order it reports them.
@@ -151,12 +118,8 @@ mod tests {
 
     #[test]
     fn two_packages_holding_the_same_parts_are_identical() {
-        let written = Written::new("same");
         let parts = [("a.xml", "<a/>"), ("b.xml", "<b/>")];
-        let (mut before, mut after) = (
-            written.package("before.xlsx", &parts),
-            written.package("after.xlsx", &parts),
-        );
+        let (mut before, mut after) = (package(&parts), package(&parts));
 
         let difference = compare(&mut before, &mut after).expect("both packages are readable");
 
@@ -169,9 +132,8 @@ mod tests {
 
     #[test]
     fn a_part_whose_bytes_differ_is_reported_as_differing() {
-        let written = Written::new("differs");
-        let mut before = written.package("before.xlsx", &[("a.xml", "<a/>"), ("b.xml", "<b/>")]);
-        let mut after = written.package("after.xlsx", &[("a.xml", "<a/>"), ("b.xml", "<b>1</b>")]);
+        let mut before = package(&[("a.xml", "<a/>"), ("b.xml", "<b/>")]);
+        let mut after = package(&[("a.xml", "<a/>"), ("b.xml", "<b>1</b>")]);
 
         let difference = compare(&mut before, &mut after).expect("both packages are readable");
 
@@ -186,9 +148,8 @@ mod tests {
     /// package's own follow.
     #[test]
     fn a_part_only_one_of_them_holds_is_added_or_removed() {
-        let written = Written::new("added");
-        let mut before = written.package("before.xlsx", &[("a.xml", "<a/>"), ("gone.xml", "<g/>")]);
-        let mut after = written.package("after.xlsx", &[("a.xml", "<a/>"), ("new.xml", "<n/>")]);
+        let mut before = package(&[("a.xml", "<a/>"), ("gone.xml", "<g/>")]);
+        let mut after = package(&[("a.xml", "<a/>"), ("new.xml", "<n/>")]);
 
         let difference = compare(&mut before, &mut after).expect("both packages are readable");
 
@@ -207,9 +168,8 @@ mod tests {
     /// same parts in a different order still hold the same parts.
     #[test]
     fn the_order_the_container_holds_the_parts_in_is_not_a_difference() {
-        let written = Written::new("order");
-        let mut before = written.package("before.xlsx", &[("a.xml", "<a/>"), ("b.xml", "<b/>")]);
-        let mut after = written.package("after.xlsx", &[("b.xml", "<b/>"), ("a.xml", "<a/>")]);
+        let mut before = package(&[("a.xml", "<a/>"), ("b.xml", "<b/>")]);
+        let mut after = package(&[("b.xml", "<b/>"), ("a.xml", "<a/>")]);
 
         let difference = compare(&mut before, &mut after).expect("both packages are readable");
 
@@ -223,11 +183,7 @@ mod tests {
 
     #[test]
     fn two_packages_holding_nothing_are_identical() {
-        let written = Written::new("empty");
-        let (mut before, mut after) = (
-            written.package("before.xlsx", &[]),
-            written.package("after.xlsx", &[]),
-        );
+        let (mut before, mut after) = (package(&[]), package(&[]));
 
         let difference = compare(&mut before, &mut after).expect("both packages are readable");
 

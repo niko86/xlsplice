@@ -8,6 +8,8 @@
 //! here; what it resolves to is its [`Anchor`](crate::reference::Address), or
 //! the reason it has none.
 
+use std::io::{Read, Seek};
+
 use roxmltree::{Document, Node};
 
 use crate::error::{Error, Result};
@@ -160,10 +162,10 @@ pub struct Workbook {
 
 impl Workbook {
     /// Read the workbook part out of `package` and build the model.
-    pub fn read(package: &mut Package) -> Result<Self> {
+    pub fn read<R: Read + Seek>(package: &mut Package<R>) -> Result<Self> {
         let part = workbook_part_path(package)?;
         let xml = package.read_part_text(&part)?;
-        Workbook::parse_part(xml, &part).map_err(|err| err.within(package.path().display()))
+        Workbook::parse_part(xml, &part).map_err(|err| err.within(package.name()))
     }
 
     /// Build the model from the text of a workbook part.
@@ -251,12 +253,12 @@ impl Workbook {
 /// The path of the workbook part: what the root relationships point the
 /// main document at, falling back to where Excel always puts it for a
 /// package whose root relationships are missing or silent.
-fn workbook_part_path(package: &mut Package) -> Result<String> {
+fn workbook_part_path<R: Read + Seek>(package: &mut Package<R>) -> Result<String> {
     let named = Relationships::read(package, "")?.part_of_kind(OFFICE_DOCUMENT);
     part_or_conventional(package, named, CONVENTIONAL_WORKBOOK).ok_or_else(|| {
         Error::unreadable(format!(
             "{} holds no workbook part: it is a zip container, but not an Excel package.",
-            package.path().display()
+            package.name()
         ))
     })
 }

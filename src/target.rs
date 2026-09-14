@@ -12,7 +12,7 @@
 //! in. Nothing here opens a part: a [`Resolution`] is an answer about where a
 //! cell is, not about what is in it.
 
-use std::path::Path;
+use std::io::{Read, Seek};
 
 use crate::error::{Error, Result};
 use crate::package::Package;
@@ -39,13 +39,13 @@ pub struct Resolution {
 }
 
 /// Resolve one target to the cell it names and the part that cell sits in.
-pub fn resolve(
-    package: &Package,
+pub fn resolve<R: Read + Seek>(
+    package: &Package<R>,
     rels: &Relationships,
     workbook: &Workbook,
     target: &str,
 ) -> Result<Resolution> {
-    let file = package.path();
+    let file = package.name();
     let (name, address) = match Target::parse(target) {
         Target::Address { sheet, cell } => (
             None,
@@ -77,14 +77,13 @@ pub fn resolve(
 }
 
 /// The package's own spelling of the sheet called `name`.
-fn sheet_named(file: &Path, workbook: &Workbook, name: &str) -> Result<String> {
+fn sheet_named(file: &str, workbook: &Workbook, name: &str) -> Result<String> {
     workbook
         .sheet_named(name)
         .map(|sheet| sheet.name.clone())
         .ok_or_else(|| {
             Error::not_found(format!(
-                "no sheet named '{name}' in {}; the package has: {}",
-                file.display(),
+                "no sheet named '{name}' in {file}; the package has: {}",
                 list(workbook.sheets().iter().map(|sheet| sheet.name.as_str()))
             ))
         })
@@ -117,14 +116,13 @@ fn anchor_of(defined: &DefinedName) -> Result<Address> {
     }
 }
 
-fn no_such_name(file: &Path, workbook: &Workbook, name: &str, scope: &Scope) -> Error {
+fn no_such_name(file: &str, workbook: &Workbook, name: &str, scope: &Scope) -> Error {
     let where_ = match scope {
         Scope::Workbook => "scoped to the workbook".to_owned(),
         Scope::Sheet(sheet) => format!("scoped to sheet '{sheet}'"),
     };
     Error::not_found(format!(
-        "no defined name '{name}' {where_}; {} has: {}",
-        file.display(),
+        "no defined name '{name}' {where_}; {file} has: {}",
         list(workbook.names_in_scope(scope).into_iter())
     ))
 }

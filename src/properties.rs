@@ -17,6 +17,8 @@
 //! anything holding a reference to it still reaches it; a property added
 //! takes the next one free.
 
+use std::io::{Read, Seek};
+
 use roxmltree::{Document, Node};
 
 use crate::error::{Error, Result};
@@ -162,7 +164,7 @@ impl Value {
 /// go, which is what something adding a property needs to know. The part is
 /// followed by its relationship from the package root, falling back to where
 /// Excel puts it, as every part xlsplice follows by type is.
-pub fn part_of(package: &mut Package) -> Result<(String, bool)> {
+pub fn part_of<R: Read + Seek>(package: &mut Package<R>) -> Result<(String, bool)> {
     let rels = Relationships::read(package, PACKAGE_ROOT)?;
     let found = part_or_conventional(
         package,

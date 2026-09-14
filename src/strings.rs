@@ -10,6 +10,8 @@
 //! guide Excel shows above the characters, and a reader that swept up every
 //! `<t>` beneath the item would splice it into the middle of the value.
 
+use std::io::{Read, Seek};
+
 use roxmltree::{Document, Node};
 
 use crate::error::{Error, Result};
@@ -35,7 +37,10 @@ impl SharedStrings {
     /// The relationships are the workbook's, already parsed by the caller. A
     /// package with no table has no shared strings, which is not an error: no
     /// cell can then be a shared one.
-    pub fn read(package: &mut Package, workbook_rels: &Relationships) -> Result<Self> {
+    pub fn read<R: Read + Seek>(
+        package: &mut Package<R>,
+        workbook_rels: &Relationships,
+    ) -> Result<Self> {
         let named = workbook_rels.part_of_kind(SHARED_STRINGS);
         let Some(part) = part_or_conventional(package, named, CONVENTIONAL_PART) else {
             return Ok(SharedStrings::default());

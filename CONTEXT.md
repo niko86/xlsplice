@@ -7,7 +7,9 @@ A command-line tool for surgical edits to Excel packages. It exists because whol
 ### Package
 
 **Package**:
-One `.xlsx` or `.xlsm` file: a zip container of parts.
+One `.xlsx` or `.xlsm` file: a zip container of parts. The container is what
+makes it one, so a package a test holds as bytes, with no file under it, is a
+package too.
 _Avoid_: workbook, file, document
 
 **Part**:

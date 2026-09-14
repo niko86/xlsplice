@@ -53,6 +53,12 @@ parse of a part that is already in memory.
   for the same reason: it is a fault in whatever built the batch.
 - Resolution moved out of the read verb's module into `src/target.rs`, which
   both paths use, so `src/cells.rs` exports nothing to the write path.
+- The memo is observable without a file. `Package` is generic over what it
+  reads (#33), so `Package::of` puts one over bytes in hand and a unit test
+  can watch a part being read once by two operations, where before only an
+  integration test reaching past every verb could. Nothing about how an
+  operation reads changes with it: what the package is over is no part of
+  what an operation may do to it.
 - The memo holds the text of every part read for as long as the package is
   open, where before each part's text was dropped when the caller was done
   with it. A batch over three sheets therefore holds three sheets, the

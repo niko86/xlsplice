@@ -111,9 +111,39 @@ pub fn render(outcome: Result<Answer>, mode: OutputMode) -> Rendered {
     }
 }
 
+/// What a command puts on its two streams when it panics, and what it exits
+/// with.
+///
+/// A crash is a failure like any other as far as the contract goes: exit 1,
+/// and under `--json` an `internal` envelope on stdout, because a caller
+/// parsing stdout must be able to parse every outcome. It differs in one way,
+/// and this is the one place that says so: the diagnostic goes to stderr in
+/// *every* mode, where an ordinary failure under `--json` says nothing there.
+/// A crash is a bug in xlsplice rather than something the caller did, and it
+/// stays debuggable by a person watching the terminal.
+///
+/// `at` is where the panic was raised, as the file and line a panic hook has;
+/// `what` is what it said. Nothing here is a process: the hook writes the two
+/// strings and exits, and this can be asked what it would write without one.
+pub fn crash(at: Option<(&str, u32)>, what: &str, mode: OutputMode) -> Rendered {
+    let where_ = match at {
+        Some((file, line)) => format!(" at {file}:{line}"),
+        None => String::new(),
+    };
+    let error = Error::internal(format!(
+        "internal error{where_}: {what}. This is a bug in xlsplice; \
+         please report it with the command you ran."
+    ));
+    let on_stderr = diagnostic(&error);
+    Rendered {
+        stderr: on_stderr,
+        ..render(Err(error), mode)
+    }
+}
+
 /// What a failure says on stderr. A crash reports here too, whatever the mode,
 /// so the prefix a reader looks for is written in one place.
-pub fn diagnostic(error: &Error) -> String {
+fn diagnostic(error: &Error) -> String {
     format!("error: {error}\n")
 }
 
@@ -228,6 +258,76 @@ mod tests {
     /// The flag says nothing about failures. A package that cannot be read
     /// exits 5 whatever a success would have exited with, because what went
     /// wrong is what a caller has to hear first.
+    /// The crash rule, both halves of it: the envelope so a program parsing
+    /// stdout can parse every outcome, and the diagnostic on stderr *as well*,
+    /// which is the one place the two channels deliberately both speak.
+    #[test]
+    fn a_crash_under_json_carries_the_envelope_and_still_reports_on_stderr() {
+        let rendered = crash(
+            Some(("src/worksheet.rs", 42)),
+            "a row that is not there",
+            OutputMode::Json(JsonStyle::Compact),
+        );
+
+        assert_eq!(rendered.exit, ErrorCode::Internal.exit_code());
+        assert!(
+            rendered.stdout.contains(r#""ok":false"#),
+            "{}",
+            rendered.stdout
+        );
+        assert!(
+            rendered.stdout.contains(r#""code":"internal""#),
+            "{}",
+            rendered.stdout
+        );
+        assert!(
+            rendered.stderr.starts_with("error: "),
+            "a crash stays debuggable on stderr even under --json: {}",
+            rendered.stderr
+        );
+    }
+
+    #[test]
+    fn a_crash_in_text_mode_says_nothing_on_stdout() {
+        let rendered = crash(None, "panicked", OutputMode::Text(TextStyle::Tsv));
+
+        assert_eq!(rendered.exit, ErrorCode::Internal.exit_code());
+        assert_eq!(rendered.stdout, "", "the data channel carries no failure");
+        assert!(
+            rendered.stderr.starts_with("error: "),
+            "{}",
+            rendered.stderr
+        );
+    }
+
+    /// Where it happened is the first thing a report wants, and a panic
+    /// without a location is still a crash rather than a blank one.
+    #[test]
+    fn a_crash_names_where_it_was_raised_when_it_knows() {
+        let known = crash(
+            Some(("src/splice.rs", 7)),
+            "overlapping splices",
+            OutputMode::Text(TextStyle::Tsv),
+        );
+        let unknown = crash(
+            None,
+            "overlapping splices",
+            OutputMode::Text(TextStyle::Tsv),
+        );
+
+        assert!(known.stderr.contains("src/splice.rs:7"), "{}", known.stderr);
+        assert!(known.stderr.contains("overlapping splices"));
+        assert!(!unknown.stderr.contains(" at "), "{}", unknown.stderr);
+        assert!(unknown.stderr.contains("overlapping splices"));
+        for rendered in [&known, &unknown] {
+            assert!(
+                rendered.stderr.contains("This is a bug in xlsplice"),
+                "a crash says whose fault it is: {}",
+                rendered.stderr
+            );
+        }
+    }
+
     #[test]
     fn a_failure_still_exits_with_its_own_code() {
         let rendered = render(

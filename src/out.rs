@@ -10,7 +10,6 @@ use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
 use xlsplice::answer::Answer;
-use xlsplice::error::Error;
 use xlsplice::render::{self, OutputMode, Rendered, render};
 
 /// The output mode for this run, given whether `--json` was asked for.
@@ -87,27 +86,18 @@ fn write(rendered: Rendered) -> ExitCode {
 /// destructors, which is what the "non-zero means nothing was written"
 /// guarantee wants: a half-finished temporary file is abandoned, not renamed.
 ///
-/// A crash is exceptional, so the diagnostic goes to stderr in every mode,
-/// where under `--json` stdout is otherwise reserved for the envelope. The
-/// mode comes from the argv scan, because a panic can precede clap.
+/// What a crash says on each stream is [`render::crash`]'s, like every other
+/// outcome: this takes the two strings and writes them. The mode comes from
+/// the argv scan, because a panic can precede clap.
 pub fn install_panic_hook(mode: OutputMode) {
     std::panic::set_hook(Box::new(move |info| {
-        let at = info
-            .location()
-            .map(|at| format!(" at {}:{}", at.file(), at.line()))
-            .unwrap_or_default();
+        let at = info.location().map(|at| (at.file(), at.line()));
         let what = info.payload_as_str().unwrap_or("panicked");
-        let error = Error::internal(format!(
-            "internal error{at}: {what}. This is a bug in xlsplice; \
-             please report it with the command you ran."
-        ));
-        let exit = error.exit_code();
 
-        eprint!("{}", render::diagnostic(&error));
-        if let OutputMode::Json(_) = mode {
-            print!("{}", render(Err(error), mode).stdout);
-        }
+        let rendered = render::crash(at, what, mode);
+        print!("{}", rendered.stdout);
+        eprint!("{}", rendered.stderr);
         let _ = std::io::stdout().flush();
-        std::process::exit(i32::from(exit));
+        std::process::exit(i32::from(rendered.exit));
     }));
 }

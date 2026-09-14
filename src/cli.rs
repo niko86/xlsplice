@@ -265,19 +265,6 @@ pub enum Command {
     /// Print the version of xlsplice.
     #[command(after_help = "Example:\n  xlsplice version --json")]
     Version,
-
-    /// Crash, so the contract tests can reach the panic hook. Every other
-    /// code in the frozen table is reachable from a real verb, so panicking is
-    /// all this does. Debug builds only, hidden, and no part of the published
-    /// contract.
-    #[cfg(debug_assertions)]
-    #[command(hide = true)]
-    Selftest {
-        /// Panic, to exercise the panic hook. Required, because there is
-        /// nothing else here to ask for.
-        #[arg(long, required = true)]
-        panic: bool,
-    },
 }
 
 /// What `props` does.
@@ -382,8 +369,6 @@ impl Command {
             Command::Diff { .. } => "diff",
             Command::Help { .. } => "help",
             Command::Version => "version",
-            #[cfg(debug_assertions)]
-            Command::Selftest { .. } => "selftest",
         }
     }
 }

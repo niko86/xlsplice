@@ -104,11 +104,6 @@ fn help_and_version_flags_stay_text_and_exit_zero() {
     }
 }
 
-#[test]
-fn the_selftest_stub_is_never_advertised() {
-    assert!(!stdout(&run(&["--help"])).contains("selftest"));
-}
-
 /// The other half of this rule, pretty-printing on a terminal, is held at the
 /// library seam by `JsonStyle::for_terminal`: a spawned process has no
 /// terminal to give it.
@@ -183,33 +178,27 @@ fn quiet_and_verbose_cannot_both_be_asked_for() {
     assert_eq!(exit_code(&run(&["version", "--quiet", "--verbose"])), 2);
 }
 
-/// The panic hook is the one thing left that no verb can reach, so a stub
-/// reaches it. The stub is compiled only into a debug build; a release build
-/// has none, and so skips these.
-#[cfg(debug_assertions)]
-mod through_the_stub {
-    use super::*;
+/// A panic is the one outcome no verb can produce on purpose, so what it puts
+/// on the two streams is asserted at the library seam, where `render::crash`
+/// can be asked what it would write. What is left to this process is
+/// installing the hook, which is what the test below reads `main.rs` for.
+///
+/// There was a hidden `selftest --panic` verb here until #38: a command on
+/// the published surface whose only purpose was to be crashed by these tests.
+/// It went when the deciding moved into `render`.
+#[test]
+fn the_binary_installs_the_panic_hook_before_it_parses() {
+    let main = std::fs::read_to_string("src/main.rs").expect("the binary's source is in the tree");
+    let (before, after) = main
+        .split_once("install_panic_hook")
+        .expect("main must install the panic hook");
 
-    #[test]
-    fn a_panic_becomes_the_internal_envelope_and_exit_one() {
-        let out = run(&["selftest", "--panic", "--json"]);
-
-        assert_eq!(exit_code(&out), 1);
-        let body = json(&out);
-        assert_eq!(body["ok"], serde_json::json!(false));
-        assert_eq!(body["error"]["code"], serde_json::json!("internal"));
-        assert!(
-            !stderr(&out).is_empty(),
-            "a crash must stay debuggable on stderr even under --json"
-        );
-    }
-
-    #[test]
-    fn a_panic_without_json_reports_on_stderr_and_exits_one() {
-        let out = run(&["selftest", "--panic"]);
-
-        assert_eq!(exit_code(&out), 1);
-        assert_eq!(stdout(&out), "");
-        assert!(stderr(&out).contains("error: "), "stderr: {}", stderr(&out));
-    }
+    assert!(
+        !before.contains("Cli::try_parse_from"),
+        "the hook goes in before clap parses, because a panic can precede it"
+    );
+    assert!(
+        after.contains("Cli::try_parse_from"),
+        "and clap still parses after it"
+    );
 }

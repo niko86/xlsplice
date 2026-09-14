@@ -145,8 +145,6 @@ fn run(command: Command, out: &Out) -> ExitCode {
         ),
         Command::Help { topic } => answer::topic(topic),
         Command::Version => answer::version(),
-        #[cfg(debug_assertions)]
-        Command::Selftest { .. } => panic!("selftest was asked to panic"),
     })
 }
 

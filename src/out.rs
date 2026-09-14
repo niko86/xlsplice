@@ -5,12 +5,16 @@
 //! process can do: ask whether stdout is a terminal, write the bytes, exit
 //! with the code, and keep the diagnostic channel at the volume the caller
 //! asked for. Neither stream is ever coloured.
+//!
+//! The panic hook was here too until #44. It is the same kind of thing and
+//! would sit happily beside these, but it has to be reachable from outside
+//! this binary to be watched working, so it lives in [`xlsplice::crash`].
 
-use std::io::{IsTerminal, Write};
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use xlsplice::answer::Answer;
-use xlsplice::render::{self, OutputMode, Rendered, render};
+use xlsplice::render::{OutputMode, Rendered, render};
 
 /// The output mode for this run, given whether `--json` was asked for.
 /// Whether stdout is a terminal is asked here, once, and not rediscovered at
@@ -89,27 +93,4 @@ fn write(rendered: Rendered) -> ExitCode {
     print!("{}", rendered.stdout);
     eprint!("{}", rendered.stderr);
     ExitCode::from(rendered.exit)
-}
-
-/// Route every panic through the envelope, so no failure mode is unparseable.
-///
-/// The hook exits the process itself rather than letting the unwind reach
-/// `main`, which would exit 101 and skip the contract. Exiting here also skips
-/// destructors, which is what the "non-zero means nothing was written"
-/// guarantee wants: a half-finished temporary file is abandoned, not renamed.
-///
-/// What a crash says on each stream is [`render::crash`]'s, like every other
-/// outcome: this takes the two strings and writes them. The mode comes from
-/// the argv scan, because a panic can precede clap.
-pub fn install_panic_hook(mode: OutputMode) {
-    std::panic::set_hook(Box::new(move |info| {
-        let at = info.location().map(|at| (at.file(), at.line()));
-        let what = info.payload_as_str().unwrap_or("panicked");
-
-        let rendered = render::crash(at, what, mode);
-        print!("{}", rendered.stdout);
-        eprint!("{}", rendered.stderr);
-        let _ = std::io::stdout().flush();
-        std::process::exit(i32::from(rendered.exit));
-    }));
 }

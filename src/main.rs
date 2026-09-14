@@ -25,7 +25,7 @@ fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().collect();
     // clap may never finish parsing, so the argv scan is what decides the
     // shape of a usage error.
-    out::install_panic_hook(out::mode(cli::json_requested(&argv)));
+    xlsplice::crash::install(out::mode(cli::json_requested(&argv)));
 
     match parsed(&argv) {
         Ok((command, global, verb)) => {

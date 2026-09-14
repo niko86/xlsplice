@@ -11,7 +11,7 @@
 #![allow(dead_code)]
 
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Run the binary with `args` and both streams captured, so stdout is a pipe
 /// rather than a terminal.
@@ -56,6 +56,59 @@ pub fn run_with_stdin(args: &[&str], input: &str) -> std::process::Output {
     child
         .wait_with_output()
         .expect("the child must finish and be waited for")
+}
+
+/// The crash probe, built and ready to run: an example binary that installs
+/// the real panic hook and then panics, so that a test can watch a real
+/// process do what only a real process does.
+///
+/// It is an example rather than a second verb or a second binary because
+/// neither of those can be had without a cost #38 already refused: a verb
+/// would be back on the published surface, and a `[[bin]]` would be installed
+/// by `cargo install` and would have to be kept out of the release archive by
+/// hand. An example is built by `cargo test`, shipped by nothing, and
+/// installed by nothing.
+///
+/// The build is asked for here rather than assumed. A full `cargo test` builds
+/// examples and `cargo test --test contract` does not, so a test that took the
+/// binary on trust would pass under one invocation and fail under the other.
+/// Asking costs a cargo no-op when it is already built.
+pub fn crash_probe() -> PathBuf {
+    let mut build = std::process::Command::new(env!("CARGO"));
+    build
+        .args(["build", "--quiet", "--example", "crash-probe"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"));
+    // Whichever profile the suite itself was built with, so that the probe
+    // lands beside the binary this test found rather than in the other one.
+    if !cfg!(debug_assertions) {
+        build.arg("--release");
+    }
+    let status = build
+        .status()
+        .expect("cargo must be runnable to build the crash probe");
+    assert!(status.success(), "the crash probe must build");
+
+    let binary = Path::new(env!("CARGO_BIN_EXE_xlsplice"));
+    let mut name = std::ffi::OsString::from("crash-probe");
+    // `.exe` on Windows, nothing anywhere else, taken from the binary beside
+    // it rather than spelled out per platform.
+    if let Some(extension) = binary.extension() {
+        name.push(".");
+        name.push(extension);
+    }
+    binary
+        .parent()
+        .expect("the binary under test sits in a directory")
+        .join("examples")
+        .join(name)
+}
+
+/// Run the crash probe and give back what the process did.
+pub fn crash(args: &[&str]) -> std::process::Output {
+    std::process::Command::new(crash_probe())
+        .args(args)
+        .output()
+        .expect("the crash probe must be runnable")
 }
 
 pub fn stdout(out: &std::process::Output) -> String {

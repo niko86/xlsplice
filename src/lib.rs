@@ -27,6 +27,7 @@ pub mod batch;
 pub mod calc_chain;
 pub mod calculation;
 pub mod cells;
+pub mod crash;
 pub mod date;
 pub mod declared;
 pub mod diff;

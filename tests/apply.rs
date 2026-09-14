@@ -13,13 +13,9 @@ mod support;
 
 use std::path::Path;
 
-use support::{
-    Workspace, assert_only_these_differ, assert_same_bytes, copy_of, exit_code, fixture, json,
-    part_text, run, run_in, run_with_stdin, stderr, stdout,
-};
-
-const SHEET1: &str = "xl/worksheets/sheet1.xml";
-const SHEET2: &str = "xl/worksheets/sheet2.xml";
+use support::binary::{exit_code, json, run, run_in, run_with_stdin, stderr, stdout};
+use support::container::{SHEET1, SHEET2, assert_only_these_differ, assert_same_bytes, part_text};
+use support::workspace::{Workspace, copy_of, fixture};
 
 /// A batch of two operations, one on each of the fixture's first two sheets.
 const ACROSS_TWO_SHEETS: &str = r#"[

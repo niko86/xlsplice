@@ -15,7 +15,8 @@ mod support;
 use std::path::PathBuf;
 
 use serde_json::json;
-use support::{Workspace, envelope, in_text, targets, under_json};
+use support::library::{envelope, in_text, targets, under_json};
+use support::workspace::Workspace;
 use xlsplice::answer;
 use xlsplice::batch::Destination;
 use xlsplice::batch::{OperationReport, Parts, Report, WriteType};
@@ -208,7 +209,7 @@ fn version_answers_the_crate_version_in_both_shapes() {
 #[test]
 fn a_verb_that_found_nothing_says_nothing_at_all_down_a_pipe() {
     let workspace = Workspace::new("empty");
-    let package = workspace.package("bare.xlsx", &support::workbook_xml("<sheets/>"));
+    let package = workspace.package("bare.xlsx", &support::workspace::workbook_xml("<sheets/>"));
 
     assert_eq!(in_text(verb::sheets(&package, &Trace::Off)).stdout, "");
     assert_eq!(

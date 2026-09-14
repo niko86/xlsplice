@@ -14,17 +14,16 @@ mod support;
 use std::path::{Path, PathBuf};
 
 use serde_json::json;
-use support::{
-    Workspace, assert_only_these_differ, assert_same_bytes, assert_spliced, copy_of, envelope,
-    exit_code, fixture, in_text, json, op, part_text, run, stderr, stdout, under_json,
+use support::binary::{exit_code, json, run, stderr, stdout};
+use support::container::{
+    SHEET1, WORKBOOK, assert_only_these_differ, assert_same_bytes, assert_spliced, part_text,
 };
+use support::library::{envelope, in_text, op, under_json};
+use support::workspace::{Workspace, copy_of, fixture};
 use xlsplice::batch::Batch;
 use xlsplice::batch::Destination;
 use xlsplice::batch::WriteType;
 use xlsplice::verb::{self, Trace};
-
-const WORKBOOK: &str = "xl/workbook.xml";
-const SHEET1: &str = "xl/worksheets/sheet1.xml";
 
 /// A package of one sheet whose workbook part carries `tail` after its
 /// sheets, which is where the calculation element goes and so where
@@ -36,11 +35,20 @@ fn workbook_ending_with(workspace: &Workspace, name: &str, tail: &str) -> PathBu
     workspace.zip(
         name,
         &[
-            (support::CONTENT_TYPES_PART, support::FEATURE_CONTENT_TYPES),
-            (support::ROOT_RELS_PART, support::ROOT_RELS),
-            (support::WORKBOOK_PART, &workbook),
-            (support::WORKBOOK_RELS_PART, support::WORKBOOK_RELS),
-            (support::SHEET1_PART, &part_text(&bare, SHEET1)),
+            (
+                support::container::CONTENT_TYPES,
+                support::workspace::FEATURE_CONTENT_TYPES_XML,
+            ),
+            (
+                support::container::ROOT_RELS,
+                support::workspace::ROOT_RELS_XML,
+            ),
+            (support::container::WORKBOOK, &workbook),
+            (
+                support::container::WORKBOOK_RELS,
+                support::workspace::WORKBOOK_RELS_XML,
+            ),
+            (support::container::SHEET1, &part_text(&bare, SHEET1)),
         ],
     )
 }

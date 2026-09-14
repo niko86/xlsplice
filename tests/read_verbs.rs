@@ -1,6 +1,6 @@
 //! Contract tests for `sheets` and `names`.
 //!
-//! Most of these call the library in process, through the verbs in `support`,
+//! Most of these call the library in process, through `xlsplice::verb`,
 //! and read what `render` put on the two streams: one envelope, or the
 //! tab-separated form a pipe gets. The aligned form is not here and never
 //! was — `render`'s own unit tests hold it, being able to say what a terminal
@@ -17,10 +17,11 @@ mod support;
 use std::path::Path;
 
 use serde_json::json;
-use support::{
-    CONTENT_TYPES, CONTENT_TYPES_PART, Copied, ROOT_RELS, ROOT_RELS_PART, WORKBOOK_PART, Workspace,
-    built, envelope, exit_code, feature_workbook, in_text, run, stderr, stdout, under_json,
-    workbook_xml,
+use support::binary::{exit_code, run, stderr, stdout};
+use support::container::{CONTENT_TYPES, ROOT_RELS, WORKBOOK};
+use support::library::{envelope, in_text, under_json};
+use support::workspace::{
+    CONTENT_TYPES_XML, Copied, ROOT_RELS_XML, Workspace, built, feature_workbook, workbook_xml,
 };
 use xlsplice::Result;
 use xlsplice::answer::Answer;
@@ -209,10 +210,7 @@ fn a_package_whose_root_relationships_are_missing_is_read_from_the_usual_place()
     let workbook = workbook_xml(r#"<sheets><sheet name="Only" sheetId="1"/></sheets>"#);
     let package = workspace.zip(
         "norels.xlsx",
-        &[
-            (CONTENT_TYPES_PART, CONTENT_TYPES),
-            (WORKBOOK_PART, &workbook),
-        ],
+        &[(CONTENT_TYPES, CONTENT_TYPES_XML), (WORKBOOK, &workbook)],
     );
 
     let out = in_text(verb::sheets(&package, &Trace::Off));
@@ -239,8 +237,8 @@ fn a_path_that_is_not_a_package_is_unreadable() {
             workspace.zip(
                 "dangling.xlsx",
                 &[
-                    (CONTENT_TYPES_PART, CONTENT_TYPES),
-                    (ROOT_RELS_PART, ROOT_RELS),
+                    (CONTENT_TYPES, CONTENT_TYPES_XML),
+                    (ROOT_RELS, ROOT_RELS_XML),
                 ],
             ),
         ),
@@ -249,9 +247,9 @@ fn a_path_that_is_not_a_package_is_unreadable() {
             workspace.zip(
                 "broken.xlsx",
                 &[
-                    (CONTENT_TYPES_PART, CONTENT_TYPES),
-                    (ROOT_RELS_PART, ROOT_RELS),
-                    (WORKBOOK_PART, "<workbook><sheets>"),
+                    (CONTENT_TYPES, CONTENT_TYPES_XML),
+                    (ROOT_RELS, ROOT_RELS_XML),
+                    (WORKBOOK, "<workbook><sheets>"),
                 ],
             ),
         ),

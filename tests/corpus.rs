@@ -31,8 +31,9 @@ mod support;
 
 use std::path::{Path, PathBuf};
 
+use support::container::{assert_nothing_outside, compare};
 use support::corpus::{self, Case};
-use support::{Workspace, assert_nothing_outside, compare};
+use support::workspace::Workspace;
 use xlsplice::batch::Report;
 
 /// The fixtures run everywhere, corpus or no corpus, which is what says the
@@ -45,7 +46,7 @@ fn the_fixed_operation_set_holds_the_guarantee_over_every_fixture() {
         "feature.xlsx",
         "dated-row.xlsx",
     ] {
-        holds_the_guarantee(&support::fixture(name));
+        holds_the_guarantee(&support::workspace::fixture(name));
     }
 }
 
@@ -73,7 +74,7 @@ fn the_fixed_operation_set_holds_the_guarantee_over_every_corpus_package() {
 #[test]
 fn nothing_a_case_writes_lands_inside_the_repository() {
     let workspace = Workspace::new("outside");
-    let package = workspace.copy_from(&support::fixture("plain.xlsx"));
+    let package = workspace.copy_from(&support::workspace::fixture("plain.xlsx"));
 
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
     assert!(
@@ -106,7 +107,7 @@ fn without_the_variable_there_is_no_corpus_to_run_over() {
 /// is a failure rather than a suite that got shorter.
 #[test]
 fn the_fixed_set_is_the_eight_operations_the_spec_names() {
-    let planned: Vec<String> = corpus::cases(&support::fixture("feature.xlsx"))
+    let planned: Vec<String> = corpus::cases(&support::workspace::fixture("feature.xlsx"))
         .into_iter()
         .map(|case| case.label)
         .collect();
@@ -131,7 +132,7 @@ fn the_fixed_set_is_the_eight_operations_the_spec_names() {
 /// sits in, one the sheet does not hold, and one in a row it does not hold.
 #[test]
 fn the_cells_a_package_is_written_at_are_a_present_one_and_two_absent_ones() {
-    let writable = corpus::writable(&support::fixture("feature.xlsx"))
+    let writable = corpus::writable(&support::workspace::fixture("feature.xlsx"))
         .expect("the feature fixture holds a cell that can be written to");
 
     assert_eq!(writable.sheet, "Inputs");
@@ -213,7 +214,7 @@ fn a_sheet_holding_cells_is_preferred_to_one_holding_none() {
         &workspace,
         "mixed.xlsx",
         &empty_sheet(),
-        support::NOTES_SHEET,
+        support::workspace::NOTES_SHEET_XML,
     );
 
     let writable = corpus::writable(&package).expect("the second sheet holds a cell");
@@ -230,7 +231,12 @@ fn a_sheet_holding_cells_is_preferred_to_one_holding_none() {
 #[test]
 fn a_sheet_carrying_a_table_is_passed_over_while_another_sheet_will_do() {
     let workspace = Workspace::new("tables");
-    let package = two_sheets(&workspace, "tabled.xlsx", &tabled(), support::NOTES_SHEET);
+    let package = two_sheets(
+        &workspace,
+        "tabled.xlsx",
+        &tabled(),
+        support::workspace::NOTES_SHEET_XML,
+    );
 
     let writable = corpus::writable(&package).expect("the second sheet holds a cell");
 
@@ -258,12 +264,24 @@ fn two_sheets(workspace: &Workspace, name: &str, first: &str, second: &str) -> P
     workspace.zip(
         name,
         &[
-            (support::CONTENT_TYPES_PART, support::FEATURE_CONTENT_TYPES),
-            (support::ROOT_RELS_PART, support::ROOT_RELS),
-            (support::WORKBOOK_PART, &support::feature_workbook()),
-            (support::WORKBOOK_RELS_PART, support::WORKBOOK_RELS),
-            (support::SHEET1_PART, first),
-            (support::SHEET2_PART, second),
+            (
+                support::container::CONTENT_TYPES,
+                support::workspace::FEATURE_CONTENT_TYPES_XML,
+            ),
+            (
+                support::container::ROOT_RELS,
+                support::workspace::ROOT_RELS_XML,
+            ),
+            (
+                support::container::WORKBOOK,
+                &support::workspace::feature_workbook(),
+            ),
+            (
+                support::container::WORKBOOK_RELS,
+                support::workspace::WORKBOOK_RELS_XML,
+            ),
+            (support::container::SHEET1, first),
+            (support::container::SHEET2, second),
         ],
     )
 }

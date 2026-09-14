@@ -1,6 +1,6 @@
 //! Contract tests for `set`.
 //!
-//! Most of these call the library in process, through the verbs in `support`,
+//! Most of these call the library in process, through `xlsplice::verb`,
 //! and then ask two questions of the package left behind: which parts differ
 //! from the fixture, answered by the comparator in `support`, and what the
 //! worksheet became, answered against bytes the test writes out by hand.
@@ -20,17 +20,17 @@ mod support;
 
 use std::path::{Path, PathBuf};
 
-use support::{
-    assert_only_these_differ, assert_same_bytes, assert_same_parts, assert_spliced, copy_of,
-    envelope, exit_code, files_in, fixture, in_text, part, part_text, run, stderr, targets,
-    under_json,
+use support::binary::{exit_code, run, stderr};
+use support::container::{
+    SHARED_STRINGS, SHEET1, assert_only_these_differ, assert_same_bytes, assert_same_parts,
+    assert_spliced, files_in, part, part_text,
 };
+use support::library::{envelope, in_text, targets, under_json};
+use support::workspace::{copy_of, fixture};
 use xlsplice::batch::Destination;
 use xlsplice::batch::WriteType;
 use xlsplice::verb::{self, Trace};
 
-const SHEET1: &str = "xl/worksheets/sheet1.xml";
-const SHARED_STRINGS: &str = "xl/sharedStrings.xml";
 const VBA: &str = "xl/vbaProject.bin";
 
 /// A `set` that must succeed, and the envelope it answers with.
@@ -633,7 +633,7 @@ fn the_help_lists_every_operand_and_flag_set_takes() {
     let out = run(&["set", "--help"]);
 
     assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
-    let help = support::stdout(&out);
+    let help = support::binary::stdout(&out);
     for wanted in ["FILE", "TARGET", "VALUE", "--type", "--out", "--dry-run"] {
         assert!(
             help.contains(wanted),
@@ -658,7 +658,7 @@ fn a_type_outside_the_ones_offered_is_rejected_before_the_package_is_opened() {
 
     assert_eq!(exit_code(&out), 2);
     assert_eq!(
-        support::json(&out)["error"]["code"],
+        support::binary::json(&out)["error"]["code"],
         serde_json::json!("usage")
     );
 }

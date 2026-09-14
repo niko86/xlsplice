@@ -13,19 +13,17 @@
 mod support;
 
 use serde_json::json;
-use support::{
-    Workspace, assert_only_these_differ, assert_same_bytes, assert_spliced, copy_of, envelope,
-    exit_code, fixture, in_text, json, op, part, part_text, run, stderr, stdout, timestamp,
-    under_json,
+use support::binary::{exit_code, json, run, stderr, stdout};
+use support::container::{
+    CONTENT_TYPES, CUSTOM_PROPERTIES, ROOT_RELS, assert_only_these_differ, assert_same_bytes,
+    assert_spliced, part, part_text, timestamp,
 };
+use support::library::{envelope, in_text, op, under_json};
+use support::workspace::{Workspace, copy_of, fixture};
 use xlsplice::batch::Batch;
 use xlsplice::batch::Destination;
 use xlsplice::batch::WriteType;
 use xlsplice::verb::{self, Trace};
-
-const CUSTOM: &str = "docProps/custom.xml";
-const CONTENT_TYPES: &str = "[Content_Types].xml";
-const ROOT_RELS: &str = "_rels/.rels";
 
 /// What `props get FILE --json` reports.
 fn reported(package: &std::path::Path) -> serde_json::Value {
@@ -129,13 +127,13 @@ fn writing_each_type_over_one_already_there_keeps_its_identifier() {
         assert_eq!(out.exit, 0, "{name}: {}", out.stdout);
         assert_eq!(
             envelope(&out)["parts"]["changed"],
-            json!([CUSTOM]),
+            json!([CUSTOM_PROPERTIES]),
             "{name}"
         );
-        assert_only_these_differ(&fixture("feature.xlsx"), &package, &[CUSTOM]);
+        assert_only_these_differ(&fixture("feature.xlsx"), &package, &[CUSTOM_PROPERTIES]);
         assert_spliced(
-            &part_text(&fixture("feature.xlsx"), CUSTOM),
-            &part_text(&package, CUSTOM),
+            &part_text(&fixture("feature.xlsx"), CUSTOM_PROPERTIES),
+            &part_text(&package, CUSTOM_PROPERTIES),
             was,
             becomes,
         );
@@ -185,10 +183,10 @@ fn a_property_that_is_not_there_is_added_after_the_last_with_the_next_identifier
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
-    assert_only_these_differ(&fixture("feature.xlsx"), &package, &[CUSTOM]);
+    assert_only_these_differ(&fixture("feature.xlsx"), &package, &[CUSTOM_PROPERTIES]);
     assert_spliced(
-        &part_text(&fixture("feature.xlsx"), CUSTOM),
-        &part_text(&package, CUSTOM),
+        &part_text(&fixture("feature.xlsx"), CUSTOM_PROPERTIES),
+        &part_text(&package, CUSTOM_PROPERTIES),
         "</Properties>",
         concat!(
             r#"<property fmtid="{D5CDD505-2E9C-101B-9397-08002B2CF9AE}" pid="6" "#,
@@ -217,7 +215,7 @@ fn several_properties_added_in_one_batch_take_consecutive_identifiers() {
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
-    let written = part_text(&package, CUSTOM);
+    let written = part_text(&package, CUSTOM_PROPERTIES);
     assert!(written.contains(r#"pid="6" name="One"#), "{written}");
     assert!(written.contains(r#"pid="7" name="Two"#), "{written}");
     assert_eq!(
@@ -251,20 +249,20 @@ fn setting_on_a_package_with_no_part_adds_the_part_and_both_declarations() {
         envelope(&out)["parts"],
         json!({
             "changed": [CONTENT_TYPES, ROOT_RELS],
-            "added": [CUSTOM],
+            "added": [CUSTOM_PROPERTIES],
             "removed": [],
         })
     );
-    let comparison = support::compare(&fixture("plain.xlsx"), &package);
+    let comparison = support::container::compare(&fixture("plain.xlsx"), &package);
     assert_eq!(comparison.differs, [CONTENT_TYPES, ROOT_RELS]);
-    assert_eq!(comparison.added, [CUSTOM]);
+    assert_eq!(comparison.added, [CUSTOM_PROPERTIES]);
     assert_eq!(comparison.removed, Vec::<String>::new());
     assert!(
         comparison.order_kept,
         "the parts already there did not move"
     );
     assert_eq!(
-        part_text(&package, CUSTOM),
+        part_text(&package, CUSTOM_PROPERTIES),
         concat!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n",
             "<Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/",
@@ -312,13 +310,16 @@ fn a_created_part_is_the_last_entry_and_carries_the_zip_epoch() {
     ));
 
     assert_eq!(
-        support::parts(&package)
+        support::container::parts(&package)
             .last()
             .expect("the package holds parts")
             .path,
-        CUSTOM
+        CUSTOM_PROPERTIES
     );
-    assert_eq!(timestamp(&package, CUSTOM), "1980-01-01 00:00:00");
+    assert_eq!(
+        timestamp(&package, CUSTOM_PROPERTIES),
+        "1980-01-01 00:00:00"
+    );
     assert_eq!(
         timestamp(&package, "xl/workbook.xml"),
         timestamp(&fixture("plain.xlsx"), "xl/workbook.xml"),
@@ -346,7 +347,7 @@ fn several_properties_on_a_package_with_no_part_go_into_the_one_part() {
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
-    assert_eq!(envelope(&out)["parts"]["added"], json!([CUSTOM]));
+    assert_eq!(envelope(&out)["parts"]["added"], json!([CUSTOM_PROPERTIES]));
     assert_eq!(
         reported(&package),
         json!([
@@ -391,10 +392,10 @@ fn unsetting_takes_out_only_the_property_named() {
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
-    assert_only_these_differ(&fixture("feature.xlsx"), &package, &[CUSTOM]);
+    assert_only_these_differ(&fixture("feature.xlsx"), &package, &[CUSTOM_PROPERTIES]);
     assert_spliced(
-        &part_text(&fixture("feature.xlsx"), CUSTOM),
-        &part_text(&package, CUSTOM),
+        &part_text(&fixture("feature.xlsx"), CUSTOM_PROPERTIES),
+        &part_text(&package, CUSTOM_PROPERTIES),
         concat!(
             r#"<property fmtid="{D5CDD505-2E9C-101B-9397-08002B2CF9AE}" pid="4" "#,
             r#"name="Stamp.Flag"><vt:bool>true</vt:bool></property>"#
@@ -566,7 +567,7 @@ fn both_operations_work_through_apply() {
     ]);
 
     assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
-    assert_eq!(json(&out)["parts"]["changed"], json!([CUSTOM]));
+    assert_eq!(json(&out)["parts"]["changed"], json!([CUSTOM_PROPERTIES]));
     assert_eq!(
         reported(&package),
         json!([
@@ -624,7 +625,7 @@ fn a_dry_run_reports_what_would_change_and_writes_nothing() {
     assert_eq!(out.exit, 0, "{}", out.stdout);
     let body = envelope(&out);
     assert_eq!(body["dry_run"], json!(true));
-    assert_eq!(body["parts"]["changed"], json!([CUSTOM]));
+    assert_eq!(body["parts"]["changed"], json!([CUSTOM_PROPERTIES]));
     assert_same_bytes(&fixture("feature.xlsx"), &package);
 }
 
@@ -720,7 +721,7 @@ fn a_cell_write_does_not_touch_the_properties() {
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
     assert_eq!(
-        part(&package, CUSTOM),
-        part(&fixture("feature.xlsx"), CUSTOM)
+        part(&package, CUSTOM_PROPERTIES),
+        part(&fixture("feature.xlsx"), CUSTOM_PROPERTIES)
     );
 }

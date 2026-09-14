@@ -14,7 +14,8 @@ mod support;
 use std::path::Path;
 
 use serde_json::json;
-use support::{Workspace, exit_code, json, run, run_in, stderr, stdout};
+use support::binary::{exit_code, json, run, run_in, stderr, stdout};
+use support::workspace::Workspace;
 use xlsplice::error::ErrorCode;
 use xlsplice::help::Topic;
 

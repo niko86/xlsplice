@@ -14,16 +14,16 @@ mod support;
 use std::path::PathBuf;
 
 use serde_json::json;
-use support::{
-    Workspace, assert_only_these_differ, assert_same_bytes, assert_spliced, copy_of, envelope,
-    exit_code, fixture, json, op, part_text, run, stderr, under_json,
+use support::binary::{exit_code, json, run, stderr};
+use support::container::{
+    SHEET1, assert_only_these_differ, assert_same_bytes, assert_spliced, part_text,
 };
+use support::library::{envelope, op, under_json};
+use support::workspace::{Workspace, copy_of, fixture};
 use xlsplice::batch::Batch;
 use xlsplice::batch::Destination;
 use xlsplice::batch::WriteType;
 use xlsplice::verb::{self, Trace};
-
-const SHEET1: &str = "xl/worksheets/sheet1.xml";
 
 /// Write a number into `target` and give back the worksheet part as it was
 /// left, having asserted the write landed.
@@ -55,11 +55,23 @@ fn package_with(workspace: &Workspace, name: &str, sheet: &str) -> PathBuf {
     workspace.zip(
         name,
         &[
-            (support::CONTENT_TYPES_PART, support::FEATURE_CONTENT_TYPES),
-            (support::ROOT_RELS_PART, support::ROOT_RELS),
-            (support::WORKBOOK_PART, &part_text(&bare, "xl/workbook.xml")),
-            (support::WORKBOOK_RELS_PART, support::WORKBOOK_RELS),
-            (support::SHEET1_PART, sheet),
+            (
+                support::container::CONTENT_TYPES,
+                support::workspace::FEATURE_CONTENT_TYPES_XML,
+            ),
+            (
+                support::container::ROOT_RELS,
+                support::workspace::ROOT_RELS_XML,
+            ),
+            (
+                support::container::WORKBOOK,
+                &part_text(&bare, "xl/workbook.xml"),
+            ),
+            (
+                support::container::WORKBOOK_RELS,
+                support::workspace::WORKBOOK_RELS_XML,
+            ),
+            (support::container::SHEET1, sheet),
         ],
     )
 }

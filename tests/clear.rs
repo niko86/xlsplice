@@ -8,17 +8,16 @@ mod support;
 
 use std::path::Path;
 
-use support::{
-    assert_only_these_differ, assert_same_bytes, assert_spliced, copy_of, envelope, exit_code,
-    fixture, in_text, op, part_text, run, stderr, under_json,
+use support::binary::{exit_code, run, stderr};
+use support::container::{
+    SHEET1, SHEET2, assert_only_these_differ, assert_same_bytes, assert_spliced, part_text,
 };
+use support::library::{envelope, in_text, op, under_json};
+use support::workspace::{copy_of, fixture};
 use xlsplice::batch::Batch;
 use xlsplice::batch::Destination;
 use xlsplice::batch::WriteType;
 use xlsplice::verb::{self, Trace};
-
-const SHEET1: &str = "xl/worksheets/sheet1.xml";
-const SHEET2: &str = "xl/worksheets/sheet2.xml";
 
 /// A `clear` that must succeed, and the envelope it answers with.
 fn clear(package: &Path, target: &str) -> serde_json::Value {
@@ -257,7 +256,7 @@ fn the_help_lists_the_operands_and_the_writing_flags() {
     let out = run(&["clear", "--help"]);
 
     assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
-    let help = support::stdout(&out);
+    let help = support::binary::stdout(&out);
     for wanted in ["FILE", "TARGET", "--out", "--dry-run"] {
         assert!(
             help.contains(wanted),

@@ -14,19 +14,17 @@ mod support;
 
 use std::path::{Path, PathBuf};
 
-use support::{
-    Workspace, assert_only_these_differ, assert_same_bytes, assert_spliced, copy_of, envelope,
-    exit_code, fixture, op, part_text, run, stderr, targets, under_json,
+use support::binary::{exit_code, run, stderr};
+use support::container::{
+    CALC_CHAIN, CONTENT_TYPES, SHEET1, WORKBOOK_RELS, assert_only_these_differ, assert_same_bytes,
+    assert_spliced, part_text,
 };
+use support::library::{envelope, op, targets, under_json};
+use support::workspace::{Workspace, copy_of, fixture};
 use xlsplice::batch::Batch;
 use xlsplice::batch::Destination;
 use xlsplice::batch::WriteType;
 use xlsplice::verb::{self, Trace};
-
-const SHEET1: &str = "xl/worksheets/sheet1.xml";
-const CHAIN: &str = "xl/calcChain.xml";
-const CONTENT_TYPES: &str = "[Content_Types].xml";
-const WORKBOOK_RELS: &str = "xl/_rels/workbook.xml.rels";
 
 /// A package holding one formula, with a calc chain of one entry, the
 /// relationship that reaches it and its content-type override. Built in
@@ -212,14 +210,14 @@ fn the_calc_chain_loses_exactly_that_cell_and_nothing_else_moves() {
     assert_eq!(out.exit, 0, "{}", out.stdout);
     assert_eq!(
         envelope(&out)["parts"],
-        serde_json::json!({"changed": [CHAIN, SHEET1], "added": [], "removed": []})
+        serde_json::json!({"changed": [CALC_CHAIN, SHEET1], "added": [], "removed": []})
     );
     // The comparator lists parts in container order, where the worksheet comes
     // first; the report lists them in path order, where the chain does.
-    assert_only_these_differ(&fixture("feature.xlsx"), &package, &[SHEET1, CHAIN]);
+    assert_only_these_differ(&fixture("feature.xlsx"), &package, &[SHEET1, CALC_CHAIN]);
     assert_spliced(
-        &part_text(&fixture("feature.xlsx"), CHAIN),
-        &part_text(&package, CHAIN),
+        &part_text(&fixture("feature.xlsx"), CALC_CHAIN),
+        &part_text(&package, CALC_CHAIN),
         r#"<c r="D1" i="1"/>"#,
         "",
     );
@@ -237,7 +235,7 @@ fn the_calc_chain_loses_exactly_that_cell_and_nothing_else_moves() {
 fn emptying_the_chain_removes_the_part_its_relationship_and_its_override() {
     let workspace = Workspace::new("chain-emptied");
     let package = one_chained_formula(&workspace);
-    let before = support::parts(&package).len();
+    let before = support::container::parts(&package).len();
 
     let out = under_json(verb::run(
         &package,
@@ -256,15 +254,15 @@ fn emptying_the_chain_removes_the_part_its_relationship_and_its_override() {
     assert_eq!(out.exit, 0, "{}", out.stdout);
     assert_eq!(
         envelope(&out)["parts"]["removed"],
-        serde_json::json!([CHAIN]),
+        serde_json::json!([CALC_CHAIN]),
         "the report says the part went"
     );
-    let now: Vec<String> = support::parts(&package)
+    let now: Vec<String> = support::container::parts(&package)
         .into_iter()
         .map(|part| part.path)
         .collect();
     assert_eq!(now.len(), before - 1, "one part fewer: {now:?}");
-    assert!(!now.contains(&CHAIN.to_owned()), "{now:?}");
+    assert!(!now.contains(&CALC_CHAIN.to_owned()), "{now:?}");
     assert!(
         !part_text(&package, CONTENT_TYPES).contains("calcChain"),
         "the content type went with it: {}",
@@ -302,13 +300,13 @@ fn a_batch_that_empties_the_chain_between_its_operations_still_removes_it() {
     assert_eq!(out.exit, 0, "{}", out.stdout);
     assert_eq!(
         envelope(&out)["parts"]["removed"],
-        serde_json::json!([CHAIN]),
+        serde_json::json!([CALC_CHAIN]),
         "neither operation emptied it alone, and together they did"
     );
     assert!(
-        !support::parts(&package)
+        !support::container::parts(&package)
             .iter()
-            .any(|part| part.path == CHAIN)
+            .any(|part| part.path == CALC_CHAIN)
     );
 }
 
@@ -392,7 +390,7 @@ fn two_replacements_take_two_entries_out_of_one_chain() {
     ));
 
     assert_eq!(out.exit, 0, "{}", out.stdout);
-    let chain = part_text(&package, CHAIN);
+    let chain = part_text(&package, CALC_CHAIN);
     assert!(!chain.contains(r#"r="D1""#), "{chain}");
     assert!(!chain.contains(r#"r="E1""#), "{chain}");
     assert_eq!(chain.matches("<c ").count(), 4, "{chain}");
@@ -419,7 +417,7 @@ fn the_flag_works_from_the_command_line() {
 
     assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
     assert!(part_text(&package, SHEET1).contains(r#"<c r="D1"><v>5</v></c>"#));
-    assert!(!part_text(&package, CHAIN).contains(r#"r="D1""#));
+    assert!(!part_text(&package, CALC_CHAIN).contains(r#"r="D1""#));
 }
 
 #[test]
@@ -429,7 +427,7 @@ fn both_writing_verbs_list_the_flag_in_their_help() {
 
         assert_eq!(exit_code(&out), 0, "{verb}: {}", stderr(&out));
         assert!(
-            support::stdout(&out).contains("--replace-formula"),
+            support::binary::stdout(&out).contains("--replace-formula"),
             "{verb} --help must list the flag"
         );
     }
@@ -439,7 +437,7 @@ fn both_writing_verbs_list_the_flag_in_their_help() {
 #[test]
 fn apply_takes_no_flag_of_its_own() {
     assert!(
-        !support::stdout(&run(&["apply", "--help"])).contains("--replace-formula"),
+        !support::binary::stdout(&run(&["apply", "--help"])).contains("--replace-formula"),
         "a batch says it per operation"
     );
 }

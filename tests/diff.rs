@@ -11,16 +11,14 @@ mod support;
 use std::path::PathBuf;
 
 use serde_json::json;
-use support::{Copied, Workspace, copy_of, exit_code, fixture, json, op, run, stderr, stdout};
+use support::binary::{exit_code, json, run, stderr, stdout};
+use support::container::{CONTENT_TYPES, CUSTOM_PROPERTIES, ROOT_RELS, SHEET1};
+use support::library::op;
+use support::workspace::{Copied, Workspace, copy_of, fixture};
 use xlsplice::batch::Batch;
 use xlsplice::batch::Destination;
 use xlsplice::batch::WriteType;
 use xlsplice::verb::{self, Trace};
-
-const SHEET1: &str = "xl/worksheets/sheet1.xml";
-const CUSTOM: &str = "docProps/custom.xml";
-const CONTENT_TYPES: &str = "[Content_Types].xml";
-const ROOT_RELS: &str = "_rels/.rels";
 
 /// A workspace holding a writable copy of `name` and the untouched fixture to
 /// compare it against.
@@ -87,7 +85,7 @@ fn a_package_against_the_same_file_is_identical() {
 #[test]
 fn a_write_shows_up_as_exactly_the_part_it_touched() {
     let (before, after) = copies("written", "feature.xlsx");
-    let out = support::under_json(verb::set(
+    let out = support::library::under_json(verb::set(
         &after,
         "Inputs!A1",
         WriteType::Number,
@@ -110,7 +108,7 @@ fn a_write_shows_up_as_exactly_the_part_it_touched() {
 #[test]
 fn a_part_a_write_added_is_reported_as_added() {
     let (before, after) = copies("added", "plain.xlsx");
-    let out = support::under_json(verb::run(
+    let out = support::library::under_json(verb::run(
         &after,
         &Batch {
             operations: vec![op::stamping("Reference", WriteType::Text, "R-1")],
@@ -128,7 +126,7 @@ fn a_part_a_write_added_is_reported_as_added() {
         [
             (CONTENT_TYPES.to_owned(), "differs".to_owned()),
             (ROOT_RELS.to_owned(), "differs".to_owned()),
-            (CUSTOM.to_owned(), "added".to_owned()),
+            (CUSTOM_PROPERTIES.to_owned(), "added".to_owned()),
         ],
         "the added part comes last, because the package it was added to had it last"
     );
@@ -139,7 +137,7 @@ fn a_part_a_write_added_is_reported_as_added() {
 #[test]
 fn a_part_only_the_first_package_holds_is_reported_as_removed() {
     let (before, after) = copies("removed", "plain.xlsx");
-    let out = support::under_json(verb::run(
+    let out = support::library::under_json(verb::run(
         &after,
         &Batch {
             operations: vec![op::stamping("Reference", WriteType::Text, "R-1")],
@@ -157,7 +155,7 @@ fn a_part_only_the_first_package_holds_is_reported_as_removed() {
         [
             (CONTENT_TYPES.to_owned(), "differs".to_owned()),
             (ROOT_RELS.to_owned(), "differs".to_owned()),
-            (CUSTOM.to_owned(), "removed".to_owned()),
+            (CUSTOM_PROPERTIES.to_owned(), "removed".to_owned()),
         ]
     );
 }
@@ -167,7 +165,7 @@ fn a_part_only_the_first_package_holds_is_reported_as_removed() {
 #[test]
 fn the_exit_code_is_zero_either_way_without_the_flag() {
     let (before, after) = copies("no-flag", "feature.xlsx");
-    support::under_json(verb::set(
+    support::library::under_json(verb::set(
         &after,
         "Inputs!A1",
         WriteType::Number,
@@ -193,7 +191,7 @@ fn the_exit_code_is_zero_either_way_without_the_flag() {
 #[test]
 fn the_flag_exits_one_on_a_difference_and_zero_without_one() {
     let (before, after) = copies("flag", "feature.xlsx");
-    support::under_json(verb::set(
+    support::library::under_json(verb::set(
         &after,
         "Inputs!A1",
         WriteType::Number,
@@ -225,7 +223,7 @@ fn the_flag_exits_one_on_a_difference_and_zero_without_one() {
 #[test]
 fn a_difference_under_the_flag_is_still_a_successful_answer() {
     let (before, after) = copies("flag-json", "feature.xlsx");
-    support::under_json(verb::set(
+    support::library::under_json(verb::set(
         &after,
         "Inputs!A1",
         WriteType::Number,
@@ -331,7 +329,7 @@ fn the_rows_are_one_part_each_tab_separated_down_a_pipe() {
 #[test]
 fn neither_package_is_touched() {
     let (before, after) = copies("untouched", "feature.xlsx");
-    support::under_json(verb::set(
+    support::library::under_json(verb::set(
         &after,
         "Inputs!A1",
         WriteType::Number,
@@ -355,7 +353,7 @@ fn neither_package_is_touched() {
 
     assert_eq!(std::fs::read(&before).expect("readable"), was);
     assert_eq!(std::fs::read(&after).expect("readable"), then);
-    support::assert_same_bytes(&fixture("feature.xlsx"), &before);
+    support::container::assert_same_bytes(&fixture("feature.xlsx"), &before);
 }
 
 #[test]

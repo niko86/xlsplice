@@ -16,7 +16,7 @@
 
 mod support;
 
-use support::{exit_code, json, run, stderr, stdout};
+use support::binary::{exit_code, json, run, stderr, stdout};
 
 #[test]
 fn an_unknown_flag_is_a_usage_error_in_text_on_stderr() {

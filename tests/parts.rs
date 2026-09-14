@@ -19,11 +19,9 @@ mod support;
 
 use std::collections::BTreeMap;
 
-use support::{Copied, built, compare, part, part_text, timestamp};
+use support::container::{CUSTOM_PROPERTIES, SHEET3, compare, part, part_text, timestamp};
+use support::workspace::{Copied, built};
 use xlsplice::package::{Content, Package};
-
-const SHEET3: &str = "xl/worksheets/sheet3.xml";
-const CREATED: &str = "docProps/custom.xml";
 
 /// The zip epoch, which is the earliest moment a container can spell and the
 /// stamp a created part takes, so that two runs of one batch produce the same
@@ -43,14 +41,18 @@ fn rebuilt(label: &str, edits: &BTreeMap<String, Content>) -> (Copied, std::path
 #[test]
 fn a_created_part_is_added_at_the_zip_epoch_and_every_other_part_is_copied_raw() {
     let edits = BTreeMap::from([(
-        CREATED.to_owned(),
+        CUSTOM_PROPERTIES.to_owned(),
         Content::Bytes(b"<properties/>".to_vec()),
     )]);
 
     let (before, after) = rebuilt("create", &edits);
 
     let comparison = compare(&before, &after);
-    assert_eq!(comparison.added, [CREATED], "the part was created");
+    assert_eq!(
+        comparison.added,
+        [CUSTOM_PROPERTIES],
+        "the part was created"
+    );
     assert_eq!(
         comparison.differs,
         Vec::<String>::new(),
@@ -58,18 +60,18 @@ fn a_created_part_is_added_at_the_zip_epoch_and_every_other_part_is_copied_raw()
     );
     assert_eq!(
         comparison.identical.len(),
-        support::parts(&before).len(),
+        support::container::parts(&before).len(),
         "every part that was there was copied raw"
     );
     assert!(comparison.order_kept, "the parts were reordered");
-    assert_eq!(part_text(&after, CREATED), "<properties/>");
+    assert_eq!(part_text(&after, CUSTOM_PROPERTIES), "<properties/>");
     assert_eq!(
-        timestamp(&after, CREATED),
+        timestamp(&after, CUSTOM_PROPERTIES),
         ZIP_EPOCH,
         "a created part carries the one stamp a rebuild can give it"
     );
     assert_eq!(
-        part(&after, CREATED).method,
+        part(&after, CUSTOM_PROPERTIES).method,
         "Deflated",
         "a created part is stored the way Excel stores one"
     );
@@ -95,7 +97,7 @@ fn a_removed_part_is_left_out_and_every_other_part_is_copied_raw() {
     );
     assert_eq!(
         comparison.identical.len(),
-        support::parts(&before).len() - 1,
+        support::container::parts(&before).len() - 1,
         "every part that stayed was copied raw"
     );
     assert!(comparison.order_kept, "the parts were reordered");

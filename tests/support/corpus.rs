@@ -265,7 +265,11 @@ pub fn cases(package: &Path) -> Vec<Case> {
 /// cell, and a batch naming a cell twice is refused (ADR-0004), so what is
 /// put to the package is what one operation does to it rather than what eight
 /// do to each other.
-pub fn applied(workspace: &super::Workspace, package: &Path, case: &Case) -> (PathBuf, Report) {
+pub fn applied(
+    workspace: &super::workspace::Workspace,
+    package: &Path,
+    case: &Case,
+) -> (PathBuf, Report) {
     let copy = workspace.copy_from(package);
     let report = batch::run(
         &copy,
@@ -328,7 +332,7 @@ pub fn writable(package: &Path) -> Option<Writable> {
             let Ok(resolved) = resolve(&open, &rels, &workbook, &named) else {
                 continue;
             };
-            let text = super::part_text(package, &resolved.part);
+            let text = super::container::part_text(package, &resolved.part);
             if avoiding_tables && text.contains("<tableParts") {
                 continue;
             }

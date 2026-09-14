@@ -1,6 +1,6 @@
 //! Contract tests for `get`.
 //!
-//! Most of these call the library in process, through the verbs in `support`,
+//! Most of these call the library in process, through `xlsplice::verb`,
 //! and read what `render` put on the two streams: one envelope, or the
 //! tab-separated form a pipe gets.
 //!
@@ -15,10 +15,9 @@ mod support;
 use std::path::{Path, PathBuf};
 
 use serde_json::json;
-use support::{
-    Copied, Workspace, built, envelope, exit_code, in_text, run, stderr, targets, under_json,
-    workbook_xml,
-};
+use support::binary::{exit_code, run, stderr};
+use support::library::{envelope, in_text, targets, under_json};
+use support::workspace::{Copied, Workspace, built, workbook_xml};
 use xlsplice::render::Rendered;
 use xlsplice::verb::{self, Trace};
 
@@ -203,15 +202,24 @@ fn dataless(workspace: &Workspace) -> PathBuf {
     workspace.zip(
         "dataless.xlsx",
         &[
-            (support::CONTENT_TYPES_PART, support::FEATURE_CONTENT_TYPES),
-            (support::ROOT_RELS_PART, support::ROOT_RELS),
             (
-                support::WORKBOOK_PART,
-                &support::part_text(&bare, support::WORKBOOK_PART),
+                support::container::CONTENT_TYPES,
+                support::workspace::FEATURE_CONTENT_TYPES_XML,
             ),
-            (support::WORKBOOK_RELS_PART, support::WORKBOOK_RELS),
             (
-                support::SHEET1_PART,
+                support::container::ROOT_RELS,
+                support::workspace::ROOT_RELS_XML,
+            ),
+            (
+                support::container::WORKBOOK,
+                &support::container::part_text(&bare, support::container::WORKBOOK),
+            ),
+            (
+                support::container::WORKBOOK_RELS,
+                support::workspace::WORKBOOK_RELS_XML,
+            ),
+            (
+                support::container::SHEET1,
                 &format!(
                     r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="{}"><dimension ref="A1"/></worksheet>"#,
@@ -549,16 +557,28 @@ fn a_sheet_whose_name_needs_quoting_is_addressed_and_reported_quoted() {
     let package = workspace.zip(
         "quoted.xlsx",
         &[
-            (support::CONTENT_TYPES_PART, support::CONTENT_TYPES),
-            (support::ROOT_RELS_PART, support::ROOT_RELS),
             (
-                support::WORKBOOK_PART,
+                support::container::CONTENT_TYPES,
+                support::workspace::CONTENT_TYPES_XML,
+            ),
+            (
+                support::container::ROOT_RELS,
+                support::workspace::ROOT_RELS_XML,
+            ),
+            (
+                support::container::WORKBOOK,
                 &workbook_xml(
                     r#"<sheets><sheet name="My Sheet" sheetId="1" r:id="rId1"/></sheets>"#,
                 ),
             ),
-            (support::WORKBOOK_RELS_PART, support::WORKBOOK_RELS),
-            (support::SHEET1_PART, support::NOTES_SHEET),
+            (
+                support::container::WORKBOOK_RELS,
+                support::workspace::WORKBOOK_RELS_XML,
+            ),
+            (
+                support::container::SHEET1,
+                support::workspace::NOTES_SHEET_XML,
+            ),
         ],
     );
 
@@ -601,7 +621,7 @@ fn the_double_dash_still_hands_the_operands_over() {
     ]);
 
     assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
-    assert_eq!(support::json(&out)["cells"][0]["value"], json!(1));
+    assert_eq!(support::binary::json(&out)["cells"][0]["value"], json!(1));
 }
 
 #[test]
@@ -624,8 +644,14 @@ fn quiet_and_verbose_move_stderr_only() {
     let loud = run(&["get", package, "Inputs!A1", "--verbose"]);
     let hushed = run(&["get", package, "Inputs!A1", "--quiet"]);
 
-    assert_eq!(support::stdout(&loud), support::stdout(&plain));
-    assert_eq!(support::stdout(&hushed), support::stdout(&plain));
+    assert_eq!(
+        support::binary::stdout(&loud),
+        support::binary::stdout(&plain)
+    );
+    assert_eq!(
+        support::binary::stdout(&hushed),
+        support::binary::stdout(&plain)
+    );
     assert!(!stderr(&loud).is_empty(), "--verbose must trace on stderr");
     assert_eq!(stderr(&hushed), "");
 }
@@ -648,12 +674,24 @@ fn a_sheet_whose_relationship_is_gone_is_not_found_rather_than_guessed_at() {
     let package = workspace.zip(
         "reordered.xlsx",
         &[
-            (support::CONTENT_TYPES_PART, support::FEATURE_CONTENT_TYPES),
-            (support::ROOT_RELS_PART, support::ROOT_RELS),
-            (support::WORKBOOK_PART, &workbook),
+            (
+                support::container::CONTENT_TYPES,
+                support::workspace::FEATURE_CONTENT_TYPES_XML,
+            ),
+            (
+                support::container::ROOT_RELS,
+                support::workspace::ROOT_RELS_XML,
+            ),
+            (support::container::WORKBOOK, &workbook),
             // The relationships that say which part is which sheet are gone.
-            (support::SHEET1_PART, support::INPUTS_SHEET),
-            (support::SHEET2_PART, support::NOTES_SHEET),
+            (
+                support::container::SHEET1,
+                support::workspace::INPUTS_SHEET_XML,
+            ),
+            (
+                support::container::SHEET2,
+                support::workspace::NOTES_SHEET_XML,
+            ),
         ],
     );
 
@@ -679,8 +717,8 @@ fn a_sheet_whose_relationship_is_gone_is_not_found_rather_than_guessed_at() {
 #[test]
 fn a_shared_string_table_the_relationships_do_not_name_is_still_found() {
     let workspace = Workspace::new("unnamed-table");
-    let workbook = support::feature_workbook();
-    let sheets_only = support::WORKBOOK_RELS
+    let workbook = support::workspace::feature_workbook();
+    let sheets_only = support::workspace::WORKBOOK_RELS_XML
         .lines()
         .filter(|line| !line.contains("sharedStrings"))
         .collect::<Vec<_>>()
@@ -688,12 +726,24 @@ fn a_shared_string_table_the_relationships_do_not_name_is_still_found() {
     let package = workspace.zip(
         "unnamed.xlsx",
         &[
-            (support::CONTENT_TYPES_PART, support::FEATURE_CONTENT_TYPES),
-            (support::ROOT_RELS_PART, support::ROOT_RELS),
-            (support::WORKBOOK_PART, &workbook),
-            (support::WORKBOOK_RELS_PART, &sheets_only),
-            (support::SHEET1_PART, support::INPUTS_SHEET),
-            (support::SHARED_STRINGS_PART, support::SHARED_STRINGS),
+            (
+                support::container::CONTENT_TYPES,
+                support::workspace::FEATURE_CONTENT_TYPES_XML,
+            ),
+            (
+                support::container::ROOT_RELS,
+                support::workspace::ROOT_RELS_XML,
+            ),
+            (support::container::WORKBOOK, &workbook),
+            (support::container::WORKBOOK_RELS, &sheets_only),
+            (
+                support::container::SHEET1,
+                support::workspace::INPUTS_SHEET_XML,
+            ),
+            (
+                support::container::SHARED_STRINGS,
+                support::workspace::SHARED_STRINGS_XML,
+            ),
         ],
     );
 

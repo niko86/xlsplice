@@ -57,9 +57,11 @@ mod support;
 
 use std::path::Path;
 
+use support::container::{SHEET1, part_text};
 use support::corpus;
+use support::library::op;
 use support::oracle::{Verdict, asked, decided, opened_by, requires};
-use support::{Workspace, copy_of, fixture, op, part_text};
+use support::workspace::{Workspace, copy_of, fixture};
 use xlsplice::batch::Batch;
 use xlsplice::batch::Destination;
 use xlsplice::batch::WriteType;
@@ -72,8 +74,6 @@ const FIXTURES: [&str; 4] = [
     "feature.xlsx",
     "dated-row.xlsx",
 ];
-
-const SHEET1: &str = "xl/worksheets/sheet1.xml";
 
 /// How many cases put a package in front of Excel. Counted rather than
 /// bounded, so that a case which stopped reaching Excel is as much a failure
@@ -417,7 +417,7 @@ fn a_package_whose_calc_chain_became_empty_opens_clean() {
     .expect("a licensed write over the one formula must land");
 
     assert!(
-        !support::parts(&path)
+        !support::container::parts(&path)
             .iter()
             .any(|part| part.path == "xl/calcChain.xml"),
         "the chain must have gone for this to be the case it is"
@@ -433,7 +433,7 @@ fn a_package_whose_calc_chain_became_empty_opens_clean() {
 fn a_created_custom_properties_part_opens_clean() {
     let path = copy_of("oracle-props", "plain.xlsx");
     assert!(
-        !support::parts(&path)
+        !support::container::parts(&path)
             .iter()
             .any(|part| part.path == "docProps/custom.xml"),
         "the plain fixture carries no custom properties, which is why it is this case"
@@ -513,8 +513,8 @@ fn a_write_into_a_macro_enabled_package_opens_clean() {
     )
     .expect("a write into a macro-enabled package must land");
     assert_eq!(
-        support::part(&path, "xl/vbaProject.bin"),
-        support::part(&fixture("macros.xlsm"), "xl/vbaProject.bin"),
+        support::container::part(&path, "xl/vbaProject.bin"),
+        support::container::part(&fixture("macros.xlsm"), "xl/vbaProject.bin"),
         "the project must have been copied raw for this to be the case it is"
     );
 

@@ -13,16 +13,14 @@ mod support;
 
 use std::path::{Path, PathBuf};
 
-use support::{
-    Workspace, assert_same_bytes, envelope, exit_code, fixture, op, part_text, run, stdout,
-    under_json,
-};
+use support::binary::{exit_code, run, stdout};
+use support::container::{SHEET1, assert_same_bytes, part_text};
+use support::library::{envelope, op, under_json};
+use support::workspace::{Workspace, fixture};
 use xlsplice::batch::Batch;
 use xlsplice::batch::Destination;
 use xlsplice::batch::WriteType;
 use xlsplice::verb::{self, Trace};
-
-const SHEET1: &str = "xl/worksheets/sheet1.xml";
 
 /// A package of one sheet holding one row, whose cells the test writes out.
 /// The shapes that matter here are ones Excel does not save, so no fixture

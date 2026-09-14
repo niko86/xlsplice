@@ -10,15 +10,13 @@ mod support;
 
 use std::path::Path;
 
-use support::{
-    Workspace, assert_same_bytes, copy_of, envelope, fixture, op, part_text, targets, under_json,
-};
+use support::container::{SHEET1, assert_same_bytes, part_text};
+use support::library::{envelope, op, targets, under_json};
+use support::workspace::{Workspace, copy_of, fixture};
 use xlsplice::batch::Batch;
 use xlsplice::batch::Destination;
 use xlsplice::batch::WriteType;
 use xlsplice::verb::{self, Trace};
-
-const SHEET1: &str = "xl/worksheets/sheet1.xml";
 
 /// The date cell of the plain fixture, which Excel saved holding the serial
 /// for 2026-09-11 under a date format.

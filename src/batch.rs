@@ -38,7 +38,10 @@
 //! belongs in the package, and how many properties are being added and which
 //! identifiers they take. Those are settled once, for the part, after the
 //! operations' edits are merged and before anything is written, and so is how
-//! many cells a row being put into a sheet holds.
+//! many cells a row being put into a sheet holds. Each is a settlement over
+//! [`Wanted`](crate::wanted::Wanted), which is what the batch wants written
+//! and who asked for it; the three there are are listed in [`settlements`],
+//! and what the whole of it comes to is worked out there too.
 //!
 //! A batch that would change nothing writes nothing. The container is rebuilt
 //! rather than copied byte for byte (ADR-0001), so rebuilding a package whose
@@ -64,6 +67,7 @@ use crate::reference::Address;
 use crate::relationships::{PACKAGE_ROOT, Relationships, part_or_conventional};
 use crate::splice::{self, Splice};
 use crate::target::{Resolution, resolve};
+use crate::wanted::{Applied, Settlement, Wanted};
 use crate::workbook::{DateSystem, Workbook};
 use crate::worksheet::{
     self, FormulaRole, Located, NewCell, Worksheet, Written, formula_of, value_splices,
@@ -457,14 +461,15 @@ impl PartEdit {
     /// merge, because two operations may both be done with a part; two
     /// creations merge only if they carry the same bytes. A part is spliced,
     /// created or removed, not two of the three.
-    fn and(self, other: &PartEdit) -> Option<PartEdit> {
+    pub(crate) fn and(&self, other: &PartEdit) -> Option<PartEdit> {
         match (self, other) {
-            (PartEdit::Splice(mut mine), PartEdit::Splice(theirs)) => {
-                mine.extend(theirs.iter().cloned());
-                Some(PartEdit::Splice(mine))
+            (PartEdit::Splice(mine), PartEdit::Splice(theirs)) => {
+                let mut both = mine.clone();
+                both.extend(theirs.iter().cloned());
+                Some(PartEdit::Splice(both))
             }
-            (PartEdit::Create(mine), PartEdit::Create(theirs)) if &mine == theirs => {
-                Some(PartEdit::Create(mine))
+            (PartEdit::Create(mine), PartEdit::Create(theirs)) if mine == theirs => {
+                Some(PartEdit::Create(mine.clone()))
             }
             (PartEdit::Remove, PartEdit::Remove) => Some(PartEdit::Remove),
             _ => None,
@@ -473,7 +478,7 @@ impl PartEdit {
 
     /// The splices this edit is, or none at all where it is another kind of
     /// edit. A part created or removed is not spliced, so it has none.
-    fn splices(&self) -> &[Splice] {
+    pub(crate) fn splices(&self) -> &[Splice] {
         match self {
             PartEdit::Splice(splices) => splices,
             PartEdit::Create(_) | PartEdit::Remove => &[],
@@ -901,78 +906,40 @@ fn reports(operations: &[Operation], asked: &[Asked], changed: &[bool]) -> Vec<O
         .collect()
 }
 
-/// What a batch's edits came to, before anything is written.
-struct Applied {
-    /// What each part the batch touched is to become.
-    content: BTreeMap<String, Content>,
-    /// Whether each operation changed a byte, by its place in the batch.
-    changed: Vec<bool>,
-    /// What to report about the parts.
-    parts: Parts,
+/// The three answers ADR-0004 settles once for the part, in the order they
+/// are run.
+///
+/// The order is not load-bearing and a test holds them to that: each reads a
+/// different corner of the package, only the first reads what the batch
+/// already wants, and no two of them write to a part the other reads. Two
+/// that both merge into a declaration part merge into one splice list, which
+/// `splice::apply` orders by where the splices land rather than by the order
+/// they arrived in. A fourth settlement joins the list; nothing else moves.
+fn settlements<R: Read + Seek>() -> [Settlement<R>; 3] {
+    [
+        withdraw_an_emptied_calc_chain,
+        add_the_new_properties,
+        put_the_new_rows_in,
+    ]
 }
 
 /// Work every operation's edits out into what each part is to become.
 ///
-/// A part is dealt with once, however many operations landed on it: it is
-/// read once, spliced once with all of their splices, and written once. The
-/// parts are taken in path order, which is the order the report lists them
-/// in.
+/// What the operations asked for is merged part by part, the batch-level
+/// questions are settled over that, and what the whole of it comes to is
+/// worked out once. Nothing here knows what any of the three settlements is
+/// about: they are answers to questions about parts, and a part is what they
+/// are handed.
 fn apply<R: Read + Seek>(
     opened: &mut Opened<R>,
     operations: &[Operation],
     asked: &[Asked],
 ) -> Result<Applied> {
-    let by_part = by_part(asked);
-    let mut wanted: BTreeMap<String, PartEdit> = BTreeMap::new();
-    for (part, edits) in &by_part {
-        wanted.insert(part.clone(), merged(part, edits)?);
+    let mut wanted = Wanted::of(operations, asked)?;
+    for settle in settlements() {
+        settle(opened, &mut wanted)?;
     }
-    let mut applied = Applied {
-        content: BTreeMap::new(),
-        changed: vec![false; asked.len()],
-        parts: Parts::default(),
-    };
-    withdraw_an_emptied_calc_chain(opened, &mut wanted)?;
-    add_the_new_properties(opened, operations, &mut wanted, &mut applied.changed)?;
-    put_the_new_rows_in(opened, asked, &mut wanted, &mut applied.changed)?;
-
-    for (part, edit) in wanted {
-        let edits = by_part.get(&part).map_or(&[][..], Vec::as_slice);
-        match edit {
-            PartEdit::Splice(all) => {
-                let xml = opened.text(&part)?;
-                spliced(&mut applied.changed, edits, xml);
-                let spliced = splice::apply(xml, &all)?;
-                if spliced != xml {
-                    applied.parts.changed.push(part.clone());
-                    applied
-                        .content
-                        .insert(part, Content::Bytes(spliced.into_bytes()));
-                }
-            }
-            PartEdit::Create(bytes) => {
-                if opened.has_part(&part) {
-                    return Err(Error::internal(format!(
-                        "part '{part}' is already in the package, so it cannot be created"
-                    )));
-                }
-                mark(&mut applied.changed, edits);
-                applied.parts.added.push(part.clone());
-                applied.content.insert(part, Content::Bytes(bytes));
-            }
-            PartEdit::Remove => {
-                if !opened.has_part(&part) {
-                    return Err(Error::internal(format!(
-                        "part '{part}' is not in the package, so it cannot be removed"
-                    )));
-                }
-                mark(&mut applied.changed, edits);
-                applied.parts.removed.push(part.clone());
-                applied.content.insert(part, Content::Gone);
-            }
-        }
-    }
-    Ok(applied)
+    wanted.into_applied(opened)
 }
 
 /// A calc chain with no entries left is not a calc chain, so it goes.
@@ -985,12 +952,12 @@ fn apply<R: Read + Seek>(
 /// the sort of inconsistency Excel offers to repair.
 fn withdraw_an_emptied_calc_chain<R: Read + Seek>(
     opened: &mut Opened<R>,
-    wanted: &mut BTreeMap<String, PartEdit>,
+    wanted: &mut Wanted,
 ) -> Result<()> {
     let Some(part) = opened.calc_chain() else {
         return Ok(());
     };
-    let Some(PartEdit::Splice(splices)) = wanted.get(&part) else {
+    let Some(PartEdit::Splice(splices)) = wanted.of_part(&part) else {
         return Ok(());
     };
     let left = {
@@ -1003,15 +970,9 @@ fn withdraw_an_emptied_calc_chain<R: Read + Seek>(
     }
 
     let owner = opened.workbook_part().to_owned();
-    for (declaring, splices) in declared::withdrawn(opened.package(), &owner, &part)? {
-        merge_into(
-            wanted,
-            declaring,
-            PartEdit::Splice(splices),
-            "the emptied calc chain",
-        )?;
-    }
-    wanted.insert(part, PartEdit::Remove);
+    let declarations = declared::withdrawn(opened.package(), &owner, &part)?;
+    wanted.merge_all(declarations, "the emptied calc chain")?;
+    wanted.withdraw(part);
     Ok(())
 }
 
@@ -1030,13 +991,11 @@ fn withdraw_an_emptied_calc_chain<R: Read + Seek>(
 /// of inconsistency Excel offers to repair.
 fn add_the_new_properties<R: Read + Seek>(
     opened: &mut Opened<R>,
-    operations: &[Operation],
-    wanted: &mut BTreeMap<String, PartEdit>,
-    changed: &mut [bool],
+    wanted: &mut Wanted,
 ) -> Result<()> {
     let (part, held) = opened.properties()?;
     let mut adding: Vec<(usize, &str, properties::Value)> = Vec::new();
-    for (index, operation) in operations.iter().enumerate() {
+    for (index, operation) in wanted.operations().iter().enumerate() {
         let Operation::PropsSet { name, .. } = operation else {
             continue;
         };
@@ -1075,21 +1034,13 @@ fn add_the_new_properties<R: Read + Seek>(
                 properties::CONTENT_TYPE,
                 properties::CUSTOM_PROPERTIES,
             )?;
-            let declaring_the_part = format!("the declaration of {part}");
-            for (declaring, splices) in declarations {
-                merge_into(
-                    wanted,
-                    declaring,
-                    PartEdit::Splice(splices),
-                    &declaring_the_part,
-                )?;
-            }
+            wanted.merge_all(declarations, &format!("the declaration of {part}"))?;
             PartEdit::Create(properties::part_holding(&new))
         }
     };
-    merge_into(wanted, part, edit, "the custom document properties")?;
+    wanted.merge(part, edit, "the custom document properties")?;
     for (index, _, _) in adding {
-        changed[index] = true;
+        wanted.credit(index);
     }
     Ok(())
 }
@@ -1105,14 +1056,9 @@ fn add_the_new_properties<R: Read + Seek>(
 ///
 /// The cells of one row go in in column order whatever order the batch named
 /// them in, because that is the order a row has to read in.
-fn put_the_new_rows_in<R: Read + Seek>(
-    opened: &mut Opened<R>,
-    asked: &[Asked],
-    wanted: &mut BTreeMap<String, PartEdit>,
-    changed: &mut [bool],
-) -> Result<()> {
+fn put_the_new_rows_in<R: Read + Seek>(opened: &mut Opened<R>, wanted: &mut Wanted) -> Result<()> {
     let mut by_row: BTreeMap<(String, u32), Vec<(usize, NewCell)>> = BTreeMap::new();
-    for (index, edits) in asked.iter().enumerate() {
+    for (index, edits) in wanted.asked().iter().enumerate() {
         if let (Some(at), Some(cell)) = (edits.at.as_ref(), edits.into_a_new_row.as_ref()) {
             by_row
                 .entry((at.part.clone(), cell.at.row()))
@@ -1136,97 +1082,16 @@ fn put_the_new_rows_in<R: Read + Seek>(
             };
             worksheet::row_inserted(data, xml, row, &cells).map_err(|err| err.within(&part))?
         };
-        merge_into(
-            wanted,
+        wanted.merge(
             part,
             PartEdit::Splice(vec![splice]),
             "the rows being put in",
         )?;
         for (index, _) in members {
-            changed[index] = true;
+            wanted.credit(index);
         }
     }
     Ok(())
-}
-
-/// Fold `edit` into what the batch already wants of `declaring`.
-///
-/// Two edits that disagree about what is being done to one part are a fault
-/// in how they were worked out rather than something the package can be wrong
-/// about, so the failure says which batch-level question was being answered
-/// when they met.
-fn merge_into(
-    wanted: &mut BTreeMap<String, PartEdit>,
-    declaring: String,
-    edit: PartEdit,
-    over: &str,
-) -> Result<()> {
-    let merged = match wanted.remove(&declaring) {
-        None => edit,
-        Some(already) => already.and(&edit).ok_or_else(|| {
-            Error::internal(format!(
-                "part '{declaring}' is being edited two ways at once, settling {over}"
-            ))
-        })?,
-    };
-    wanted.insert(declaring, merged);
-    Ok(())
-}
-
-/// Every operation's edits, gathered by the part they land in, in path order.
-fn by_part(asked: &[Asked]) -> BTreeMap<String, Vec<(usize, &PartEdit)>> {
-    let mut by_part: BTreeMap<String, Vec<(usize, &PartEdit)>> = BTreeMap::new();
-    for (index, edits) in asked.iter().enumerate() {
-        for (part, edit) in &edits.parts {
-            by_part.entry(part.clone()).or_default().push((index, edit));
-        }
-    }
-    by_part
-}
-
-/// What the edits on one part come to together.
-///
-/// The edits are folded into one, and two that disagree about what is being
-/// done to the part are two operations asking different things of it: a fault
-/// in whatever built the batch rather than something the package can be wrong
-/// about, so the failure names both of them.
-fn merged(part: &str, edits: &[(usize, &PartEdit)]) -> Result<PartEdit> {
-    let Some(((first, edit), rest)) = edits.split_first() else {
-        return Err(Error::internal(format!(
-            "part '{part}' is named by no edit"
-        )));
-    };
-    let mut merged = (*edit).clone();
-    for (other, edit) in rest {
-        merged = merged.and(edit).ok_or_else(|| {
-            Error::internal(format!(
-                "the operations at index {first} and {other} ask different things of part \
-                 '{part}': a part is spliced, created or removed, not two of the three"
-            ))
-        })?;
-    }
-    Ok(merged)
-}
-
-/// Say which operations this part's splices changed a byte for.
-///
-/// An operation may edit several parts, and the parts are taken one at a
-/// time, so what this part says about an operation is added to what its other
-/// parts said rather than put in place of it: an operation changed something
-/// if any one of its edits did.
-fn spliced(changed: &mut [bool], edits: &[(usize, &PartEdit)], xml: &str) {
-    for (index, edit) in edits {
-        changed[*index] |= edit.splices().iter().any(|splice| splice.changes(xml));
-    }
-}
-
-/// Say that every operation that asked for this part changed something. A
-/// part created or removed is a change by every operation that asked for it,
-/// because the part was not there, or was, before any of them asked.
-fn mark(changed: &mut [bool], edits: &[(usize, &PartEdit)]) {
-    for (index, _) in edits {
-        changed[*index] = true;
-    }
 }
 
 /// The splices that put `written` into the cell `at` names, in the part whose
@@ -1723,95 +1588,6 @@ mod tests {
         Splice::new(0..1, "x")
     }
 
-    /// Two operations landing on one part are one splice list against one
-    /// text; whether two of those ranges collide is `splice::apply`'s to say,
-    /// not this.
-    #[test]
-    fn the_splices_of_every_operation_on_one_part_are_merged_into_one_list() {
-        let one = PartEdit::Splice(vec![splice()]);
-        let two = PartEdit::Splice(vec![Splice::new(4..5, "y"), Splice::new(9..9, "z")]);
-
-        let merged = merged("sheet1.xml", &[(0, &one), (1, &two)]).expect("splices merge");
-
-        assert_eq!(
-            merged,
-            PartEdit::Splice(vec![
-                splice(),
-                Splice::new(4..5, "y"),
-                Splice::new(9..9, "z")
-            ])
-        );
-    }
-
-    /// Two operations may both be done with one part, and a part is removed
-    /// once however many of them said so.
-    #[test]
-    fn two_operations_removing_one_part_remove_it_once() {
-        let merged = merged(
-            "xl/calcChain.xml",
-            &[(0, &PartEdit::Remove), (1, &PartEdit::Remove)],
-        )
-        .expect("two removals are one removal");
-
-        assert_eq!(merged, PartEdit::Remove);
-    }
-
-    /// Two operations creating one part agree only if they agree about what
-    /// is in it.
-    #[test]
-    fn two_operations_creating_one_part_must_carry_the_same_bytes() {
-        let one = PartEdit::Create(b"<properties/>".to_vec());
-        let same = PartEdit::Create(b"<properties/>".to_vec());
-        let other = PartEdit::Create(b"<properties count=\"1\"/>".to_vec());
-
-        assert_eq!(
-            merged("docProps/custom.xml", &[(0, &one), (1, &same)]).expect("the same bytes"),
-            one
-        );
-        let err = merged("docProps/custom.xml", &[(0, &one), (1, &other)])
-            .expect_err("different bytes are two answers to one question");
-        assert_eq!(err.code(), ErrorCode::Internal);
-    }
-
-    /// A part is spliced, created or removed, not two of the three. Whatever
-    /// built such a batch is at fault, so the failure names both operations.
-    #[test]
-    fn edits_of_different_kinds_on_one_part_are_refused_naming_both_operations() {
-        let splicing = PartEdit::Splice(vec![splice()]);
-
-        let err = merged("sheet1.xml", &[(2, &splicing), (5, &PartEdit::Remove)])
-            .expect_err("a part is not spliced and removed at once");
-
-        assert_eq!(err.code(), ErrorCode::Internal);
-        assert!(err.message().contains("index 2 and 5"), "{}", err.message());
-        assert!(err.message().contains("sheet1.xml"), "{}", err.message());
-    }
-
-    /// An operation may edit several parts, and the parts are taken one at a
-    /// time. What one of them says about an operation is added to what the
-    /// others said, so a part an operation changed nothing in cannot take
-    /// back a part it did change. No operation edits two parts yet; #10 and
-    /// #12 are the first that will.
-    #[test]
-    fn an_operation_that_changed_any_of_its_parts_changed_something() {
-        let changes = PartEdit::Splice(vec![Splice::new(0..1, "y")]);
-        let does_not = PartEdit::Splice(vec![Splice::new(0..1, "x")]);
-
-        let mut changed = [false];
-        spliced(&mut changed, &[(0, &changes)], "xxx");
-        assert!(changed[0], "the splice put a byte there that was not");
-        spliced(&mut changed, &[(0, &does_not)], "xxx");
-        assert!(
-            changed[0],
-            "a later part it changed nothing in does not take that back"
-        );
-
-        let mut removed = [false];
-        mark(&mut removed, &[(0, &PartEdit::Remove)]);
-        spliced(&mut removed, &[(0, &does_not)], "xxx");
-        assert!(removed[0], "and neither does one after a part removed");
-    }
-
     /// An operation that names no cell reports none, and the batch resolves
     /// nothing on its behalf. `calc` is the first such operation, and #12's
     /// properties are the next.
@@ -1932,16 +1708,21 @@ mod tests {
     }
 
     /// What the batch wants of `part` once the splices it holds are applied.
-    fn spliced_text(wanted: &BTreeMap<String, PartEdit>, part: &str, was: &str) -> String {
-        let PartEdit::Splice(splices) = wanted.get(part).unwrap_or_else(|| {
-            panic!(
-                "the batch wants nothing spliced in '{part}': {:?}",
-                wanted.keys()
-            )
-        }) else {
-            panic!("'{part}' is not being spliced");
+    fn spliced_text(wanted: &Wanted, part: &str, was: &str) -> String {
+        let Some(PartEdit::Splice(splices)) = wanted.of_part(part) else {
+            panic!("the batch wants nothing spliced in '{part}'");
         };
         splice::apply(was, splices).expect("the splices apply")
+    }
+
+    /// One operation, answering with one part edit: what a settlement is
+    /// given to work over.
+    fn asking(part: &str, edit: PartEdit) -> Asked {
+        Asked {
+            at: None,
+            parts: vec![(part.to_owned(), edit)],
+            into_a_new_row: None,
+        }
     }
 
     /// The splice that takes the one entry out of the chain, which is what an
@@ -1955,15 +1736,16 @@ mod tests {
     #[test]
     fn a_chain_with_no_entries_left_is_withdrawn_with_the_declarations_that_name_it() {
         let mut opened = opened(&[(CHAIN_PART, CHAIN)]);
-        let mut wanted = BTreeMap::from([(
-            CHAIN_PART.to_owned(),
+        let asked = [asking(
+            CHAIN_PART,
             PartEdit::Splice(vec![emptying_the_chain()]),
-        )]);
+        )];
+        let mut wanted = Wanted::of(&[], &asked).expect("one operation, one part");
 
         withdraw_an_emptied_calc_chain(&mut opened, &mut wanted).expect("the chain is readable");
 
         assert_eq!(
-            wanted.get(CHAIN_PART),
+            wanted.of_part(CHAIN_PART),
             Some(&PartEdit::Remove),
             "an emptied chain is not a chain"
         );
@@ -1984,33 +1766,44 @@ mod tests {
         let mut opened = opened(&[(CHAIN_PART, &two)]);
         let from = two.find("<c ").expect("the chain holds an entry");
         let to = two.find(r#"<c r="A4""#).expect("it holds a second");
-        let mut wanted = BTreeMap::from([(
-            CHAIN_PART.to_owned(),
+        let asked = [asking(
+            CHAIN_PART,
             PartEdit::Splice(vec![Splice::new(from..to, "")]),
-        )]);
+        )];
+        let mut wanted = Wanted::of(&[], &asked).expect("one operation, one part");
 
         withdraw_an_emptied_calc_chain(&mut opened, &mut wanted).expect("the chain is readable");
 
-        assert_eq!(
-            wanted.len(),
-            1,
-            "nothing is declared differently: {:?}",
-            wanted.keys()
+        assert!(
+            matches!(wanted.of_part(CHAIN_PART), Some(PartEdit::Splice(_))),
+            "the chain is spliced and stays"
         );
-        assert!(matches!(wanted[CHAIN_PART], PartEdit::Splice(_)));
+        for declaring in [TYPES_PART, "xl/_rels/workbook.xml.rels"] {
+            assert_eq!(
+                wanted.of_part(declaring),
+                None,
+                "nothing is declared differently"
+            );
+        }
     }
 
     #[test]
     fn a_package_holding_no_chain_has_none_to_withdraw() {
         let mut opened = opened(&[]);
-        let mut wanted = BTreeMap::from([(
-            SHEET_PART.to_owned(),
+        let asked = [asking(
+            SHEET_PART,
             PartEdit::Splice(vec![Splice::new(0..0, "")]),
-        )]);
+        )];
+        let mut wanted = Wanted::of(&[], &asked).expect("one operation, one part");
 
         withdraw_an_emptied_calc_chain(&mut opened, &mut wanted).expect("there is nothing to read");
 
-        assert_eq!(wanted.len(), 1, "the sheet's own edit, and nothing else");
+        assert!(wanted.of_part(SHEET_PART).is_some());
+        assert_eq!(
+            wanted.of_part(CHAIN_PART),
+            None,
+            "the sheet's own edit, and nothing else"
+        );
     }
 
     /// A property the package has no part for brings the part with it, and the
@@ -2023,14 +1816,13 @@ mod tests {
             write_type: WriteType::Text,
             value: "R-1".to_owned(),
         }];
-        let mut wanted = BTreeMap::new();
-        let mut changed = [false];
+        let asked = [nothing_asked()];
+        let mut wanted = Wanted::of(&operations, &asked).expect("one operation");
 
-        add_the_new_properties(&mut opened, &operations, &mut wanted, &mut changed)
-            .expect("the property is added");
+        add_the_new_properties(&mut opened, &mut wanted).expect("the property is added");
 
-        let Some(PartEdit::Create(bytes)) = wanted.get(properties::CONVENTIONAL_PART) else {
-            panic!("the properties part is created: {:?}", wanted.keys());
+        let Some(PartEdit::Create(bytes)) = wanted.of_part(properties::CONVENTIONAL_PART) else {
+            panic!("the properties part is created");
         };
         let part = String::from_utf8(bytes.clone()).expect("a part of XML text");
         assert!(part.contains("Reference"), "{part}");
@@ -2043,7 +1835,11 @@ mod tests {
             spliced_text(&wanted, ROOT_RELS_PART, ROOT_RELS).contains("docProps/custom.xml"),
             "and a part it holds is one it can reach"
         );
-        assert_eq!(changed, [true], "the operation that added it changed it");
+        assert_eq!(
+            wanted.credited(),
+            [true],
+            "the operation that added it changed it"
+        );
     }
 
     /// Two properties over one snapshot are one part, because neither could
@@ -2063,21 +1859,20 @@ mod tests {
                 value: "2".to_owned(),
             },
         ];
-        let mut wanted = BTreeMap::new();
-        let mut changed = [false, false];
+        let asked = [nothing_asked(), nothing_asked()];
+        let mut wanted = Wanted::of(&operations, &asked).expect("two operations");
 
-        add_the_new_properties(&mut opened, &operations, &mut wanted, &mut changed)
-            .expect("both properties are added");
+        add_the_new_properties(&mut opened, &mut wanted).expect("both properties are added");
 
-        let Some(PartEdit::Create(bytes)) = wanted.get(properties::CONVENTIONAL_PART) else {
-            panic!("the properties part is created: {:?}", wanted.keys());
+        let Some(PartEdit::Create(bytes)) = wanted.of_part(properties::CONVENTIONAL_PART) else {
+            panic!("the properties part is created");
         };
         let part = String::from_utf8(bytes.clone()).expect("a part of XML text");
         assert!(
             part.contains("Reference") && part.contains("Revision"),
             "{part}"
         );
-        assert_eq!(changed, [true, true]);
+        assert_eq!(wanted.credited(), [true, true]);
     }
 
     /// A property already there is written by the operation's own splice, so
@@ -2103,15 +1898,18 @@ mod tests {
             write_type: WriteType::Text,
             value: "R-1".to_owned(),
         }];
-        let mut wanted = BTreeMap::new();
-        let mut changed = [false];
+        let asked = [nothing_asked()];
+        let mut wanted = Wanted::of(&operations, &asked).expect("one operation");
 
-        add_the_new_properties(&mut opened, &operations, &mut wanted, &mut changed)
-            .expect("the property is there");
+        add_the_new_properties(&mut opened, &mut wanted).expect("the property is there");
 
-        assert!(wanted.is_empty(), "nothing to add: {:?}", wanted.keys());
         assert_eq!(
-            changed,
+            wanted.of_part(properties::CONVENTIONAL_PART),
+            None,
+            "nothing to add"
+        );
+        assert_eq!(
+            wanted.credited(),
             [false],
             "whether it changed is the splice's to say"
         );
@@ -2123,11 +1921,9 @@ mod tests {
     fn two_cells_of_one_absent_row_are_put_in_as_one_row() {
         let mut opened = opened(&[]);
         let asked = [new_cell("Inputs!B2", 2, 2), new_cell("Inputs!A2", 1, 2)];
-        let mut wanted = BTreeMap::new();
-        let mut changed = [false, false];
+        let mut wanted = Wanted::of(&[], &asked).expect("two operations");
 
-        put_the_new_rows_in(&mut opened, &asked, &mut wanted, &mut changed)
-            .expect("the row goes in");
+        put_the_new_rows_in(&mut opened, &mut wanted).expect("the row goes in");
 
         let sheet = spliced_text(&wanted, SHEET_PART, SHEET);
         assert!(
@@ -2137,7 +1933,7 @@ mod tests {
             )),
             "one row, its cells in column order: {sheet}"
         );
-        assert_eq!(changed, [true, true]);
+        assert_eq!(wanted.credited(), [true, true]);
     }
 
     /// Two absent rows are two rows, each put in where it belongs.
@@ -2145,11 +1941,9 @@ mod tests {
     fn cells_of_two_absent_rows_are_two_rows() {
         let mut opened = opened(&[]);
         let asked = [new_cell("Inputs!A3", 1, 3), new_cell("Inputs!A2", 1, 2)];
-        let mut wanted = BTreeMap::new();
-        let mut changed = [false, false];
+        let mut wanted = Wanted::of(&[], &asked).expect("two operations");
 
-        put_the_new_rows_in(&mut opened, &asked, &mut wanted, &mut changed)
-            .expect("both rows go in");
+        put_the_new_rows_in(&mut opened, &mut wanted).expect("both rows go in");
 
         let sheet = spliced_text(&wanted, SHEET_PART, SHEET);
         let (row2, row3) = (
@@ -2205,6 +1999,68 @@ mod tests {
             after_one,
             "the second operation read no part the first had not"
         );
+    }
+
+    /// The order the settlements run in is not load-bearing, which is what
+    /// lets them be a list rather than three lines that have to stay in that
+    /// order. This runs a batch that fires all three — an emptied calc chain,
+    /// a properties part that has to be created, and a row that has to be put
+    /// in — forwards and backwards, and the package comes out the same.
+    ///
+    /// Two of them merge into `[Content_Types].xml`, which is where an order
+    /// would show if there were one: the splices arrive in a different order
+    /// and `splice::apply` puts them in the order they land in either way.
+    #[test]
+    fn the_settlements_answer_the_same_whatever_order_they_run_in() {
+        let operations = [
+            Operation::PropsSet {
+                name: "Reference".to_owned(),
+                write_type: WriteType::Text,
+                value: "R-1".to_owned(),
+            },
+            writing("Inputs!A1", WriteType::Number, "1"),
+            writing("Inputs!A2", WriteType::Number, "2"),
+        ];
+        let asked = [
+            nothing_asked(),
+            asking(CHAIN_PART, PartEdit::Splice(vec![emptying_the_chain()])),
+            new_cell("Inputs!A2", 1, 2),
+        ];
+        let settled = |backwards: bool| {
+            let mut opened = opened(&[(CHAIN_PART, CHAIN)]);
+            let mut wanted = Wanted::of(&operations, &asked).expect("three operations");
+            let mut order = settlements().to_vec();
+            if backwards {
+                order.reverse();
+            }
+            for settle in order {
+                settle(&mut opened, &mut wanted).expect("every settlement answers");
+            }
+            wanted
+                .into_applied(&mut opened)
+                .expect("what the batch wants is what the parts become")
+        };
+
+        let (forwards, backwards) = (settled(false), settled(true));
+
+        assert_eq!(
+            forwards.parts.added,
+            [properties::CONVENTIONAL_PART],
+            "the properties part was created, so that settlement fired"
+        );
+        assert_eq!(
+            forwards.parts.removed,
+            [CHAIN_PART],
+            "the chain was withdrawn, so that one did too"
+        );
+        assert!(
+            forwards.parts.changed.contains(&SHEET_PART.to_owned()),
+            "and the row went into the sheet: {:?}",
+            forwards.parts.changed
+        );
+        assert_eq!(forwards.content, backwards.content, "part for part");
+        assert_eq!(forwards.parts, backwards.parts);
+        assert_eq!(forwards.changed, backwards.changed);
     }
 
     /// One operation putting one cell into a row the sheet does not hold.

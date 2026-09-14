@@ -42,6 +42,7 @@ pub mod splice;
 pub mod strings;
 pub mod target;
 pub mod verb;
+pub mod wanted;
 pub mod workbook;
 pub mod worksheet;
 pub mod xml;

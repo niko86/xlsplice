@@ -137,6 +137,14 @@ before anything is spliced and applied whole afterwards. A command line builds
 a batch of one.
 _Avoid_: transaction, job, plan
 
+**Settlement**:
+An answer a batch gives once for a part, where no operation can give it: whether
+an emptied calc chain still belongs in the package, how many properties are
+being added and which identifiers they take, how many cells a row being put in
+holds. Settled over one snapshot, after the operations' edits are merged and
+before anything is written.
+_Avoid_: pass, phase, fixup
+
 **Report**:
 What came of a batch: a result per operation with whether it changed anything,
 the parts changed, added and removed, where the result went, and whether it was

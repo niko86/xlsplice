@@ -59,6 +59,25 @@ XX `internal_error`.
   and are refused the same way, on the name rather than on what either
   operation meant to do with it — so setting a property and then unsetting it
   in one batch is the same contradiction as setting it twice.
+- The batch-level questions have a shape as well as a rule (#35). What a batch
+  wants written is [`Wanted`](../../src/wanted.rs): the edits merged part by
+  part, who asked for which of them, and which operations turned out to change
+  a byte. A **settlement** is one of the answers this decision calls for —
+  `fn(&mut Opened, &mut Wanted) -> Result<()>` — and the three there are sit in
+  a list `apply` runs over, so a fourth is one more adapter rather than a
+  fourth mutable argument threaded through a fourth function.
+- The settlements are independent of one another, and their order is therefore
+  not part of this decision. Only the calc chain's reads what the batch already
+  wants, and no two of them write to a part another reads. Two that both merge
+  into a declaration part merge into one splice list, which `splice::apply`
+  orders by where the splices land rather than by the order they arrived in.
+  `the_settlements_answer_the_same_whatever_order_they_run_in` runs a batch
+  that fires all three in both orders and holds them to it.
+- A settlement may say a part is to go, whatever anyone wanted spliced into it:
+  `Wanted::withdraw` replaces rather than merges, because splices into a part
+  that is being removed land in text that will not be there. It is the one
+  place replacing is right, and only a settlement can know it, because only a
+  settlement sees the part as the whole batch leaves it.
 - Where two edits insert at one byte, neither overlaps the other and the part
   cannot say which comes first, so whatever worked them out says:
   `Splice::ordered` carries the key. Two cells put into one row by #1 both go

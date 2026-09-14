@@ -15,7 +15,11 @@
 //! cargo test --test oracle -- --ignored --test-threads=1
 //! ```
 //!
-//! One at a time, because there is one Excel and they take turns at it.
+//! One at a time, because on the Mac there is one Excel, it takes the screen,
+//! and the cases have to take turns at it. Windows needs no such thing: Excel
+//! is invisible there and every case gets its own, and the lab machine ran the
+//! whole suite both ways on 2026-09-14 to the same verdicts. The flag stays in
+//! the line above because that line is the one that is right on both.
 //!
 //! On a machine with no Excel, or an operating system with no backend, they
 //! skip and say so. `XLSPLICE_ORACLE=require` turns a skip into a failure,

@@ -186,8 +186,10 @@ pub fn opened_by(at: &Where, package: &Path) -> Verdict {
 /// wait for, no dialog to dismiss, no screen to read and no Accessibility
 /// permission to hold. With `DisplayAlerts` off Excel does not silently repair
 /// a package and does not log having done so — it refuses: `Workbooks.Open`
-/// throws, and no workbook appears. That is the whole signal, and the probe of
-/// 2026-09-14 in `scripts/windows-probe.ps1` is what established it.
+/// throws, and no workbook appears. That is the whole signal, and four runs of
+/// a probe on the lab machine on 2026-09-14 are what established it. The probe
+/// was `scripts/windows-probe.ps1`; it was deleted once this backend was
+/// signed off against a real Excel, and what it read is in the comments on #15.
 ///
 /// **The control is load-bearing.** Every failure of `Open` carries the same
 /// `0x800A03EC` and the same exception type, whether the package needs repair,
@@ -212,6 +214,12 @@ pub fn opened_by(at: &Where, package: &Path) -> Verdict {
 /// session surviving three refusals intact, so one Excel could serve the whole
 /// suite; that is an optimisation with state to own and a cleanup to get right,
 /// and at hundredths of a second an open it is not needed yet.
+///
+/// One per package is also what lets the cases run alongside each other here.
+/// Nothing is shared between them, none of them takes the screen, and the lab
+/// machine ran all twenty-two on 2026-09-14 serialised and then again in
+/// parallel, to the same verdicts. The Mac's `--test-threads=1` is a real
+/// constraint there and habit here.
 #[cfg(target_os = "windows")]
 pub fn opened_by(at: &Where, package: &Path) -> Verdict {
     // Before Excel is troubled at all. A package that cannot be read is a

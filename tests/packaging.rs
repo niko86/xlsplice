@@ -2,11 +2,15 @@
 //! and contents, and what the README tells someone installing.
 //!
 //! None of this runs the workflow. What it holds is the two things about it
-//! that are cheap to get wrong and expensive to notice: that it runs on a
-//! version tag and on nothing else, because Actions minutes on this private
-//! repository are limited and a macOS runner spends them ten times over; and
-//! that every archive carries the skill file, because a release an agent
-//! cannot read is half a release.
+//! that are cheap to get wrong and expensive to notice: that nothing starts
+//! it but a person, because Actions minutes on this private repository are
+//! limited and a macOS runner spends them ten times over; and that every
+//! archive carries the skill file, because a release an agent cannot read is
+//! half a release.
+//!
+//! A release is ordinarily built on the machines themselves — see
+//! `docs/releasing.md` — and the workflow is for the platform whose machine
+//! is not to hand.
 
 use std::path::{Path, PathBuf};
 
@@ -28,8 +32,10 @@ const TARGETS: [&str; 3] = [
     "x86_64-unknown-linux-gnu",
 ];
 
+/// Started by a person, with the tag to build named in the asking. A tag that
+/// started a build would spend the bill without anyone deciding to.
 #[test]
-fn the_release_workflow_runs_on_a_version_tag() {
+fn the_release_workflow_is_started_by_hand() {
     let workflow = release_workflow();
     let triggers = workflow
         .split_once("\non:\n")
@@ -40,11 +46,14 @@ fn the_release_workflow_runs_on_a_version_tag() {
         .expect("the triggers are a block of their own")
         .to_owned();
 
-    assert!(triggers.contains("tags:"), "{triggers}");
-    assert!(triggers.contains("\"v*\""), "{triggers}");
+    assert!(triggers.contains("workflow_dispatch:"), "{triggers}");
+    assert!(
+        triggers.contains("tag:"),
+        "the tag to build is an input, not the thing that triggered it: {triggers}"
+    );
 }
 
-/// The one that matters for the bill: nothing but a tag starts this.
+/// The one that matters for the bill: nothing automatic starts this.
 #[test]
 fn the_release_workflow_runs_on_nothing_else() {
     let workflow = release_workflow();
@@ -58,9 +67,10 @@ fn the_release_workflow_runs_on_nothing_else() {
         .to_owned();
 
     for forbidden in [
+        "push:",
         "pull_request",
         "schedule",
-        "workflow_dispatch",
+        "tags:",
         "branches:",
         "release:",
     ] {
@@ -70,9 +80,9 @@ fn the_release_workflow_runs_on_nothing_else() {
         );
     }
     assert_eq!(
-        triggers.matches("push:").count(),
+        triggers.matches("workflow_dispatch:").count(),
         1,
-        "the tag push is the only trigger: {triggers}"
+        "being asked is the only trigger: {triggers}"
     );
 }
 
@@ -130,8 +140,8 @@ fn the_readmes_archive_names_are_the_ones_the_workflow_writes() {
     let workflow = release_workflow();
 
     assert!(
-        workflow.contains(r#"name="xlsplice-${GITHUB_REF_NAME}-${{ matrix.target }}""#),
-        "the workflow names its archives after the tag and the target"
+        workflow.contains(r#"name="xlsplice-${TAG}-${{ matrix.target }}""#),
+        "the workflow names its archives after the tag it was given and the target"
     );
     for target in TARGETS {
         let extension = match target.contains("windows") {

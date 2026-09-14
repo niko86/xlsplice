@@ -157,6 +157,14 @@ $garbage = Join-Path $work 'not-a-package.xlsx'
 Set-Content -Path $garbage -Value 'this is not a package' -Encoding Ascii
 Probe "a file that is not a package at all" $garbage
 
+# And the good one again, last of all. Whether a session survives a refusal is
+# what decides the shape of the backend: one Excel for the whole suite, or one
+# per package. Each open here costs hundredths of a second, so a session that
+# survives puts 22 cases in a few seconds against the ten minutes the macOS
+# backend takes; a session that does not means a launch and a quit per package,
+# and most of that time back.
+Probe "the package Excel saved, again, after three refusals" $good
+
 Head "Anything Excel logged about a repair"
 foreach ($where in @($work, [Environment]::GetFolderPath('MyDocuments'), $env:TEMP)) {
     $logs = Get-ChildItem -Path $where -Filter '*epair*' -File -ErrorAction SilentlyContinue |

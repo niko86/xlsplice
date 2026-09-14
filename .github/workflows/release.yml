@@ -1,14 +1,27 @@
 # The only workflow that builds for more than one platform, and the only one
-# that runs on a tag. Actions minutes on this private repository are limited
-# and a macOS runner spends them ten times over, so nothing here runs on a push
-# to a branch, on a pull request, or on a schedule: `test.yml` is what guards
-# those, and this runs when a version is being cut and at no other time.
+# that has to be started by hand. Actions minutes on this private repository
+# are limited and a macOS runner spends them ten times over, so a release is
+# ordinarily built on the machines themselves — see `docs/releasing.md`. This
+# is for the platform whose machine is not to hand, and it runs when someone
+# says so and at no other time. Nothing here runs on a push, a tag, a pull
+# request or a schedule: `test.yml` guards those.
 name: release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The tag to build, which must already exist (e.g. v0.1.0)"
+        required: true
+        type: string
+      platforms:
+        description: "Which to build. Linux bills at 1x, Windows 2x, macOS 10x."
+        required: true
+        default: linux
+        type: choice
+        options:
+          - linux
+          - all
 
 permissions:
   contents: write
@@ -20,20 +33,18 @@ jobs:
     strategy:
       # One target failing should not hide what the other two would have said.
       fail-fast: false
+      # The choice is a matrix, so that asking for one platform bills for one.
       matrix:
-        include:
-          - target: aarch64-apple-darwin
-            runner: macos-latest
-            archive: tar.gz
-          - target: x86_64-pc-windows-msvc
-            runner: windows-latest
-            archive: zip
-          - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
-            archive: tar.gz
+        include: ${{ fromJSON(inputs.platforms == 'all'
+          && '[{"target":"aarch64-apple-darwin","runner":"macos-latest","archive":"tar.gz"},{"target":"x86_64-pc-windows-msvc","runner":"windows-latest","archive":"zip"},{"target":"x86_64-unknown-linux-gnu","runner":"ubuntu-latest","archive":"tar.gz"}]'
+          || '[{"target":"x86_64-unknown-linux-gnu","runner":"ubuntu-latest","archive":"tar.gz"}]') }}
 
     steps:
+      # The tag, not the branch this was started from: a binary in a release
+      # must be a build of the commit the release names.
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -48,12 +59,14 @@ jobs:
       # it is caught before anything is built.
       - name: The tag and the manifest must agree
         shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          tagged="${GITHUB_REF_NAME#v}"
+          tagged="${TAG#v}"
           manifest="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
           if [ "$tagged" != "$manifest" ]; then
-            echo "tag ${GITHUB_REF_NAME} says $tagged, Cargo.toml says $manifest" >&2
+            echo "tag ${TAG} says $tagged, Cargo.toml says $manifest" >&2
             exit 1
           fi
 
@@ -63,9 +76,11 @@ jobs:
       # read is half a release.
       - name: Pack the binary and the skill file
         shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          name="xlsplice-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          name="xlsplice-${TAG}-${{ matrix.target }}"
           mkdir -p "staging/$name"
           if [ "${{ matrix.archive }}" = "zip" ]; then
             cp "target/${{ matrix.target }}/release/xlsplice.exe" "staging/$name/"
@@ -104,14 +119,22 @@ jobs:
           path: archives
           merge-multiple: true
 
+      # A release built here may be the whole release, or one platform
+      # arriving late to a release cut by hand. Both are ordinary, so this
+      # uploads to the release if there is one and creates it if there is not.
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           ls -l archives
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            archives/*
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" archives/* --clobber
+          else
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --generate-notes \
+              archives/*
+          fi

@@ -21,7 +21,7 @@ release archive beside the binary. `xlsplice help json` and
 
 ### From a release
 
-Every version tag publishes a GitHub Release carrying one archive per target:
+Each release carries one archive per target:
 
 | Target                     | Archive                                              |
 |----------------------------|------------------------------------------------------|
@@ -50,6 +50,12 @@ cargo install --git https://github.com/niko86/xlsplice --locked
 
 The fallback when there is no archive for the platform, and the way to install
 from a branch. It needs a Rust toolchain; a release archive does not.
+
+### Cutting one
+
+`docs/releasing.md`. The binaries are built by hand on the machines themselves
+rather than on runners, because Actions minutes are limited here and a macOS
+runner spends them ten times over.
 
 ## Finding the binary from a caller
 

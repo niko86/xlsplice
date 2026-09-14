@@ -36,16 +36,48 @@ pub struct Workspace {
     dir: PathBuf,
 }
 
+/// A label reduced to what every filesystem the suites run on will take as
+/// part of a directory name: ASCII letters and digits, and the three marks
+/// that are safe everywhere. Everything else becomes `-`, which also disposes
+/// of a trailing space, and a trailing dot goes after, because Windows will
+/// not end a name with one.
+///
+/// A device name — `CON`, `NUL`, `COM1` — needs no handling: it is only
+/// reserved as a whole component, and every component here begins
+/// `xlsplice-`.
+fn portable(label: &str) -> String {
+    let swapped: String = label
+        .chars()
+        .map(
+            |c| match c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                true => c,
+                false => '-',
+            },
+        )
+        .collect();
+    swapped.trim_end_matches('.').to_owned()
+}
+
 /// Enough to keep two tests running at once out of each other's way.
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
 impl Workspace {
     /// A fresh directory, named after the test that asked for it.
+    ///
+    /// The label only has to say which test a directory belongs to, and tests
+    /// build one out of whatever they are testing — the value being written,
+    /// a fixture's name. So a label carries whatever a test case carries, and
+    /// several of the things a test case carries cannot be in a directory
+    /// name on Windows: `<`, `>`, `:`, `"`, `|`, `?`, `*`, and a name may not
+    /// end in a space or a dot. [`portable`] is what stands between the two.
+    /// Uniqueness is the process id's and the counter's, never the label's,
+    /// so nothing is lost by reducing it.
     pub fn new(label: &str) -> Self {
         let dir = std::env::temp_dir().join(format!(
-            "xlsplice-{}-{}-{label}",
+            "xlsplice-{}-{}-{}",
             std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
+            NEXT.fetch_add(1, Ordering::Relaxed),
+            portable(label)
         ));
         fs::create_dir_all(&dir).expect("a test must be able to write a temporary directory");
         Workspace { dir }

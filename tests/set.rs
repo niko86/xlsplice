@@ -26,7 +26,7 @@ use support::container::{
     assert_spliced, files_in, part, part_text,
 };
 use support::library::{envelope, in_text, targets, under_json};
-use support::workspace::{copy_of, fixture};
+use support::workspace::{Workspace, copy_of, fixture};
 use xlsplice::batch::Destination;
 use xlsplice::batch::WriteType;
 use xlsplice::verb::{self, Trace};
@@ -145,6 +145,44 @@ fn what_was_written_is_what_get_reads_back() {
         assert_eq!(cell["type"], serde_json::json!(expected_type), "{given}");
         assert_eq!(cell["value"], expected_value, "{given}");
     }
+}
+
+/// The test above builds its workspace label out of the value it writes, and
+/// two of those values are ` kept ` and `a<b&c`. A label becomes part of a
+/// directory name, and Windows takes neither: `<` is reserved, and a name may
+/// not end in a space. On the lab machine that surfaced as `os error 3`
+/// against the *source* of the copy that came next, which says nothing at all
+/// about the directory that was never made.
+///
+/// So `Workspace::new` reduces a label first, and this is what holds it to
+/// that — here, beside the label that found it, and on every platform, because
+/// CI is Linux and would otherwise never ask the question. Every character
+/// Windows reserves is put in, and what must come back is a directory that was
+/// actually made and can actually be written into.
+#[test]
+fn a_label_carrying_what_windows_reserves_still_makes_a_workspace() {
+    let workspace = Workspace::new(r#" <>:"|?* kept a<b&c. "#);
+
+    let written = workspace.file("in-it.txt", b"the directory was real");
+
+    let name = workspace
+        .dir()
+        .file_name()
+        .expect("the workspace is a directory")
+        .to_str()
+        .expect("a UTF-8 name");
+    for reserved in ['<', '>', ':', '"', '|', '?', '*', '\\', '/'] {
+        assert!(!name.contains(reserved), "{name} carries {reserved}");
+    }
+    assert!(
+        !name.ends_with(' ') && !name.ends_with('.'),
+        "Windows will not end a name with a space or a dot: {name}"
+    );
+    assert!(name.starts_with("xlsplice-"), "{name}");
+    assert_eq!(
+        std::fs::read(&written).expect("the file must be readable"),
+        b"the directory was real"
+    );
 }
 
 #[test]

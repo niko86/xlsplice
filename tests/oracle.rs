@@ -60,7 +60,7 @@ use std::path::Path;
 use support::container::{SHEET1, WORKBOOK, part_text, parts};
 use support::corpus;
 use support::library::op;
-use support::oracle::{Verdict, asked, decided, opened_by, requires};
+use support::oracle::{Verdict, Where, asked, decided, opened_by, requires};
 use support::workspace::{Workspace, built, copy_of, fixture};
 use xlsplice::batch::Batch;
 use xlsplice::batch::Destination;
@@ -832,13 +832,15 @@ impl Opened {
 
 /// The skip is a behaviour, not an accident, so it is asserted rather than
 /// left to be noticed. A machine with no Excel is simulated by pointing the
-/// oracle somewhere Excel is not, which is the whole of what absence means to
-/// it — nothing is launched, so this one runs in an ordinary build.
+/// oracle where Excel is not — an application bundle that is not there on a
+/// Mac, a program id nothing answers to on Windows — so the backend's real
+/// absence check is what runs, rather than a flag telling it to pretend.
+/// Nothing is launched either way, so this one runs in an ordinary build.
 #[test]
 fn a_machine_without_excel_answers_unavailable_rather_than_guessing() {
     let path = copy_of("oracle-absent", "plain.xlsx");
 
-    let said = opened_by(Path::new("/Applications/No Such Excel.app"), &path);
+    let said = opened_by(&Where::nowhere(), &path);
 
     let Verdict::Unavailable(why) = said else {
         panic!("there is no Excel there, so there is no verdict to be had")

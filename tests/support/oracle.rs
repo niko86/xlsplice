@@ -70,9 +70,63 @@ pub enum Verdict {
 /// machine being the wrong one.
 pub const REQUIRE: &str = "XLSPLICE_ORACLE";
 
-/// Where a Mac keeps Excel. Availability is decided by this rather than by
-/// launching anything, so a test on a machine without Excel costs nothing.
-const EXCEL: &str = "/Applications/Microsoft Excel.app";
+/// Where Excel is, as a platform names it.
+///
+/// Not the same kind of thing on the two. A Mac has one Excel and it is an
+/// application bundle at a known path, so absence is a question about the
+/// filesystem. Windows has no path worth checking: what the backend reaches
+/// for is a COM class the installer registered, and absence is that class not
+/// answering — which is also how the Store build of Excel looks, having no COM
+/// interface at all.
+///
+/// So this carries whatever the platform's backend asks for, and a test
+/// simulating a machine without Excel names one that really is not there
+/// rather than a flag that says to pretend. The real absence check then runs,
+/// on both, which is the point: a simulated absence that skipped the check
+/// would be testing the pretence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Where(String);
+
+impl Where {
+    /// Where this platform keeps Excel.
+    pub fn installed() -> Self {
+        Where(INSTALLED.to_owned())
+    }
+
+    /// Somewhere Excel is not. Only a test simulating a machine without one
+    /// has any business asking for this.
+    pub fn nowhere() -> Self {
+        Where(NOWHERE.to_owned())
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[cfg(target_os = "macos")]
+const INSTALLED: &str = "/Applications/Microsoft Excel.app";
+#[cfg(target_os = "macos")]
+const NOWHERE: &str = "/Applications/No Such Excel.app";
+
+/// The program id Excel registers. A desktop install answers to it; the Store
+/// build does not, having no COM interface, and neither does a machine with no
+/// Excel — which is why one reading covers both.
+#[cfg(target_os = "windows")]
+const INSTALLED: &str = "Excel.Application";
+#[cfg(target_os = "windows")]
+const NOWHERE: &str = "Excel.NoSuchApplication";
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const INSTALLED: &str = "nowhere this build knows to look";
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const NOWHERE: &str = "nowhere this build knows to look";
+
+/// The package the Windows backend opens first, to prove that Excel and the
+/// session are working before it reads anything into the subject failing.
+/// A fixture Excel saved, and one the suite already asserts opens clean.
+#[cfg(target_os = "windows")]
+const CONTROL: &str = "plain.xlsx";
 
 /// How long to wait for Excel to open the package. Generous, because a cold
 /// Excel takes some twenty seconds to draw its first window on this machine
@@ -92,16 +146,19 @@ const SETTLE: std::time::Duration = std::time::Duration::from_millis(2000);
 /// machine, so the oracle refuses rather than closing something it did not
 /// open.
 pub fn opened(package: &Path) -> Verdict {
-    opened_by(Path::new(EXCEL), package)
+    opened_by(&Where::installed(), package)
 }
 
 /// The oracle, told where Excel is. Only [`opened`] and a test simulating a
-/// machine without Excel have any business saying: there is one Excel on a
-/// Mac and it is where [`EXCEL`] says.
-pub fn opened_by(excel: &Path, package: &Path) -> Verdict {
-    if !cfg!(target_os = "macos") {
-        return Verdict::Unavailable("there is no oracle backend for this platform".to_owned());
-    }
+/// machine without Excel have any business saying.
+///
+/// One of these is compiled, and which one is the whole of the platform
+/// split. Everything above it — the three answers, the skip-or-require
+/// policy, and [`read`], which turns one line into a verdict — is shared, and
+/// so is every case that asks.
+#[cfg(target_os = "macos")]
+pub fn opened_by(at: &Where, package: &Path) -> Verdict {
+    let excel = Path::new(at.as_str());
     if !excel.exists() {
         return Verdict::Unavailable(format!("Excel is not installed: no {}", excel.display()));
     }
@@ -119,6 +176,150 @@ pub fn opened_by(excel: &Path, package: &Path) -> Verdict {
             verdict
         }
     }
+}
+
+/// The Windows backend: Excel through COM, and the verdict is whether a
+/// workbook came back.
+///
+/// Almost nothing the Mac has to do applies. Excel is not launched by the
+/// document and is never asked to show anything, so there is no window to
+/// wait for, no dialog to dismiss, no screen to read and no Accessibility
+/// permission to hold. With `DisplayAlerts` off Excel does not silently repair
+/// a package and does not log having done so — it refuses: `Workbooks.Open`
+/// throws, and no workbook appears. That is the whole signal, and the probe of
+/// 2026-09-14 in `scripts/windows-probe.ps1` is what established it.
+///
+/// **The control is load-bearing.** Every failure of `Open` carries the same
+/// `0x800A03EC` and the same exception type, whether the package needs repair,
+/// is not there, or is not a package at all. So a throw on its own does not
+/// mean "Excel objected to this package"; it means "that open failed". A
+/// backend reading a bare throw as [`Verdict::Repair`] would report a locked
+/// file or a bad path as a package Excel refused — the oracle *lying* rather
+/// than skipping, which is worse than having no oracle. So a package known to
+/// be good is opened first, in the same session, and a verdict is only read
+/// out of the subject once the control has proved that Excel and the session
+/// are working. ADR-0006 records the Mac's version of this mistake from the
+/// other side: there, a probe asked a broader question than the suite did.
+///
+/// Excel's own message is not read, though it would discriminate: Excel
+/// describes the failures that are not repairs and says nothing about the one
+/// that is. That decides by absence, so any failure Excel also declines to
+/// describe would read as a repair, and the descriptions are localised, so it
+/// would work here and not on an Excel in another language. It is carried in
+/// the answer for diagnosis and decides nothing.
+///
+/// One Excel per package, started and quit each time. The probe showed a
+/// session surviving three refusals intact, so one Excel could serve the whole
+/// suite; that is an optimisation with state to own and a cleanup to get right,
+/// and at hundredths of a second an open it is not needed yet.
+#[cfg(target_os = "windows")]
+pub fn opened_by(at: &Where, package: &Path) -> Verdict {
+    // Before Excel is troubled at all. A package that cannot be read is a
+    // fault in the harness rather than a verdict about a package, and it is
+    // exactly the confusion the control exists to prevent — caught here more
+    // cheaply and said more plainly.
+    if let Err(err) = std::fs::File::open(package) {
+        return Verdict::Unavailable(format!(
+            "the package cannot be read, so there is nothing to ask Excel about: {} ({err})",
+            package.display()
+        ));
+    }
+    // The control is copied out of the fixtures rather than opened where it
+    // lives: a fixture's bytes are the baseline every byte-preservation test
+    // compares against, and Excel writes an owner file beside a workbook it
+    // opens. The workspace takes the copy away when this returns.
+    let workspace = super::workspace::Workspace::new("oracle-control");
+    let control = workspace.copy_of(CONTROL);
+
+    match powershell(&asking(at, &control, package)) {
+        Err(why) => Verdict::Unavailable(format!("could not ask Excel: {why}")),
+        Ok(said) => read(said.trim()),
+    }
+}
+
+/// No backend, and the suites say so rather than answering.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn opened_by(_at: &Where, _package: &Path) -> Verdict {
+    Verdict::Unavailable("there is no oracle backend for this platform".to_owned())
+}
+
+/// The script that opens the control and then the package, and prints the one
+/// line [`read`] turns into a verdict — the same line the Mac's watcher
+/// prints, so one parser serves both.
+#[cfg(target_os = "windows")]
+fn asking(at: &Where, control: &Path, package: &Path) -> String {
+    format!(
+        r#"$ErrorActionPreference = 'Stop'
+try {{
+    $excel = New-Object -ComObject {program}
+}} catch {{
+    Write-Output "unavailable Excel is not installed, or is the Store build, which has no COM interface: $($_.Exception.Message)"
+    exit
+}}
+$excel.Visible = $false
+$excel.DisplayAlerts = $false
+$excel.AskToUpdateLinks = $false
+$said = ''
+try {{
+    $control = $null
+    try {{ $control = $excel.Workbooks.Open('{control}') }} catch {{ }}
+    if (-not $control) {{
+        $said = 'unavailable the control package did not open, so it is Excel or this session that is wrong rather than the package under test'
+    }} else {{
+        $control.Close($false)
+        $opened = $null
+        $why = ''
+        try {{ $opened = $excel.Workbooks.Open('{package}') }} catch {{ $why = $_.Exception.Message }}
+        if ($opened) {{
+            $said = 'clean ' + $opened.Name
+            $opened.Close($false)
+        }} else {{
+            $said = 'repair ' + $why
+        }}
+    }}
+}} finally {{
+    try {{ $excel.Quit() }} catch {{ }}
+    try {{ [System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel) | Out-Null }} catch {{ }}
+}}
+Write-Output $said
+"#,
+        program = at.as_str(),
+        control = single_quoted(control),
+        package = single_quoted(package),
+    )
+}
+
+/// A path as the body of a PowerShell single-quoted string, where the only
+/// character with a meaning is the quote itself and it is escaped by doubling.
+///
+/// Single quotes rather than double, because a single-quoted string
+/// interpolates nothing: a corpus template is called `PSD ISO Input
+/// [v000012].xlsm`, and a package could as easily hold a `$`.
+#[cfg(target_os = "windows")]
+fn single_quoted(path: &Path) -> String {
+    path.display().to_string().replace('\'', "''")
+}
+
+/// Run a PowerShell script and give back what it printed.
+///
+/// `-NoProfile` because a profile is the machine's and not the suite's, and
+/// one that prints would be read as the answer.
+#[cfg(target_os = "windows")]
+fn powershell(script: &str) -> Result<String, String> {
+    let out = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ])
+        .output()
+        .map_err(|err| format!("could not run powershell: {err}"))?;
+    if out.status.success() {
+        return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
+    }
+    Err(String::from_utf8_lossy(&out.stderr).trim().to_owned())
 }
 
 /// Ask the oracle, and say what a test should do about no answer.

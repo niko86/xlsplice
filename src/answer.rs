@@ -21,19 +21,28 @@ use serde::Serialize;
 use crate::batch::{OperationReport, Report};
 use crate::cells::{CellReport, Value};
 use crate::diff::{Difference, PartStatus};
-use crate::error::{Error, Result};
+use crate::error::{EXIT_DIFFERENT, EXIT_SUCCESS, Error, Result};
 use crate::help::Topic;
 use crate::properties::{self, Property};
 use crate::workbook::{DefinedName, Resolved, Scope, Sheet, Workbook};
 use crate::worksheet::Formula;
 use crate::xml::number_text;
 
-/// What one verb found: the payload for the envelope, and the same facts in
-/// the shape human output takes.
+/// What one verb found: the payload for the envelope, the same facts in the
+/// shape human output takes, and the code a run that succeeded exits with.
+///
+/// That last is 0 for every verb but one. `diff --exit-code` says in its exit
+/// code whether the two packages differ, which is diff(1)'s convention, and
+/// the fact it is about — whether they are identical — is the answer's. It is
+/// carried here rather than worked out again by whatever is writing the
+/// streams, so that [`render`](crate::render::render) decides every exit code
+/// there is. It is no part of the envelope: the JSON contract says nothing
+/// about it, and nothing serialises it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Answer {
     payload: serde_json::Value,
     shape: Shape,
+    success: u8,
 }
 
 /// The human form of an answer. Most verbs answer with rows under headers;
@@ -77,6 +86,7 @@ impl Answer {
         Ok(Answer {
             payload: object(payload)?,
             shape: Shape::Rows { headers, rows },
+            success: EXIT_SUCCESS,
         })
     }
 
@@ -85,7 +95,25 @@ impl Answer {
         Ok(Answer {
             payload: object(payload)?,
             shape: Shape::Line(line.into()),
+            success: EXIT_SUCCESS,
         })
+    }
+
+    /// This answer, exiting `code` rather than 0 where the run succeeded.
+    ///
+    /// A failure still exits with its own code from the frozen table: what
+    /// went wrong is what a caller has to hear first, whatever a flag asked
+    /// a success to say.
+    pub fn exiting(self, code: u8) -> Self {
+        Answer {
+            success: code,
+            ..self
+        }
+    }
+
+    /// The code a run that produced this answer exits with.
+    pub fn success_code(&self) -> u8 {
+        self.success
     }
 
     /// The payload, as the envelope flattens it.
@@ -677,17 +705,25 @@ impl Entry<2> for DifferenceEntry {
 /// own: it is a fact about the comparison and not about any part, and a table
 /// of parts with one row that is not a part would be a table a caller has to
 /// filter.
-pub fn difference(found: &Difference) -> Result<Answer> {
+/// `in_the_exit_code` is `--exit-code`: with it, a comparison that found a
+/// difference exits 1, which is what diff(1) does and what a caller reaching
+/// for the flag is reaching for. Without it the comparison is read from the
+/// answer and the run exits 0 either way.
+pub fn difference(found: &Difference, in_the_exit_code: bool) -> Result<Answer> {
     let parts: Vec<DifferenceEntry> = found.parts.iter().map(DifferenceEntry::of).collect();
     let rows = rows_of(&parts);
-    Answer::rows(
+    let answer = Answer::rows(
         Comparison {
             identical: found.identical,
             parts,
         },
         &DifferenceEntry::HEADERS,
         rows,
-    )
+    )?;
+    Ok(match in_the_exit_code && !found.identical {
+        true => answer.exiting(EXIT_DIFFERENT),
+        false => answer,
+    })
 }
 
 /// The payload of `help --json`.
@@ -756,6 +792,37 @@ mod tests {
 
     fn row(fields: &[&str]) -> Vec<String> {
         fields.iter().map(|field| (*field).to_owned()).collect()
+    }
+
+    /// The four ways the flag and the comparison meet. Only one of them is a
+    /// non-zero exit, and the answer is otherwise the same answer: the flag
+    /// changes what a success exits with and nothing a caller reads.
+    #[test]
+    fn only_a_difference_the_caller_asked_about_exits_non_zero() {
+        for (identical, asked, expected) in [
+            (true, false, EXIT_SUCCESS),
+            (true, true, EXIT_SUCCESS),
+            (false, false, EXIT_SUCCESS),
+            (false, true, EXIT_DIFFERENT),
+        ] {
+            let found = Difference {
+                parts: Vec::new(),
+                identical,
+            };
+
+            let answer = difference(&found, asked).expect("a comparison answers");
+
+            assert_eq!(
+                answer.success_code(),
+                expected,
+                "identical: {identical}, --exit-code: {asked}"
+            );
+            assert_eq!(
+                answer.payload()["identical"],
+                serde_json::json!(identical),
+                "the comparison itself is the same either way"
+            );
+        }
     }
 
     #[test]

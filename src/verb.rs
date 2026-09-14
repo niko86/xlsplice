@@ -90,14 +90,20 @@ pub fn get(path: &Path, targets: &[String], trace: &Trace) -> crate::Result<Answ
 /// `diff`: which parts differ between two packages.
 ///
 /// Reading two packages is the whole of it and neither is written to, so
-/// nothing here goes near the write path. What the caller does with the
-/// answer — `diff --exit-code` says in the exit code whether they differ — is
-/// the caller's, because an exit code is a thing a process has.
-pub fn difference(a: &Path, b: &Path, trace: &Trace) -> crate::Result<Answer> {
+/// nothing here goes near the write path. `in_the_exit_code` is
+/// `--exit-code`, and it goes no further than the answer: the comparison is
+/// the same either way, and what changes is the code a success exits with,
+/// which the answer carries and `render` reads.
+pub fn difference(
+    a: &Path,
+    b: &Path,
+    in_the_exit_code: bool,
+    trace: &Trace,
+) -> crate::Result<Answer> {
     trace.say(&format!("comparing {} with {}", a.display(), b.display()));
     let found = compared(a, b)?;
     trace.say(&format!("{} part(s) between them", found.parts.len()));
-    answer::difference(&found)
+    answer::difference(&found, in_the_exit_code)
 }
 
 /// Open both packages and compare them.

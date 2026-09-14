@@ -57,22 +57,12 @@ impl Out {
     }
 
     /// Write what a verb came back with, and give back the code to exit with.
+    ///
+    /// Every verb goes through here, `diff --exit-code` included: the code a
+    /// success exits with is the answer's, and `render` reads it, so nothing
+    /// in this process decides one.
     pub fn emit(&self, outcome: xlsplice::Result<Answer>) -> ExitCode {
         write(render(outcome, self.mode))
-    }
-
-    /// The same, but exiting `on_success` rather than 0 where it succeeded.
-    ///
-    /// One verb wants this. `diff --exit-code` says in its exit code whether
-    /// the two packages differ, which is diff(1)'s convention; a failure still
-    /// exits with its own code from the frozen table, because what went wrong
-    /// is what a caller has to hear first.
-    pub fn emit_exiting(&self, outcome: xlsplice::Result<Answer>, on_success: u8) -> ExitCode {
-        let mut rendered = render(outcome, self.mode);
-        if rendered.exit == xlsplice::error::EXIT_SUCCESS {
-            rendered.exit = on_success;
-        }
-        write(rendered)
     }
 
     /// A trace of what the command is doing, on stderr, only when asked.

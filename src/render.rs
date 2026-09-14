@@ -12,7 +12,7 @@
 
 use crate::answer::{Answer, Shape};
 use crate::envelope::{Envelope, JsonStyle};
-use crate::error::{EXIT_SUCCESS, Error, Result};
+use crate::error::{Error, Result};
 
 /// What stdout carries, and in what shape. `--json` decides which arm; stdout
 /// itself decides the style within it.
@@ -81,6 +81,10 @@ pub struct Rendered {
 /// The two streams stay apart: under `--json` the envelope is the whole
 /// response and stderr is silent, and in text mode a failure says nothing on
 /// stdout, so a caller reading either stream reads one thing only.
+///
+/// A failure exits with its code from the frozen table; a success exits with
+/// the one its answer carries, which is 0 for every verb but `diff` under
+/// `--exit-code`.
 pub fn render(outcome: Result<Answer>, mode: OutputMode) -> Rendered {
     match outcome {
         Ok(answer) => Rendered {
@@ -91,7 +95,7 @@ pub fn render(outcome: Result<Answer>, mode: OutputMode) -> Rendered {
                 OutputMode::Text(style) => terminated(&lay_out(style, answer.shape())),
             },
             stderr: String::new(),
-            exit: EXIT_SUCCESS,
+            exit: answer.success_code(),
         },
         Err(error) => Rendered {
             stdout: match mode {
@@ -184,6 +188,54 @@ mod tests {
             vec!["Data".to_owned(), "visible".to_owned()],
             vec!["Parameters".to_owned(), "veryHidden".to_owned()],
         ]
+    }
+
+    /// A difference under `--exit-code` is a successful answer that exits 1.
+    /// Both halves of that matter: the code tells a shell script what it
+    /// asked to be told, and the envelope tells a program reading stdout that
+    /// the command did what it was asked. The internal failure that shares
+    /// the number is `ok: false`, which is how they are told apart.
+    #[test]
+    fn a_success_exits_with_the_code_its_answer_carries() {
+        let answer = Answer::rows(serde_json::json!({"identical": false}), &HEADERS, rows())
+            .expect("a payload and rows")
+            .exiting(crate::error::EXIT_DIFFERENT);
+
+        let rendered = render(Ok(answer), OutputMode::Json(JsonStyle::Compact));
+
+        assert_eq!(rendered.exit, 1);
+        assert!(
+            rendered.stdout.contains(r#""ok":true"#),
+            "{}",
+            rendered.stdout
+        );
+        assert_eq!(rendered.stderr, "", "a success says nothing on stderr");
+    }
+
+    #[test]
+    fn an_answer_that_was_given_no_code_exits_zero() {
+        let answer = Answer::rows(serde_json::json!({"identical": true}), &HEADERS, rows())
+            .expect("an answer");
+
+        for mode in [
+            OutputMode::Json(JsonStyle::Compact),
+            OutputMode::Text(TextStyle::Tsv),
+        ] {
+            assert_eq!(render(Ok(answer.clone()), mode).exit, 0, "{mode:?}");
+        }
+    }
+
+    /// The flag says nothing about failures. A package that cannot be read
+    /// exits 5 whatever a success would have exited with, because what went
+    /// wrong is what a caller has to hear first.
+    #[test]
+    fn a_failure_still_exits_with_its_own_code() {
+        let rendered = render(
+            Err(Error::unreadable("not a package")),
+            OutputMode::Json(JsonStyle::Compact),
+        );
+
+        assert_eq!(rendered.exit, ErrorCode::Unreadable.exit_code());
     }
 
     /// An answer over `headers` and `rows`, with a payload that plays no part

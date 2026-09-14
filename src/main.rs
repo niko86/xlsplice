@@ -9,7 +9,6 @@ mod cli;
 mod out;
 
 use std::io::IsTerminal;
-use std::path::Path;
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -53,22 +52,15 @@ fn run(command: Command, out: &Out) -> ExitCode {
     let sink = |message: &str| out.trace(message);
     let trace = Trace::To(&sink);
 
-    // `diff` is the one verb whose exit code says something when it
-    // succeeded, so it reaches the streams itself rather than through the
-    // common path. #37 asks whether that should stay true.
-    if let Command::Diff {
-        file,
-        other,
-        exit_code,
-    } = command
-    {
-        return diff(&file, &other, exit_code, out, &trace);
-    }
-
     out.emit(match command {
         Command::Sheets { file } => verb::sheets(&file, &trace),
         Command::Names { file } => verb::names(&file, &trace),
         Command::Get { file, targets } => verb::get(&file, &targets, &trace),
+        Command::Diff {
+            file,
+            other,
+            exit_code,
+        } => verb::difference(&file, &other, exit_code, &trace),
         Command::Set {
             file,
             target,
@@ -155,31 +147,7 @@ fn run(command: Command, out: &Out) -> ExitCode {
         Command::Version => answer::version(),
         #[cfg(debug_assertions)]
         Command::Selftest { .. } => panic!("selftest was asked to panic"),
-        // Answered above, before the common path.
-        Command::Diff { .. } => unreachable!("diff is answered before this match"),
     })
-}
-
-/// Compare two packages, and say in the exit code whether they differ if the
-/// caller asked for that.
-///
-/// The comparison is the verb's; the exit code is this process's. The flag is
-/// honoured only where the comparison succeeded: a package that cannot be
-/// read is a failure with its own code, not a difference.
-fn diff(a: &Path, b: &Path, exit_code: bool, out: &Out, trace: &Trace) -> ExitCode {
-    let answer = match verb::difference(a, b, trace) {
-        Ok(answer) => answer,
-        Err(err) => return out.emit(Err(err)),
-    };
-    // The answer already carries the fact the flag is about; it is opaque
-    // here only because a payload is JSON. #37 asks whether the answer should
-    // carry the exit code itself and take this reading with it.
-    let identical = answer.payload()["identical"] == serde_json::Value::Bool(true);
-    let on_success = match exit_code && !identical {
-        true => xlsplice::error::EXIT_DIFFERENT,
-        false => xlsplice::error::EXIT_SUCCESS,
-    };
-    out.emit_exiting(Ok(answer), on_success)
 }
 
 /// Render what clap gave back instead of a command.

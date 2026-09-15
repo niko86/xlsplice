@@ -148,6 +148,6 @@ was seen to do. See ADR-0006.
 
 ## Origin
 
-Grilled out of the findings of an OfficeCLI trial in `the-reference-implementation` on
-2026-09-10 (upstream bugs iOfficeAI/OfficeCLI #389, #390, #391) and that repo's
-zip-level hydration layer, which is the reference implementation.
+Grilled out of the findings of an OfficeCLI trial on 2026-09-10 (upstream bugs
+iOfficeAI/OfficeCLI #389, #390, #391) and the zip-level hydration layer of a
+private reference implementation.

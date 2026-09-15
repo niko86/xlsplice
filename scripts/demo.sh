@@ -21,7 +21,7 @@ if [ -z "$BIN" ]; then
 	BIN=target/debug/xlsplice
 fi
 
-# The package to hydrate: the one named, else the the vendor system template where there
+# The package to hydrate: the one named, else the corpus template where there
 # is a corpus, else the fixture committed here, which runs anywhere.
 TEMPLATE="PSD ISO Input [v000012].xlsm"
 PACKAGE=${1-}
@@ -37,7 +37,7 @@ fi
 	exit 1
 }
 
-# What a hydration fills, per package. The the vendor system names carry `?TC`, which is
+# What a hydration fills, per package. The corpus names carry `?TC`, which is
 # why every target here comes after `--`: a shell is not the only thing that
 # would rather read a `?` as something else.
 case "$PACKAGE" in
@@ -48,10 +48,12 @@ case "$PACKAGE" in
 	FORMULA="Inputs!D1"         # SUM(A1:A5), which a write must not touch
 	;;
 *)
-	CONTAINER="A_NAME_ON_A_MERGED_RANGE"
-	SAMPLE="A_NAME_ON_A_NUMBER_CELL"
-	RUN_DATE="A_NAME_ON_AN_ABSENT_CELL"
-	FORMULA="A_NAME_ON_A_FORMULA_CELL"
+	# A corpus package is vendor material and so are its defined names, which
+	# is why none are written down here. Name the four in the environment.
+	CONTAINER="${XLSPLICE_DEMO_CONTAINER:?set it to a name on a merged range}"
+	SAMPLE="${XLSPLICE_DEMO_SAMPLE:?set it to a plain number cell}"
+	RUN_DATE="${XLSPLICE_DEMO_RUN_DATE:?set it to a cell the sheet does not hold}"
+	FORMULA="${XLSPLICE_DEMO_FORMULA:?set it to a cell holding a formula}"
 	;;
 esac
 

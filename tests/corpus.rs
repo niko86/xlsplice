@@ -182,7 +182,7 @@ fn a_sheet_of_nothing_but_formulas_offers_no_cell_to_write_over() {
 }
 
 /// A template that starts empty holds no cell to write over and no row to put
-/// one in, and still takes a row. One of the the vendor system templates is exactly
+/// one in, and still takes a row. One of the corpus templates is exactly
 /// that: every sheet a `<sheetData/>`, which is the shape a hydration fills
 /// from nothing.
 #[test]

@@ -77,7 +77,7 @@ pub struct Case {
 /// Where in one package the cell cases write.
 ///
 /// Two of the three are what the sheet happens to hold. A template that
-/// starts empty — and one of the the vendor system templates is exactly that, every
+/// starts empty — and one of the corpus templates is exactly that, every
 /// sheet a `<sheetData/>` — holds no cell to write over and no row to put a
 /// cell into, but it still takes a row, which is the write a hydration into
 /// it would make.

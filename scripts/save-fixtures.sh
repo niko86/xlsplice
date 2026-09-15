@@ -328,7 +328,10 @@ else
 fi
 printf '\n'
 step "Keep every file small: a handful of cells, no styling beyond what is asked."
-step "No vendor material. Nothing from a the vendor system Template, not one cell."
+step "No vendor material. Nothing from a customer template, not one cell."
+step "Clear the author fields before saving: File > Info > Inspect Workbook >"
+step "  Document Properties and Personal Information. A saved name ends up in"
+step "  docProps/core.xml and ships with every release."
 step "Save each file ONCE and never re-save it. Its bytes are the test baseline."
 step "Build each workbook completely BEFORE saving, so one save is enough."
 printf '\n'

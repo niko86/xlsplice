@@ -549,6 +549,11 @@ fn stored(node: Node, at: Cell) -> Result<Stored> {
         "inlineStr" => children(node, "is").next().map(string_item_text),
         _ => children(node, "v").next().map(text_of),
     };
+    // A value element holding nothing stores no value, the same as no value
+    // element at all. An uncalculated formula is written both ways -- Excel
+    // leaves the element out, other writers emit `<v></v>` -- and a cell that
+    // holds nothing is not a number cell whose text is not a number.
+    let raw = raw.filter(|text| !text.is_empty());
     Ok(Stored {
         // A cell with no value stores no type either, whatever it declares.
         kind: match raw {
@@ -813,6 +818,36 @@ mod tests {
             stored.formula.expect("the cell has a formula").text,
             "SUM(B1:B9)"
         );
+    }
+
+    #[test]
+    fn an_empty_value_element_stores_no_value_either() {
+        // The other spelling of an uncalculated formula: the element is
+        // there and holds nothing. A cell declaring a type it stores no
+        // value for is empty, not a number whose text is not a number.
+        let stored = stored_at(
+            &sheet(r#"<row r="1"><c r="A1"><f>SUM(B1:B9)</f><v></v></c></row>"#),
+            "A1",
+        );
+
+        assert_eq!(stored.kind, StoredType::Empty);
+        assert_eq!(stored.raw, None);
+        assert_eq!(
+            stored.formula.expect("the cell has a formula").text,
+            "SUM(B1:B9)"
+        );
+    }
+
+    #[test]
+    fn a_value_element_holding_only_spaces_is_that_text() {
+        // Not the same thing: a string cell may hold whitespace on purpose,
+        // so only an element holding nothing at all stores no value.
+        let stored = stored_at(
+            &sheet(r#"<row r="1"><c r="A1" t="str"><v>  </v></c></row>"#),
+            "A1",
+        );
+
+        assert_eq!(stored.raw.as_deref(), Some("  "));
     }
 
     #[test]

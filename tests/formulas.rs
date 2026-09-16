@@ -181,6 +181,12 @@ fn the_shared_master_is_refused_even_with_the_flag() {
     assert_same_bytes(&fixture("feature.xlsx"), &package);
 }
 
+/// A child replaced stops carrying its group, and the master is left alone:
+/// its range then names a cell that is in no group, which is what Excel writes
+/// too — see `docs/research/2026-09-16-the-shared-formula-range-in-the-corpus.md`,
+/// where 1,070 groups across the corpus over-cover and Excel wrote every one of
+/// them. The range is advisory, so narrowing it here would reach a cell the
+/// caller never named and may not name (#46, ADR-0001).
 #[test]
 fn a_shared_child_is_replaced_with_the_flag() {
     let package = copy_of("child", "feature.xlsx");

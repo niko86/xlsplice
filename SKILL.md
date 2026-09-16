@@ -80,6 +80,12 @@ sits in with it. A write to a cell holding a formula is refused unless
 `--replace-formula` says otherwise; a shared formula's master is refused even
 then, because overwriting it orphans the rest of its range.
 
+A shared formula holds the cells that carry its group, which `get` reports as
+`group`. The master's `range` is advisory and is reported as stored: it may name
+cells that are in no group, both in templates Excel wrote and after a licensed
+write over a child. Read `group` to know what a shared formula holds, never
+`range`.
+
 A write of the value already there changes nothing, reports `"changed": false`
 and leaves the file untouched, so re-running a hydration is safe.
 

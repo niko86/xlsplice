@@ -35,7 +35,9 @@
 //! there; a cell and a row that were not; a date serial in an inserted cell
 //! taking a date style from its column and, separately, from its row; a
 //! shared-string cell overwritten with inline text; a replaced formula with
-//! its chain entry removed; the chain part removed when it became empty; a
+//! its chain entry removed; two children of one shared formula overwritten, so
+//! that the master's range is left naming cells in no group; the chain part
+//! removed when it became empty; a
 //! created custom properties part; a created calculation element; and a
 //! macro-enabled package written into.
 //!
@@ -401,6 +403,60 @@ fn a_replaced_formula_and_the_chain_entry_it_took_with_it_open_clean() {
     );
 
     assert_verdict(&path, Verdict::Clean, "a formula replaced by its value");
+}
+
+/// A child overwritten stops carrying its group and the master keeps its
+/// range, which then names a cell that is in no group. #46 settled that the
+/// range is advisory and nothing narrows it, on the corpus finding that Excel
+/// writes the shape itself: 1,070 groups over-cover, 777 of them at a hole
+/// inside the range — see
+/// `docs/research/2026-09-16-the-shared-formula-range-in-the-corpus.md`.
+///
+/// What the corpus cannot say is whether Excel minds the shape *xlsplice*
+/// produces, because the fixed operation set carries no flag and so passes
+/// over every formula cell, never writing into a group. This is the case that
+/// asks. `Inputs!E2` of the feature fixture is a master over `E2:E5`, so one
+/// batch makes both holes there are: `E3` inside the range, and `E5` past the
+/// last member it has left.
+#[test]
+#[ignore = "drives Excel"]
+fn a_shared_range_left_naming_cells_in_no_group_opens_clean() {
+    let path = copy_of("oracle-shared-range", "feature.xlsx");
+    verb::run(
+        &path,
+        &Batch {
+            operations: vec![
+                op::replacing(op::writing("Inputs!E3", WriteType::Number, "31")),
+                op::replacing(op::writing("Inputs!E5", WriteType::Number, "53")),
+            ],
+        },
+        &Destination::InPlace,
+        false,
+        &Trace::Off,
+    )
+    .expect("a licensed write over two children must land");
+
+    let sheet = part_text(&path, SHEET1);
+    assert!(
+        sheet.contains(r#"<f t="shared" ref="E2:E5" si="0">A2*2</f>"#),
+        "the master must keep its range for this to be the case it is: {sheet}"
+    );
+    for (cell, value) in [("E3", "31"), ("E5", "53")] {
+        assert!(
+            sheet.contains(&format!(r#"<c r="{cell}"><v>{value}</v></c>"#)),
+            "{cell} must be a plain value cell in no group: {sheet}"
+        );
+    }
+    assert!(
+        sheet.contains(r#"<c r="E4"><f t="shared" si="0"/>"#),
+        "E4 must still take its formula from the master: {sheet}"
+    );
+
+    assert_verdict(
+        &path,
+        Verdict::Clean,
+        "a shared range naming cells that are in no group",
+    );
 }
 
 /// The last formula of a package takes the whole chain with it: the part

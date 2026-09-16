@@ -358,7 +358,10 @@ struct FormulaEntry {
     text: String,
     /// `plain`, `shared_master`, `shared_child`, `array` or `data_table`.
     role: &'static str,
-    /// The range a shared master or an array formula covers, else `null`.
+    /// The range a shared master or an array formula carries, as stored, else
+    /// `null`. A master's range is advisory: it may name cells that are in no
+    /// group, so what is in a shared formula is every cell carrying its
+    /// `group`, never what this range spans.
     range: Option<String>,
     /// The shared group a master or a child belongs to, else `null`.
     group: Option<u32>,

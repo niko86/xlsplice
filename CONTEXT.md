@@ -115,7 +115,9 @@ _Avoid_: sst entry, interned string
 One formula filled across a range. Its _master_ carries the formula text and
 the range; each _child_ carries only the _group_ the two have in common, and
 takes its formula from the master. A master is never overwritten, because that
-orphans its children.
+orphans its children. The _group_ is what puts a cell in a shared formula; the
+range is advisory, and covers cells that are in no group at all in templates
+Excel wrote (see `docs/research/2026-09-16-the-shared-formula-range-in-the-corpus.md`).
 _Avoid_: filled formula, formula group
 
 **Style index**:

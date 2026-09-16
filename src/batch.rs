@@ -1363,6 +1363,14 @@ fn formula_to_replace(node: Node, at: &Resolution, licensed: bool) -> Result<boo
         )));
     }
     if licensed {
+        // A child let through stops carrying its group, and the master keeps
+        // the range it had, which then names a cell that is in no group. That
+        // is the shape Excel writes too: 1,070 groups across the corpus cover
+        // a cell that is not a member, 777 of them at a hole a range could not
+        // spell anyway, so the range is advisory and narrowing it here would
+        // reach a cell the caller never named and may not name. See
+        // `docs/research/2026-09-16-the-shared-formula-range-in-the-corpus.md`
+        // and ADR-0001.
         return Ok(true);
     }
     // A shared child stores no formula text of its own, so what names it is

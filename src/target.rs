@@ -16,7 +16,7 @@ use std::io::{Read, Seek};
 
 use crate::error::{Error, Result};
 use crate::package::Package;
-use crate::reference::{Address, Target};
+use crate::reference::{Address, Cell, Target};
 use crate::relationships::Relationships;
 use crate::workbook::{DefinedName, NoAnchor, Resolved, Scope, Workbook};
 use crate::worksheet::part_of_sheet;
@@ -55,6 +55,7 @@ pub fn resolve<R: Read + Seek>(
             },
         ),
         Target::SheetName { sheet, name } => {
+            refuse_a_range(target, &name)?;
             let scope = Scope::Sheet(sheet_named(file, workbook, &sheet)?);
             let defined = workbook
                 .name_in_scope(&name, &scope)
@@ -62,6 +63,7 @@ pub fn resolve<R: Read + Seek>(
             (Some(defined.name.clone()), anchor_of(defined)?)
         }
         Target::Name(name) => {
+            refuse_a_range(target, &name)?;
             let defined = workbook
                 .name_in_scope(&name, &Scope::Workbook)
                 .ok_or_else(|| no_such_name(file, workbook, &name, &Scope::Workbook))?;
@@ -74,6 +76,22 @@ pub fn resolve<R: Read + Seek>(
         name,
         address,
     })
+}
+
+/// A token that is not a cell but reads as two of them around a colon is a
+/// range, and a target is one cell. Saying so beats going on to report that
+/// no defined name is spelled `A1:B2`, which is true and no help.
+fn refuse_a_range(target: &str, text: &str) -> Result<()> {
+    let is_range = text
+        .split_once(':')
+        .is_some_and(|(from, to)| Cell::parse(from).is_some() && Cell::parse(to).is_some());
+    match is_range {
+        true => Err(Error::usage(format!(
+            "'{target}' is a range, and a target is one cell; give one address, \
+             or a defined name that refers to one"
+        ))),
+        false => Ok(()),
+    }
 }
 
 /// The package's own spelling of the sheet called `name`.

@@ -421,6 +421,25 @@ fn the_envelope_leads_with_ok_and_the_schema_version() {
 }
 
 #[test]
+fn a_range_is_refused_as_one_rather_than_reported_as_a_name_nobody_defined() {
+    let package = feature("range");
+
+    for target in ["Inputs!A1:B2", "A1:B2"] {
+        let out = under_json(verb::get(&package, &targets(&[target]), &Trace::Off));
+
+        assert_eq!(out.exit, 2, "{target}");
+        assert_eq!(envelope(&out)["error"]["code"], json!("usage"), "{target}");
+        let message = error_message(&out);
+        assert!(message.contains("is a range"), "{message}");
+        assert!(message.contains("one cell"), "{message}");
+        assert!(
+            !message.contains("no defined name"),
+            "a range should not be looked up as a name: {message}"
+        );
+    }
+}
+
+#[test]
 fn an_unknown_sheet_is_not_found_and_the_message_lists_the_sheets() {
     let package = feature("no-sheet");
 

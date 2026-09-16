@@ -1,7 +1,9 @@
-# The only workflow that runs on a push or a pull request. Actions minutes on
-# this private repository are limited, so this is one job on one platform, with
-# the cargo cache and with superseded runs cancelled. Release builds belong on
-# a version tag, in their own workflow; the Excel oracle suite never runs here.
+# The only workflow that runs on a push or a pull request. One job on one
+# platform, with the cargo cache and with superseded runs cancelled: that was
+# once what limited minutes on a private repository allowed, and it stays
+# because it is what the suite needs, not because of a bill. Release builds
+# have their own workflow, started by hand; the Excel oracle suite never runs
+# here, because it drives a real Excel.
 #
 # One job, two toolchains: the suite runs on stable, and the declared
 # `rust-version` is checked afterwards so that the floor is a thing CI holds
@@ -39,10 +41,9 @@ jobs:
       # declared one and nothing would notice until someone on that toolchain
       # ran `cargo install --git`.
       #
-      # A step rather than a job: Actions minutes on this private repository
-      # are limited, and one toolchain download plus a check against a warm
-      # cache is seconds on a 1x runner, where a second job would be a second
-      # checkout, a second cache restore and a second billable minute.
+      # A step rather than a job: one toolchain download plus a check against
+      # a warm cache is seconds, where a second job would be a second checkout
+      # and a second cache restore for the same answer.
       #
       # The version is read from the manifest rather than written here, so
       # there is one place to change it and no way for the two to drift.

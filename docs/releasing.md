@@ -4,11 +4,13 @@ Cutting a release is building the binary on each operating system that gets
 one, packing it with the skill file and the licence, and attaching the
 archives to a GitHub Release.
 
-**The builds are done by hand, on the machines themselves.** Actions minutes on
-this private repository are limited and a macOS runner spends them ten times
-over, so `release.yml` no longer runs on a tag: it is there for when a
-platform's machine is not to hand, and it has to be started deliberately. What
-follows is the ordinary path.
+**The builds can be done by hand, on the machines themselves.** That was once
+forced: while this repository was private its Actions minutes were limited and
+a macOS runner spent them ten times over. It is public now, so the minutes are
+free and `release.yml` is the cheaper path for every platform — it still has to
+be started deliberately, because a release is a deliberate act. What follows is
+the by-hand path, which is what to do when a machine is to hand or the runners
+are not.
 
 Nothing here is clever. It is written down so that a release cut six months
 from now is the same shape as this one.
@@ -145,6 +147,7 @@ the tag and `Cargo.toml` disagree, and attaches what it built to the release —
 creating it if it does not exist yet, uploading to it if it does. So it can be
 used for the whole release, or for the one platform whose machine is elsewhere.
 
-Minutes are billed at 1× on Linux, 2× on Windows and 10× on macOS, against a
-limited allowance on a private repository. That multiplier is the whole reason
-the builds above are done by hand.
+Minutes were billed at 1× on Linux, 2× on Windows and 10× on macOS against a
+limited allowance, which is why the builds above were done by hand. A public
+repository is billed none of it, so the workflow is now the ordinary path and
+the by-hand builds are the fallback rather than the rule.

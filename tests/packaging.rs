@@ -3,7 +3,7 @@
 //!
 //! None of this runs the workflow. What it holds is the two things about it
 //! that are cheap to get wrong and expensive to notice: that nothing starts
-//! it but a person, because Actions minutes on this private repository are
+//! it but a person, because a release is built on the machines themselves and
 //! limited and a macOS runner spends them ten times over; and that every
 //! archive carries the skill file, because a release an agent cannot read is
 //! half a release.

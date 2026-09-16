@@ -1,10 +1,10 @@
 # The only workflow that builds for more than one platform, and the only one
-# that has to be started by hand. Actions minutes on this private repository
-# are limited and a macOS runner spends them ten times over, so a release is
-# ordinarily built on the machines themselves — see `docs/releasing.md`. This
-# is for the platform whose machine is not to hand, and it runs when someone
-# says so and at no other time. Nothing here runs on a push, a tag, a pull
-# request or a schedule: `test.yml` guards those.
+# that has to be started by hand. This repository is public, so its minutes
+# are free and the multiplier a macOS runner used to cost no longer decides
+# anything; a release may be built here or on the machines themselves — see
+# `docs/releasing.md`. It runs when someone says so and at no other time.
+# Nothing here runs on a push, a tag, a pull request or a schedule:
+# `test.yml` guards those.
 name: release
 
 on:

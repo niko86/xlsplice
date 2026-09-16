@@ -1,1 +1,8 @@
 /target
+
+# What `docs/releasing.md` builds by hand in the root of a checkout: the
+# staging tree an archive is packed from, and the archives themselves. A
+# release binary is attached to a GitHub Release, never committed.
+/staging
+/xlsplice-v*.tar.gz
+/xlsplice-v*.zip

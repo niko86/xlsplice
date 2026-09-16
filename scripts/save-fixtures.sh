@@ -645,6 +645,19 @@ if recorded=$(grep -oE 'dated-row\.xlsx` on [0-9]{4}-[0-9]{2}-[0-9]{2}' \
   FOURTH_SAVED=$recorded
 fi
 
+# Whether the fixtures still carry Excel's author and path stamps, or had
+# them taken out once (the note explains). Read from the files, like the
+# rest of the note; the date of that edit is read back the same way.
+EDITED=yes
+for f in "$PLAIN" "$MACROS" "$FEATURE" "$DATED"; do
+  if unzip -p "$f" xl/workbook.xml 2>/dev/null | grep -q 'absPath'; then EDITED=no; fi
+done
+EDITED_ON=$(date +%Y-%m-%d)
+if recorded=$(grep -oE 'On [0-9]{4}-[0-9]{2}-[0-9]{2} those two parts' \
+  "$FIXTURES/README.md" 2>/dev/null | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}'); then
+  EDITED_ON=$recorded
+fi
+
 if [[ ! -f "$PLAIN" || ! -f "$MACROS" || ! -f "$FEATURE" || ! -f "$DATED" ]]; then
   warn "a fixture is missing, so the note is left exactly as it is."
   note "Nothing is recorded until all four are saved."
@@ -677,9 +690,27 @@ else
   printf 'Saved with Excel %s — the first three on %s, and\n' \
     "${EXCEL_VERSION:-16.x}" "$FIRST_SAVED"
   printf '`dated-row.xlsx` on %s.\n\n' "$FOURTH_SAVED"
-  printf 'Excel stamps the absolute path it saved to into `xl/workbook.xml`, as\n'
-  printf '`x15ac:absPath`. Taking it out would mean editing the file, which is the one\n'
-  printf 'thing a fixture must not have had done to it, so it stays.\n\n'
+  if [[ $EDITED == yes ]]; then
+    printf '## The one edit\n'
+    printf '\n'
+    printf 'Excel stamps the saving user into `docProps/core.xml` (`dc:creator`,\n'
+    printf '`cp:lastModifiedBy`) and the absolute path it saved to into\n'
+    printf '`xl/workbook.xml` (`x15ac:absPath`), and both ship with every release.\n'
+    printf 'On %s those two parts were edited once in each fixture to take\n' "$EDITED_ON"
+    printf 'them out. Nothing else was touched: every other entry is Excel'\''s, copied\n'
+    printf 'raw -- header, compressed bytes and central-directory record -- with only\n'
+    printf 'its offset moved, so the flags, the creator system and the zeroed\n'
+    printf 'timestamp that the writer'\''s raw copy is tested against are still the ones\n'
+    printf 'Excel wrote. The two edited parts were compressed afresh under the\n'
+    printf 'original entry'\''s own flags, version and timestamp. That edit is not a\n'
+    printf 're-save and does not move the baseline; a future fixture avoids the need\n'
+    printf 'for it by clearing the author fields before saving, as `save-fixtures.sh`\n'
+    printf 'says.\n\n'
+  else
+    printf 'Excel stamps the absolute path it saved to into `xl/workbook.xml`, as\n'
+    printf '`x15ac:absPath`. Taking it out would mean editing the file, which is the one\n'
+    printf 'thing a fixture must not have had done to it, so it stays.\n\n'
+  fi
   printf '## Checksums\n\n'
   printf 'If one of these ever changes, a fixture was re-saved and the baseline\n'
   printf 'moved. That is a bug, not an update.\n\n'

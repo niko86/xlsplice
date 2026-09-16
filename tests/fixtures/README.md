@@ -24,9 +24,21 @@ against.
 Saved with Excel 16.x — the first three on 2026-09-11, and
 `dated-row.xlsx` on 2026-09-13.
 
-Excel stamps the absolute path it saved to into `xl/workbook.xml`, as
-`x15ac:absPath`. Taking it out would mean editing the file, which is the one
-thing a fixture must not have had done to it, so it stays.
+## The one edit
+
+Excel stamps the saving user into `docProps/core.xml` (`dc:creator`,
+`cp:lastModifiedBy`) and the absolute path it saved to into
+`xl/workbook.xml` (`x15ac:absPath`), and both ship with every release.
+On 2026-09-15 those two parts were edited once in each fixture to take
+them out. Nothing else was touched: every other entry is Excel's, copied
+raw -- header, compressed bytes and central-directory record -- with only
+its offset moved, so the flags, the creator system and the zeroed
+timestamp that the writer's raw copy is tested against are still the ones
+Excel wrote. The two edited parts were compressed afresh under the
+original entry's own flags, version and timestamp. That edit is not a
+re-save and does not move the baseline; a future fixture avoids the need
+for it by clearing the author fields before saving, as `save-fixtures.sh`
+says.
 
 ## Checksums
 
@@ -34,10 +46,10 @@ If one of these ever changes, a fixture was re-saved and the baseline
 moved. That is a bug, not an update.
 
 ```
-c81533de1755ccd027e4bf5abc37a94bd109b5170668d1e4a24ed6cf380e98f2 plain.xlsx
-5d864236a1c3f4add7ad45f2f87f43f6b82e20b117865bc81aca39113b766d24 macros.xlsm
-f4a0eac7179c7a18038938e28d8acf696697f4190a5bdd375913450f8f600480 feature.xlsx
-198297690d843a94788886882d797a11641ea9878a1665fb42ff64aade933eb6 dated-row.xlsx
+ba3fd96d84945433f77bc9cbdb06a4e57e5cf63925eac42939446dca86320bf3 plain.xlsx
+ad889ab8ea3abd29855c255bd6e9f2156ed87f3f7cf2cf24f1b8ff158eedc767 macros.xlsm
+d91f56ac18ac05cc5dd39bf6ff2e291665e13ef408640e66df936a37d36d27ea feature.xlsx
+d9dabf4b978f4e6bf8e44d48b483294552a5151ede2678fe41fc7c5a86ce78e1 dated-row.xlsx
 ```
 
 ## The oracle

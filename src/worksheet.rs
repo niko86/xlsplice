@@ -540,6 +540,16 @@ fn cell_in<'a, 'input>(row: Node<'a, 'input>, wanted: Cell) -> Result<Option<Nod
     Ok(None)
 }
 
+/// Whether a declared type can hold the empty string as a value of its own.
+///
+/// The two text types can: a formula that produced `""` and an inline string
+/// holding nothing are both cells with a value, and the value is `""`. No
+/// other type can, so an empty value element declaring one of those stores
+/// nothing at all rather than a value its type would refuse.
+fn holds_text(declared: &str) -> bool {
+    matches!(declared, "str" | "inlineStr")
+}
+
 /// What one cell element stores.
 fn stored(node: Node, at: Cell) -> Result<Stored> {
     let declared = node.attribute("t").unwrap_or("n");
@@ -549,11 +559,15 @@ fn stored(node: Node, at: Cell) -> Result<Stored> {
         "inlineStr" => children(node, "is").next().map(string_item_text),
         _ => children(node, "v").next().map(text_of),
     };
-    // A value element holding nothing stores no value, the same as no value
-    // element at all. An uncalculated formula is written both ways -- Excel
-    // leaves the element out, other writers emit `<v></v>` -- and a cell that
-    // holds nothing is not a number cell whose text is not a number.
-    let raw = raw.filter(|text| !text.is_empty());
+    // A value element holding nothing means one thing or the other by the
+    // type the cell declares, and only the type tells the two apart. Excel
+    // writes `<v/>` on a `str` cell for a formula that calculated to the
+    // empty string, which is a value and the commonest shape in the corpus;
+    // openpyxl writes `<v></v>` untyped for a formula it never calculated,
+    // which is not. So empty text is a value where the declared type can
+    // hold one, and no value where it cannot: `""` is not a number, a
+    // boolean, an error code, a date or a shared-string index (ADR-0007).
+    let raw = raw.filter(|text| !text.is_empty() || holds_text(declared));
     Ok(Stored {
         // A cell with no value stores no type either, whatever it declares.
         kind: match raw {
@@ -822,9 +836,10 @@ mod tests {
 
     #[test]
     fn an_empty_value_element_stores_no_value_either() {
-        // The other spelling of an uncalculated formula: the element is
-        // there and holds nothing. A cell declaring a type it stores no
-        // value for is empty, not a number whose text is not a number.
+        // openpyxl's spelling of an uncalculated formula: the element is
+        // there, holds nothing, and the cell declares no type. `""` is not a
+        // number, so this stores no value rather than a number whose text is
+        // not a number. The guard on ADR-0007's other half.
         let stored = stored_at(
             &sheet(r#"<row r="1"><c r="A1"><f>SUM(B1:B9)</f><v></v></c></row>"#),
             "A1",
@@ -836,6 +851,53 @@ mod tests {
             stored.formula.expect("the cell has a formula").text,
             "SUM(B1:B9)"
         );
+    }
+
+    #[test]
+    fn a_str_cell_whose_value_element_is_empty_holds_the_empty_string() {
+        // Excel's spelling of a formula that calculated to `""`, and the
+        // commonest cell shape in the corpus. Present and empty is a value,
+        // and `str` is a type that can hold it.
+        let stored = stored_at(
+            &sheet(r#"<row r="1"><c r="B1" t="str"><f>IF(ISNUMBER(A1),1,"")</f><v/></c></row>"#),
+            "B1",
+        );
+
+        assert_eq!(stored.kind, StoredType::FormulaString);
+        assert_eq!(stored.raw.as_deref(), Some(""));
+        assert_eq!(
+            stored.formula.expect("the cell has a formula").text,
+            r#"IF(ISNUMBER(A1),1,"")"#
+        );
+    }
+
+    #[test]
+    fn an_inline_string_holding_nothing_is_the_empty_string() {
+        let stored = stored_at(
+            &sheet(r#"<row r="1"><c r="A1" t="inlineStr"><is><t></t></is></c></row>"#),
+            "A1",
+        );
+
+        assert_eq!(stored.kind, StoredType::InlineString);
+        assert_eq!(stored.raw.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn an_empty_value_element_stores_no_value_for_a_type_that_cannot_hold_it() {
+        // Every type but the two text ones: `""` is not a number, a boolean,
+        // an error code, a date or a shared-string index, so the cell stores
+        // nothing rather than a value its type would refuse.
+        for declared in ["n", "b", "e", "d", "s"] {
+            let stored = stored_at(
+                &sheet(&format!(
+                    r#"<row r="1"><c r="A1" t="{declared}"><v/></c></row>"#
+                )),
+                "A1",
+            );
+
+            assert_eq!(stored.kind, StoredType::Empty, "t={declared}");
+            assert_eq!(stored.raw, None, "t={declared}");
+        }
     }
 
     #[test]

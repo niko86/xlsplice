@@ -251,6 +251,28 @@ mod tests {
     }
 
     #[test]
+    fn a_text_cell_holding_the_empty_string_is_that_value_and_not_an_absent_one() {
+        // What Excel writes for a formula that calculated to `""`. The
+        // number case above refuses an empty raw, and must keep doing so;
+        // the two text types answer with it instead (ADR-0007).
+        for kind in [StoredType::FormulaString, StoredType::InlineString] {
+            assert_eq!(value(kind, "").unwrap(), Value::Text(String::new()));
+        }
+
+        // The cell with no value element at all, which is the other thing.
+        let absent = Stored {
+            kind: StoredType::Empty,
+            raw: None,
+            formula: None,
+            style: 0,
+        };
+        assert_eq!(
+            value_of(&absent, &at(), &SharedStrings::default()).unwrap(),
+            Value::Empty
+        );
+    }
+
+    #[test]
     fn a_boolean_cell_takes_both_spellings_the_schema_allows_and_nothing_else() {
         assert_eq!(value(StoredType::Bool, "1").unwrap(), Value::Bool(true));
         assert_eq!(value(StoredType::Bool, "true").unwrap(), Value::Bool(true));

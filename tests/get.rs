@@ -183,6 +183,63 @@ fn a_cell_in_a_row_the_sheet_does_not_hold_is_empty_too() {
 /// so every cell of it is absent. A write there is still refused — there is
 /// nowhere to put a row — but that is a question about writing.
 #[test]
+fn a_cached_value_that_is_present_and_empty_is_told_apart_from_a_missing_one() {
+    // Issue #47. Excel writes a formula that produced `""` as a `str` cell
+    // with a present but empty value element; a formula it never calculated
+    // has no value element at all. The two mean different things, so `get`
+    // has to say which is which -- `raw` is the element's text where there
+    // is an element, and null where there is none.
+    let workspace = Workspace::new("empty-cached-value");
+    let package = workspace.sheet_package(
+        "sieve.xlsx",
+        "",
+        concat!(
+            r#"<c r="A1" t="str"><f>IF(ISNUMBER(Z1),1,"")</f><v/></c>"#,
+            r#"<c r="B1"><f>Z2+1</f></c>"#,
+            r#"<c r="C1"><f>Z3+1</f><v>48</v></c>"#,
+        ),
+    );
+
+    // Calculated, and the answer was the empty string.
+    let calculated = cell(&package, "Inputs!A1");
+    assert_eq!(calculated["type"], json!("str"));
+    assert_eq!(calculated["raw"], json!(""));
+    assert_eq!(calculated["value"], json!(""));
+
+    // Never calculated: no value element at all.
+    let uncalculated = cell(&package, "Inputs!B1");
+    assert_eq!(uncalculated["type"], json!("empty"));
+    assert_eq!(uncalculated["raw"], json!(null));
+    assert_eq!(uncalculated["value"], json!(null));
+
+    // Unchanged by any of this.
+    let number = cell(&package, "Inputs!C1");
+    assert_eq!(number["type"], json!("n"));
+    assert_eq!(number["raw"], json!("48"));
+    assert_eq!(number["value"], json!(48));
+}
+
+#[test]
+fn a_formula_cell_openpyxl_left_uncalculated_reads_as_empty_rather_than_failing() {
+    // The other writer's spelling of the same absence: the element is there
+    // and holds nothing, and the cell declares no type. Reading it as a
+    // number holding `""` would refuse the cell outright, which is the
+    // regression this guards (6917d9b, and ADR-0007's second half).
+    let workspace = Workspace::new("openpyxl-uncalculated");
+    let package = workspace.sheet_package(
+        "openpyxl.xlsx",
+        "",
+        r#"<c r="A1"><f>SUM(B1:B9)</f><v></v></c>"#,
+    );
+
+    let uncalculated = cell(&package, "Inputs!A1");
+
+    assert_eq!(uncalculated["type"], json!("empty"));
+    assert_eq!(uncalculated["raw"], json!(null));
+    assert_eq!(uncalculated["value"], json!(null));
+}
+
+#[test]
 fn a_cell_on_a_sheet_holding_no_sheet_data_at_all_is_empty() {
     let workspace = Workspace::new("dataless");
     let package = dataless(&workspace);

@@ -33,8 +33,15 @@ struct Temporary {
 
 impl Temporary {
     /// Beside `destination`, so that the rename that follows stays on one
-    /// filesystem. The name is hidden and carries the process id, so two
-    /// writes at once do not meet.
+    /// filesystem. The name carries the destination's, the process id and an
+    /// ordinal, so two writes at once do not meet, and ends in `.tmp`, so a
+    /// file a crash leaves behind says what it is.
+    ///
+    /// The name must not start with a dot. Some SMB servers report a
+    /// dot-named file as Hidden, and the Linux CIFS client keeps the
+    /// attributes it last saw for a second after the rename. A `chmod` from
+    /// the caller inside that window sends the cached Hidden bit back with
+    /// the new mode, and the destination stays hidden for good (#48).
     fn beside(destination: &Path) -> Self {
         let name = destination
             .file_name()
@@ -42,8 +49,10 @@ impl Temporary {
             .unwrap_or_default();
         let ordinal = NEXT.fetch_add(1, Ordering::Relaxed);
         Temporary {
-            path: destination
-                .with_file_name(format!(".{name}.xlsplice-{}-{ordinal}", std::process::id())),
+            path: destination.with_file_name(format!(
+                "{name}.xlsplice-{}-{ordinal}.tmp",
+                std::process::id()
+            )),
             given_away: false,
         }
     }
@@ -204,10 +213,27 @@ mod tests {
                 .file_name()
                 .expect("a file name")
                 .to_string_lossy()
-                .starts_with(".book.xlsx.xlsplice-"),
+                .starts_with("book.xlsx.xlsplice-"),
             "{}",
             temporary.path.display()
         );
+    }
+
+    #[test]
+    fn the_temporary_file_is_named_plainly_rather_than_hidden() {
+        // A dot-name can leave the destination Hidden on an SMB share (#48);
+        // the mechanism is on `beside`. So the name is plain, and says what
+        // the file is.
+        let temporary = Temporary::beside(Path::new("/somewhere/book.xlsx"));
+        let name = temporary
+            .path
+            .file_name()
+            .expect("a file name")
+            .to_string_lossy()
+            .into_owned();
+
+        assert!(!name.starts_with('.'), "{name}");
+        assert!(name.ends_with(".tmp"), "{name}");
     }
 
     #[test]

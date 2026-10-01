@@ -104,11 +104,93 @@ pub fn crash_probe() -> PathBuf {
 }
 
 /// Run the crash probe and give back what the process did.
+///
+/// The wait is bounded, because the probe once never got past the dynamic
+/// loader and the suite sat until it was killed (#49). The probe's job is to
+/// panic within milliseconds, so [`CRASH_BOUND`] is room for a loaded machine
+/// rather than an estimate of how long it takes.
 pub fn crash(args: &[&str]) -> std::process::Output {
-    std::process::Command::new(crash_probe())
-        .args(args)
+    let mut probe = std::process::Command::new(crash_probe());
+    probe.args(args);
+    output_within(&mut probe, CRASH_BOUND)
+}
+
+/// How long the crash probe has to panic and exit before its test gives up.
+pub const CRASH_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// What `Command::output` does — stdin empty, stdout and stderr captured —
+/// except that a child still running after `bound` fails the test, with its
+/// pid and the state `ps` reports for it, rather than hanging it.
+///
+/// The child is killed once its state has been read, so a failed run leaves
+/// nothing behind; its binary is left where it is, for whoever is chasing why.
+pub fn output_within(
+    command: &mut std::process::Command,
+    bound: std::time::Duration,
+) -> std::process::Output {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::Instant;
+
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the child must be runnable");
+
+    // Both streams are drained while the child runs, as `output` drains them,
+    // so a child that writes more than a pipe holds is not what stops it.
+    fn drain(mut stream: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            stream
+                .read_to_end(&mut bytes)
+                .expect("a child's stream must be readable");
+            bytes
+        })
+    }
+    let stdout = drain(child.stdout.take().expect("stdout was piped"));
+    let stderr = drain(child.stderr.take().expect("stderr was piped"));
+
+    let deadline = Instant::now() + bound;
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("the child must be waitable") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let pid = child.id();
+            let state = process_state(pid);
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "the child was still running after {bound:?}: pid {pid}, state {state}, \
+                 killed; program {:?}",
+                command.get_program()
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+
+    std::process::Output {
+        status,
+        stdout: stdout.join().expect("the stdout reader must not panic"),
+        stderr: stderr.join().expect("the stderr reader must not panic"),
+    }
+}
+
+/// The state `ps` gives for `pid`, or why there is none: on Windows there is
+/// no `ps`, and a test that has already timed out has nothing to gain from a
+/// second failure.
+fn process_state(pid: u32) -> String {
+    match std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
         .output()
-        .expect("the crash probe must be runnable")
+    {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_owned(),
+        Ok(out) => format!("unknown (ps exited {})", out.status),
+        Err(error) => format!("unknown (ps: {error})"),
+    }
 }
 
 pub fn stdout(out: &std::process::Output) -> String {

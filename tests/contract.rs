@@ -17,7 +17,7 @@
 
 mod support;
 
-use support::binary::{crash, exit_code, json, run, stderr, stdout};
+use support::binary::{crash, exit_code, json, output_within, run, stderr, stdout};
 
 #[test]
 fn an_unknown_flag_is_a_usage_error_in_text_on_stderr() {
@@ -277,6 +277,19 @@ fn a_crash_in_text_mode_says_nothing_on_stdout() {
         "a crash must say it is ours to fix: {}",
         stderr(&out)
     );
+}
+
+/// The wait on the crash probe has a bound (#49), and this is the bound
+/// firing: a child that outlives it fails the test by pid and state instead of
+/// hanging the suite. `sleep` stands in for a probe that never leaves the
+/// loader, which could not be made to happen on demand.
+#[cfg(unix)]
+#[test]
+#[should_panic(expected = "still running after")]
+fn a_child_that_outlives_the_bound_fails_the_test_rather_than_hanging_it() {
+    let mut sleeper = std::process::Command::new("sleep");
+    sleeper.arg("30");
+    output_within(&mut sleeper, std::time::Duration::from_millis(100));
 }
 
 #[test]

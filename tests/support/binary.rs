@@ -73,7 +73,18 @@ pub fn run_with_stdin(args: &[&str], input: &str) -> std::process::Output {
 /// examples and `cargo test --test contract` does not, so a test that took the
 /// binary on trust would pass under one invocation and fail under the other.
 /// Asking costs a cargo no-op when it is already built.
+///
+/// It is asked once per test binary, not once per test. The crash tests run on
+/// parallel threads, and when each ran its own build, one test could start the
+/// probe while the other's build was relinking it — one suspect for the probe
+/// that sat in the dynamic loader in #49. Once, the build is over before any
+/// test starts the probe.
 pub fn crash_probe() -> PathBuf {
+    static PROBE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    PROBE.get_or_init(build_crash_probe).clone()
+}
+
+fn build_crash_probe() -> PathBuf {
     let mut build = std::process::Command::new(env!("CARGO"));
     build
         .args(["build", "--quiet", "--example", "crash-probe"])

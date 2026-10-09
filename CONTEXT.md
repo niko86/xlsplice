@@ -125,6 +125,18 @@ The number on a cell pointing into the package's formats. A cell declaring
 none carries index 0, the default format.
 _Avoid_: format id, xf
 
+**Occupied cell**:
+A cell holding a value or a formula. A cell element carrying nothing but a
+_style index_ is not occupied, and a formula Excel never calculated is,
+though its _stored type_ is `empty`.
+_Avoid_: used cell, non-empty cell, populated cell
+
+**Extent**:
+The smallest rectangle covering every _occupied cell_ of a sheet; a sheet
+with none has no extent. Not the `<dimension>` the _envelope_ declares, which
+is advisory, and not Excel's used range, which counts formatted cells too.
+_Avoid_: used range, dimension, bounds
+
 ### Writing
 
 **Operation**:

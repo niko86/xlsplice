@@ -82,6 +82,14 @@ impl Relationships {
         self.part_of(self.entries.iter().find(|entry| entry.id == id)?)
     }
 
+    /// The type of the relationship `id`, as the package spells it.
+    pub fn kind_of_id(&self, id: &str) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|entry| entry.id == id)
+            .map(|entry| entry.kind.as_str())
+    }
+
     /// The part the first relationship of `kind` points at. A part carries at
     /// most one shared string table and one main document, so first is the
     /// only one for every type xlsplice follows by type.

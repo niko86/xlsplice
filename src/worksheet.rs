@@ -714,10 +714,16 @@ pub fn part_of_sheet<R: Read + Seek>(
     workbook: &Workbook,
     sheet: &str,
 ) -> Result<String> {
-    workbook
+    let id = workbook
         .sheet_named(sheet)
-        .and_then(|found| found.rel_id.as_deref())
-        .and_then(|id| rels.part_for_id(id))
+        .and_then(|found| found.rel_id.as_deref());
+    if let Some(kind) = id.and_then(|id| cellless_kind(rels.kind_of_id(id)?)) {
+        return Err(Error::refused(format!(
+            "sheet '{sheet}' in {} is a {kind}, which holds no cells",
+            package.name()
+        )));
+    }
+    id.and_then(|id| rels.part_for_id(id))
         .filter(|part| package.has_part(part))
         .ok_or_else(|| {
             Error::not_found(format!(
@@ -726,6 +732,22 @@ pub fn part_of_sheet<R: Read + Seek>(
                 package.name()
             ))
         })
+}
+
+/// What a sheet is, where the relationship reaching it says it is a kind of
+/// sheet that holds no cells.
+///
+/// The relationship is what says which part is a sheet's, so it is also what
+/// says what kind of sheet that is, without the part being opened. The type
+/// is matched on its last segment, because the transitional and the strict
+/// schema spell everything before it differently. A part reached by any
+/// other type is left to say for itself whether it is a worksheet.
+fn cellless_kind(relationship_type: &str) -> Option<&'static str> {
+    match relationship_type.rsplit('/').next()? {
+        "chartsheet" => Some("chartsheet"),
+        "dialogsheet" => Some("dialogsheet"),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -1004,6 +1026,35 @@ mod tests {
         );
 
         assert_eq!(stored_at(&xml, "A1").raw.as_deref(), Some("4"));
+    }
+
+    #[test]
+    fn a_sheet_that_holds_no_cells_is_known_by_its_relationship_in_either_schema() {
+        for (kind, said) in [
+            (
+                "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chartsheet",
+                Some("chartsheet"),
+            ),
+            (
+                "http://purl.oclc.org/ooxml/officeDocument/relationships/chartsheet",
+                Some("chartsheet"),
+            ),
+            (
+                "http://schemas.openxmlformats.org/officeDocument/2006/relationships/dialogsheet",
+                Some("dialogsheet"),
+            ),
+            (
+                "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet",
+                None,
+            ),
+            (
+                "http://schemas.microsoft.com/office/2006/relationships/xlMacrosheet",
+                None,
+            ),
+            ("", None),
+        ] {
+            assert_eq!(cellless_kind(kind), said, "{kind}");
+        }
     }
 
     #[test]

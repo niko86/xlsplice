@@ -151,9 +151,30 @@ pub struct Overrun {
     /// What `ps` said the child was doing when the bound ran out, or why
     /// there is no answer: on Windows there is no `ps`.
     pub state: Result<String, String>,
+    /// What was kept of the child before it was killed.
+    pub evidence: Evidence,
     /// Whether the kill took within [`GRACE`]. When it did not, the child is
     /// still there, and its pid is the way to it.
     pub reaped: bool,
+}
+
+/// What is kept of an overrun child before it is killed, because killing it
+/// is what makes it impossible to look at afterwards. #49 was diagnosed by
+/// sampling the stuck process, and the hang it chased happened once in five
+/// runs and never on demand, so the next one is the only chance to see it
+/// again. Both are kept in [`Evidence::dir`], under `target/`, where nothing
+/// is committed and a rebuild does not reach.
+#[derive(Debug)]
+pub struct Evidence {
+    /// `target/<profile>/overruns/<program>-<pid>`.
+    pub dir: PathBuf,
+    /// A copy of the binary the child was running, or why there is none.
+    /// The copy is what keeps it: the original is relinked by the next build
+    /// that changes anything it links.
+    pub binary: Result<PathBuf, String>,
+    /// Where the child's threads were, from `sample`, or why there is none.
+    /// `sample` is macOS's, and macOS is where the hang was seen.
+    pub sample: Result<PathBuf, String>,
 }
 
 impl std::fmt::Display for Overrun {
@@ -169,15 +190,30 @@ impl std::fmt::Display for Overrun {
         };
         write!(
             f,
-            "{:?} was still running after {:?}: pid {}, state {state}, {after}",
-            self.program, self.bound, self.pid
-        )
+            "{:?} was still running after {:?}: pid {}, state {state}, {after}; \
+             evidence in {}",
+            self.program,
+            self.bound,
+            self.pid,
+            self.evidence.dir.display()
+        )?;
+        for (what, kept) in [
+            ("binary", &self.evidence.binary),
+            ("sample", &self.evidence.sample),
+        ] {
+            if let Err(why) = kept {
+                write!(f, "; no {what}: {why}")?;
+            }
+        }
+        Ok(())
     }
 }
 
 /// What `Command::output` does — stdin empty, stdout and stderr captured —
 /// except that a child still running after `bound` is an [`Overrun`], with its
-/// pid and the state `ps` reports for it, rather than a wait that never ends.
+/// pid, the state `ps` reports for it and the [`Evidence`] kept of it, rather
+/// than a wait that never ends. The child is killed once that is kept, so an
+/// overrun leaves nothing running.
 ///
 /// The bound is on the child, not on its streams: a grandchild that kept them
 /// open after the child exited would still hold the wait. The crash probe
@@ -185,7 +221,7 @@ impl std::fmt::Display for Overrun {
 pub fn output_within(
     command: &mut std::process::Command,
     bound: Duration,
-) -> Result<std::process::Output, Overrun> {
+) -> Result<std::process::Output, Box<Overrun>> {
     use std::process::Stdio;
 
     let mut child = command
@@ -203,17 +239,19 @@ pub fn output_within(
     let Some(status) = wait_within(&mut child, bound) else {
         let pid = child.id();
         let state = process_state(pid);
+        let evidence = keep_evidence(command.get_program(), pid);
         let _ = child.kill();
         let reaped = wait_within(&mut child, GRACE).is_some();
         // The readers are left behind: the kill closes their pipes when it
         // takes, and when it does not there is nothing to wait for them on.
-        return Err(Overrun {
+        return Err(Box::new(Overrun {
             program: command.get_program().to_owned(),
             bound,
             pid,
             state,
+            evidence,
             reaped,
-        });
+        }));
     };
 
     Ok(std::process::Output {
@@ -246,6 +284,78 @@ fn wait_within(child: &mut std::process::Child, bound: Duration) -> Option<ExitS
         }
         std::thread::sleep(POLL);
     }
+}
+
+/// How long `sample` gets: one second of sampling, and the rest for
+/// symbolicating, which is most of what it spends.
+const SAMPLE_BOUND: Duration = Duration::from_secs(30);
+
+/// Keep what can be kept of `pid` while it is still alive: a copy of
+/// `program`, and on macOS a `sample` of it. Each part that cannot be kept
+/// says why, and none of them fails the call, because the test is already
+/// failing and the overrun is the thing to report.
+fn keep_evidence(program: &std::ffi::OsStr, pid: u32) -> Evidence {
+    let program = Path::new(program);
+    let name = program
+        .file_name()
+        .map_or_else(|| "child".into(), |name| name.to_string_lossy());
+    let dir = Path::new(env!("CARGO_BIN_EXE_xlsplice"))
+        .parent()
+        .expect("the binary under test sits in a directory")
+        .join("overruns")
+        .join(format!("{name}-{pid}"));
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        let why = format!("{} could not be made: {error}", dir.display());
+        return Evidence {
+            dir,
+            binary: Err(why.clone()),
+            sample: Err(why),
+        };
+    }
+
+    // A bare name was found on PATH by the spawn, and is not followed here:
+    // only a path names the file the child is actually running.
+    let binary = if program.components().count() > 1 {
+        let copy = dir.join(&*name);
+        std::fs::copy(program, &copy)
+            .map(|_| copy)
+            .map_err(|error| format!("copying {}: {error}", program.display()))
+    } else {
+        Err(format!("{} is a bare name, not a path", program.display()))
+    };
+
+    Evidence {
+        sample: sample(pid, &dir.join("sample.txt")),
+        dir,
+        binary,
+    }
+}
+
+/// `sample` `pid` for one second into `file`, held to [`SAMPLE_BOUND`].
+fn sample(pid: u32, file: &Path) -> Result<PathBuf, String> {
+    use std::process::Stdio;
+
+    if !cfg!(target_os = "macos") {
+        return Err("sample is macOS only".to_owned());
+    }
+    let mut sample = std::process::Command::new("sample")
+        .arg(pid.to_string())
+        .arg("1")
+        .arg("-file")
+        .arg(file)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("sample: {error}"))?;
+    let Some(status) = wait_within(&mut sample, SAMPLE_BOUND) else {
+        let _ = sample.kill();
+        return Err(format!("sample did not finish within {SAMPLE_BOUND:?}"));
+    };
+    if !status.success() {
+        return Err(format!("sample exited {status}"));
+    }
+    Ok(file.to_owned())
 }
 
 /// The state `ps` gives for `pid`, or why there is none. `ps` is held to

@@ -255,6 +255,49 @@ impl<'a, 'input> Worksheet<'a, 'input> {
         })
     }
 
+    /// Every occupied cell the sheet holds, with what it stores, in the order
+    /// the part holds them.
+    ///
+    /// A cell is occupied when it holds a value or a formula; an element
+    /// carrying nothing but a style is not, and is left out. Rows and cells
+    /// that do not declare where they are follow the one before them, as
+    /// [`Worksheet::row`] and [`cell_in`] count them.
+    pub fn occupied(&self) -> Result<Vec<(Cell, Stored)>> {
+        let Some(data) = self.data else {
+            return Ok(Vec::new());
+        };
+        let mut held = Vec::new();
+        let mut number = 0;
+        for row in children(data, "row") {
+            number = match row.attribute("r") {
+                None => number + 1,
+                Some(r) => r.parse().map_err(|_| {
+                    Error::unreadable(format!("a row is numbered '{r}', which is not a row"))
+                })?,
+            };
+            let mut column = 0;
+            for node in children(row, "c") {
+                let at = match node.attribute("r") {
+                    Some(r) => Cell::parse(r).ok_or_else(|| {
+                        Error::unreadable(format!("a cell is addressed '{r}', which is not a cell"))
+                    })?,
+                    None => Cell::new(column + 1, number).ok_or_else(|| {
+                        Error::unreadable(format!(
+                            "a cell in row {number} follows column {column}, and there is no \
+                             cell there for it to be"
+                        ))
+                    })?,
+                };
+                column = at.column();
+                let stored = stored(node, at)?;
+                if stored.raw.is_some() || stored.formula.is_some() {
+                    held.push((at, stored));
+                }
+            }
+        }
+        Ok(held)
+    }
+
     /// Find the element `cell` sits in, or the one it would go into, without
     /// reading either.
     pub fn locate(&self, cell: Cell) -> Result<Located<'a, 'input>> {

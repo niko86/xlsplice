@@ -19,7 +19,7 @@
 use serde::Serialize;
 
 use crate::batch::{OperationReport, Report};
-use crate::cells::{CellReport, Value};
+use crate::cells::{CellReport, ReadCell, SheetReport, Value};
 use crate::diff::{Difference, PartStatus};
 use crate::error::{EXIT_DIFFERENT, EXIT_SUCCESS, Error, Result};
 use crate::help::Topic;
@@ -322,6 +322,16 @@ struct CellEntry {
     /// The defined name the operand went through, in the package's own
     /// spelling, or `null` when the operand was an address.
     name: Option<String>,
+    /// The cell and what it holds, flattened beside the two: the same keys
+    /// `cells` answers each cell with.
+    #[serde(flatten)]
+    cell: ReadCellEntry,
+}
+
+/// One cell and what it holds, in both shapes: the whole of a `cells` row,
+/// and all of a `get` row but the target.
+#[derive(Serialize)]
+struct ReadCellEntry {
     /// The sheet, in the package's own spelling.
     sheet: String,
     /// The cell in A1 form.
@@ -395,46 +405,41 @@ impl FormulaEntry {
     }
 }
 
-impl CellEntry {
+impl ReadCellEntry {
     /// What the cell holds is turned into both of its spellings here, and its
     /// formula unwrapped here, so neither is done twice.
-    fn of(report: &CellReport) -> Self {
-        let (value, value_text) = match &report.value {
+    fn of(read: &ReadCell) -> Self {
+        let (value, value_text) = match &read.value {
             Value::Number(number) => (number_json(*number), number.to_string()),
             Value::Text(text) => (serde_json::Value::String(text.clone()), text.clone()),
             Value::Bool(yes) => (serde_json::Value::Bool(*yes), yes.to_string()),
             Value::Empty => (serde_json::Value::Null, String::new()),
         };
-        CellEntry {
-            target: report.target.clone(),
-            name: report.name.clone(),
-            sheet: report.address.sheet.clone(),
-            cell: report.address.cell.a1(),
-            address: report.address.to_string(),
-            kind: report.kind.as_str(),
+        ReadCellEntry {
+            sheet: read.address.sheet.clone(),
+            cell: read.address.cell.a1(),
+            address: read.address.to_string(),
+            kind: read.kind.as_str(),
             value,
             value_text,
-            raw: report.raw.clone(),
-            formula: report.formula.as_ref().map(FormulaEntry::of),
-            style: report.style,
+            raw: read.raw.clone(),
+            formula: read.formula.as_ref().map(FormulaEntry::of),
+            style: read.style,
         }
     }
 }
 
-impl Entry<11> for CellEntry {
-    const HEADERS: [&'static str; 11] = [
-        "TARGET", "NAME", "ADDRESS", "TYPE", "VALUE", "RAW", "STYLE", "FORMULA", "ROLE", "RANGE",
-        "GROUP",
+impl Entry<9> for ReadCellEntry {
+    const HEADERS: [&'static str; 9] = [
+        "ADDRESS", "TYPE", "VALUE", "RAW", "STYLE", "FORMULA", "ROLE", "RANGE", "GROUP",
     ];
 
-    /// Every row has all eleven fields, whatever the cell holds, so a field
-    /// is always the same field to `cut`; the formula's three trail at the end
+    /// Every row has all nine fields, whatever the cell holds, so a field is
+    /// always the same field to `cut`; the formula's four trail at the end
     /// because most cells have none. The sheet and the cell have no column of
     /// their own because the address column carries both.
-    fn row(&self) -> [String; 11] {
-        let CellEntry {
-            target,
-            name,
+    fn row(&self) -> [String; 9] {
+        let ReadCellEntry {
             sheet: _,
             cell: _,
             address,
@@ -450,13 +455,47 @@ impl Entry<11> for CellEntry {
             .map(FormulaEntry::fields)
             .unwrap_or_default();
         [
-            target.clone(),
-            name.clone().unwrap_or_default(),
             address.clone(),
             (*kind).to_owned(),
             value_text.clone(),
             raw.clone().unwrap_or_default(),
             style.map(|index| index.to_string()).unwrap_or_default(),
+            text,
+            role,
+            range,
+            group,
+        ]
+    }
+}
+
+impl CellEntry {
+    fn of(report: &CellReport) -> Self {
+        CellEntry {
+            target: report.target.clone(),
+            name: report.name.clone(),
+            cell: ReadCellEntry::of(&report.cell),
+        }
+    }
+}
+
+impl Entry<11> for CellEntry {
+    const HEADERS: [&'static str; 11] = [
+        "TARGET", "NAME", "ADDRESS", "TYPE", "VALUE", "RAW", "STYLE", "FORMULA", "ROLE", "RANGE",
+        "GROUP",
+    ];
+
+    /// The target and the name, then the cell's nine.
+    fn row(&self) -> [String; 11] {
+        let CellEntry { target, name, cell } = self;
+        let [address, kind, value, raw, style, text, role, range, group] = cell.row();
+        [
+            target.clone(),
+            name.clone().unwrap_or_default(),
+            address,
+            kind,
+            value,
+            raw,
+            style,
             text,
             role,
             range,
@@ -471,6 +510,43 @@ pub fn cells(reports: &[CellReport]) -> Result<Answer> {
     let cells: Vec<CellEntry> = reports.iter().map(CellEntry::of).collect();
     let rows = rows_of(&cells);
     Answer::rows(Cells { cells }, &CellEntry::HEADERS, rows)
+}
+
+/// The payload of `cells --json`.
+#[derive(Serialize)]
+struct SheetsOfCells {
+    sheets: Vec<SheetCellsEntry>,
+}
+
+#[derive(Serialize)]
+struct SheetCellsEntry {
+    /// The sheet, in the package's own spelling.
+    sheet: String,
+    /// The smallest rectangle covering every cell below, as `A1:AF44`, or
+    /// `B2` for one cell; `null` where the sheet holds no occupied cell.
+    extent: Option<String>,
+    /// Every occupied cell, in the order the part holds them.
+    cells: Vec<ReadCellEntry>,
+}
+
+/// What `cells` answers: one block per sheet named, in the order they were
+/// named. The rows are the cells alone, one after another: a sheet's extent
+/// has no row, because every row is as wide as the columns, and the address
+/// says which sheet a cell is on.
+pub fn sheet_cells(reports: &[SheetReport]) -> Result<Answer> {
+    let sheets: Vec<SheetCellsEntry> = reports
+        .iter()
+        .map(|report| SheetCellsEntry {
+            sheet: report.sheet.clone(),
+            extent: report.extent.clone(),
+            cells: report.cells.iter().map(ReadCellEntry::of).collect(),
+        })
+        .collect();
+    let rows = sheets
+        .iter()
+        .flat_map(|sheet| rows_of(&sheet.cells))
+        .collect();
+    Answer::rows(SheetsOfCells { sheets }, &ReadCellEntry::HEADERS, rows)
 }
 
 /// The payload of a writing verb under `--json`.
@@ -895,15 +971,17 @@ mod tests {
         CellReport {
             target: "Sheet1!A1".to_owned(),
             name: None,
-            address: crate::reference::Address {
-                sheet: "Sheet1".to_owned(),
-                cell: crate::reference::Cell::parse("A1").expect("the test asks for a cell"),
+            cell: ReadCell {
+                address: crate::reference::Address {
+                    sheet: "Sheet1".to_owned(),
+                    cell: crate::reference::Cell::parse("A1").expect("the test asks for a cell"),
+                },
+                kind: crate::worksheet::StoredType::Number,
+                value,
+                raw: None,
+                formula: None,
+                style: None,
             },
-            kind: crate::worksheet::StoredType::Number,
-            value,
-            raw: None,
-            formula: None,
-            style: None,
         }
     }
 

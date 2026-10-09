@@ -1,5 +1,5 @@
-//! Reading cells: from the targets a caller named to what the package holds
-//! at each of them.
+//! Reading cells: from the targets a caller named, or the sheets, to what the
+//! package holds at each of them.
 //!
 //! This is where the pieces meet. [`crate::target`] says which cell and part
 //! an operand names, [`crate::worksheet`] says what the cell element holds,
@@ -16,10 +16,10 @@ use std::io::{Read, Seek};
 
 use crate::error::{Error, Result};
 use crate::package::Package;
-use crate::reference::Address;
+use crate::reference::{Address, Cell};
 use crate::relationships::Relationships;
 use crate::strings::SharedStrings;
-use crate::target::{Resolution, parts_of, resolve};
+use crate::target::{Resolution, parts_of, resolve, resolve_sheet};
 use crate::workbook::Workbook;
 use crate::worksheet::{self, Formula, Found, Stored, StoredType, Worksheet};
 
@@ -46,7 +46,15 @@ pub struct CellReport {
     /// The defined name it went through, in the package's own spelling, or
     /// `None` when the target was an address.
     pub name: Option<String>,
-    /// The cell it resolved to, in the package's own spelling.
+    /// The cell it resolved to, and what that cell holds.
+    pub cell: ReadCell,
+}
+
+/// One cell, and what the package holds there: what `get` answers for a
+/// target, and what `cells` answers for each occupied cell of a sheet.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReadCell {
+    /// The cell, in the package's own spelling.
     pub address: Address,
     /// The type the value is stored as.
     pub kind: StoredType,
@@ -60,6 +68,18 @@ pub struct CellReport {
     pub formula: Option<Formula>,
     /// The style index, or `None` for a cell the part does not hold.
     pub style: Option<u32>,
+}
+
+/// One sheet a `cells` operand named, and every occupied cell it holds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SheetReport {
+    /// The sheet, in the package's own spelling.
+    pub sheet: String,
+    /// The extent of its occupied cells, as `A1:AF44`, or `B2` where there is
+    /// one; `None` where there are none.
+    pub extent: Option<String>,
+    /// Its occupied cells, in the order the part holds them.
+    pub cells: Vec<ReadCell>,
 }
 
 /// Read one cell per target, in the order the targets were given.
@@ -127,11 +147,23 @@ fn read_cells<R: Read + Seek>(
 }
 
 fn report(strings: &SharedStrings, at: Resolution, stored: Option<Stored>) -> Result<CellReport> {
+    Ok(CellReport {
+        target: at.target,
+        name: at.name,
+        cell: read_cell(strings, at.address, stored)?,
+    })
+}
+
+/// What the package holds at `address`, from the cell element there, or from
+/// its absence where there is none.
+fn read_cell(
+    strings: &SharedStrings,
+    address: Address,
+    stored: Option<Stored>,
+) -> Result<ReadCell> {
     let Some(stored) = stored else {
-        return Ok(CellReport {
-            target: at.target,
-            name: at.name,
-            address: at.address,
+        return Ok(ReadCell {
+            address,
             kind: StoredType::Empty,
             value: Value::Empty,
             raw: None,
@@ -139,16 +171,98 @@ fn report(strings: &SharedStrings, at: Resolution, stored: Option<Stored>) -> Re
             style: None,
         });
     };
-    let value = value_of(&stored, &at.address, strings)?;
-    Ok(CellReport {
-        target: at.target,
-        name: at.name,
-        address: at.address,
+    let value = value_of(&stored, &address, strings)?;
+    Ok(ReadCell {
+        address,
         kind: stored.kind,
         value,
         raw: stored.raw,
         formula: stored.formula,
         style: Some(stored.style),
+    })
+}
+
+/// Read every occupied cell of each sheet `sheets` names, in the order the
+/// sheets were named and, within each, in the order the part holds them.
+///
+/// Every sheet is resolved before any part is read, as targets are, and
+/// any cell that cannot be read fails the whole read, for the reason
+/// [`read`] gives. A sheet named twice is answered twice; its part is parsed
+/// once.
+pub fn read_sheets<R: Read + Seek>(
+    package: &mut Package<R>,
+    workbook: &Workbook,
+    sheets: &[String],
+) -> Result<Vec<SheetReport>> {
+    let rels = Relationships::read(package, workbook.part())?;
+    let resolved: Vec<(String, String)> = sheets
+        .iter()
+        .map(|sheet| resolve_sheet(package, &rels, workbook, sheet))
+        .collect::<Result<_>>()?;
+
+    let mut held: Vec<(String, Vec<(Cell, Stored)>)> = Vec::new();
+    for (_, part) in &resolved {
+        if held.iter().any(|(read, _)| read == part) {
+            continue;
+        }
+        let xml = package.read_part_text(part)?;
+        let document = worksheet::parsed(xml).map_err(|err| err.within(part))?;
+        let occupied = Worksheet::of(&document)
+            .and_then(|sheet| sheet.occupied())
+            .map_err(|err| err.within(part))?;
+        held.push((part.clone(), occupied));
+    }
+
+    let wanted = held
+        .iter()
+        .flat_map(|(_, cells)| cells)
+        .any(|(_, cell)| cell.kind == StoredType::Shared);
+    let strings = match wanted {
+        true => SharedStrings::read(package, &rels)?,
+        false => SharedStrings::default(),
+    };
+    resolved
+        .into_iter()
+        .map(|(sheet, part)| {
+            let occupied = held
+                .iter()
+                .find(|(read, _)| *read == part)
+                .map(|(_, cells)| cells.as_slice())
+                .unwrap_or_default();
+            let cells = occupied
+                .iter()
+                .map(|(cell, stored)| {
+                    let address = Address {
+                        sheet: sheet.clone(),
+                        cell: *cell,
+                    };
+                    read_cell(&strings, address, Some(stored.clone()))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(SheetReport {
+                extent: extent(occupied.iter().map(|(cell, _)| *cell)),
+                sheet,
+                cells,
+            })
+        })
+        .collect()
+}
+
+/// The smallest rectangle covering `cells`, spelled as a reference, or
+/// `None` for no cells at all.
+fn extent(cells: impl Iterator<Item = Cell>) -> Option<String> {
+    let (mut top, mut left, mut bottom, mut right) = (u32::MAX, u32::MAX, 0, 0);
+    for cell in cells {
+        top = top.min(cell.row());
+        left = left.min(cell.column());
+        bottom = bottom.max(cell.row());
+        right = right.max(cell.column());
+    }
+    let from = Cell::new(left, top)?;
+    let to = Cell::new(right, bottom)?;
+    Some(match from == to {
+        true => from.a1(),
+        false => format!("{}:{}", from.a1(), to.a1()),
     })
 }
 
@@ -213,7 +327,6 @@ fn value_of(stored: &Stored, at: &Address, strings: &SharedStrings) -> Result<Va
 mod tests {
     use super::*;
     use crate::error::ErrorCode;
-    use crate::reference::Cell;
 
     fn at() -> Address {
         Address {

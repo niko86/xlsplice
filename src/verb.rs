@@ -87,6 +87,13 @@ pub fn get(path: &Path, targets: &[String], trace: &Trace) -> crate::Result<Answ
     answer::cells(&cells::read(&mut package, &workbook, targets)?)
 }
 
+/// `cells`: every occupied cell of the sheets named.
+pub fn cells(path: &Path, sheets: &[String], trace: &Trace) -> crate::Result<Answer> {
+    let (mut package, workbook) = open(path, trace)?;
+    trace.say(&format!("reading {} sheet(s)", sheets.len()));
+    answer::sheet_cells(&cells::read_sheets(&mut package, &workbook, sheets)?)
+}
+
 /// `diff`: which parts differ between two packages.
 ///
 /// Reading two packages is the whole of it and neither is written to, so

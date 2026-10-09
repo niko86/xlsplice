@@ -78,6 +78,24 @@ pub fn resolve<R: Read + Seek>(
     })
 }
 
+/// A sheet named by a `cells` operand, in the package's own spelling, and
+/// the worksheet part that holds its cells.
+///
+/// Not a target: an operand naming a whole sheet names no cell. It is
+/// resolved here all the same, because which sheet a name means and which
+/// part holds it are the rules a target's sheet goes through, and they are
+/// not spelled out twice.
+pub fn resolve_sheet<R: Read + Seek>(
+    package: &Package<R>,
+    rels: &Relationships,
+    workbook: &Workbook,
+    sheet: &str,
+) -> Result<(String, String)> {
+    let sheet = sheet_named(package.name(), workbook, sheet)?;
+    let part = part_of_sheet(package, rels, workbook, &sheet)?;
+    Ok((sheet, part))
+}
+
 /// A token that is not a cell but reads as two of them around a colon is a
 /// range, and a target is one cell. Saying so beats going on to report that
 /// no defined name is spelled `A1:B2`, which is true and no help.
@@ -88,7 +106,8 @@ fn refuse_a_range(target: &str, text: &str) -> Result<()> {
     match is_range {
         true => Err(Error::usage(format!(
             "'{target}' is a range, and a target is one cell; give one address, \
-             or a defined name that refers to one"
+             or a defined name that refers to one. To read every cell a sheet \
+             holds, use cells"
         ))),
         false => Ok(()),
     }

@@ -45,13 +45,23 @@ it refers to. A name that refers to no cell is not found.
 xlsplice sheets -- book.xlsx
 xlsplice names -- book.xlsx
 xlsplice get -- book.xlsx Inputs!A1 MergedInput
+xlsplice cells -- book.xlsx Inputs
 xlsplice props get -- book.xlsx
 xlsplice calc -- book.xlsx
 xlsplice diff -- book.xlsx other.xlsx
 ```
 
-`get` answers one row per target, in the order given. A cell the sheet does
-not hold reads as `empty` rather than as a failure.
+`get` reads cells by name: one row per target, in the order given. A cell
+the sheet does not hold reads as `empty` rather than as a failure. A target
+is one cell; `get` refuses a range.
+
+`cells` reads by sheet: every **occupied** cell of each sheet named, meaning
+every cell holding a value or a formula, in the order the sheet holds them.
+A cell carrying only formatting is left out. Under `--json` each sheet is one
+block, `{"sheet", "extent", "cells"}`, and each cell carries the fields `get`
+gives it apart from `target` and `name`. `extent` is the smallest range
+covering those cells, such as `A1:AF44`, or `null` for a sheet holding none.
+Use `cells` to scan a sheet whose layout you do not know.
 
 `diff` compares two packages part by part and exits 0 whether or not they
 differ; `--exit-code` makes a difference exit 1, as diff(1) does.

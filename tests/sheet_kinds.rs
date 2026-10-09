@@ -149,6 +149,15 @@ fn a_batch_touching_a_chartsheet_is_refused_whole() {
 }
 
 #[test]
+fn cells_on_a_chartsheet_is_refused_rather_than_answered_with_no_cells() {
+    let package = chartsheet("cells-chartsheet");
+
+    let out = under_json(verb::cells(&package, &targets(&["Extra"]), &Trace::Off));
+
+    assert_refused_as(&out, "chartsheet");
+}
+
+#[test]
 fn a_dialog_sheet_is_refused_the_same_way() {
     let package = with_extra_sheet(
         "dialogsheet",

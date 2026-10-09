@@ -489,6 +489,7 @@ fn a_range_is_refused_as_one_rather_than_reported_as_a_name_nobody_defined() {
         let message = error_message(&out);
         assert!(message.contains("is a range"), "{message}");
         assert!(message.contains("one cell"), "{message}");
+        assert!(message.contains("use cells"), "{message}");
         assert!(
             !message.contains("no defined name"),
             "a range should not be looked up as a name: {message}"

@@ -107,7 +107,8 @@ pub enum Command {
         file: PathBuf,
     },
 
-    /// Read one or more cells, each named by an address or a defined name.
+    /// Read cells named by address or defined name. To read every cell a
+    /// sheet holds, use `cells`.
     #[command(after_help = "Example:\n  xlsplice get book.xlsx Inputs!A1 MergedInput")]
     Get {
         /// The package to read.
@@ -119,6 +120,21 @@ pub enum Command {
         /// anchor. One result comes back per target, in the order given.
         #[arg(value_name = "TARGET", required = true)]
         targets: Vec<String>,
+    },
+
+    /// List the occupied cells of one or more sheets: every cell holding a
+    /// value or a formula, in the order the sheet holds them. To read cells
+    /// by address or defined name, use `get`.
+    #[command(after_help = "Example:\n  xlsplice cells book.xlsx Inputs")]
+    Cells {
+        /// The package to read.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+
+        /// The sheets to read, by name. One block of cells comes back per
+        /// sheet, in the order given.
+        #[arg(value_name = "SHEET", required = true)]
+        sheets: Vec<String>,
     },
 
     /// Write a value into one cell, named by an address or a defined name.

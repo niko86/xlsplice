@@ -10,8 +10,10 @@
 // what it is asking about, so what one suite does not reach is not dead.
 #![allow(dead_code)]
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
+use std::time::{Duration, Instant};
 
 /// Run the binary with `args` and both streams captured, so stdout is a pipe
 /// rather than a terminal.
@@ -77,8 +79,8 @@ pub fn run_with_stdin(args: &[&str], input: &str) -> std::process::Output {
 /// It is asked once per test binary, not once per test. The crash tests run on
 /// parallel threads, and when each ran its own build, one test could start the
 /// probe while the other's build was relinking it — one suspect for the probe
-/// that sat in the dynamic loader in #49. Once, the build is over before any
-/// test starts the probe.
+/// that sat in the dynamic loader in #49. Built once, the probe is finished
+/// before any test starts it.
 pub fn crash_probe() -> PathBuf {
     static PROBE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     PROBE.get_or_init(build_crash_probe).clone()
@@ -119,29 +121,72 @@ fn build_crash_probe() -> PathBuf {
 /// The wait is bounded, because the probe once never got past the dynamic
 /// loader and the suite sat until it was killed (#49). The probe's job is to
 /// panic within milliseconds, so [`CRASH_BOUND`] is room for a loaded machine
-/// rather than an estimate of how long it takes.
+/// rather than an estimate of how long it takes. Nothing else here is bounded:
+/// the binary itself has never hung, and the probe has.
 pub fn crash(args: &[&str]) -> std::process::Output {
     let mut probe = std::process::Command::new(crash_probe());
     probe.args(args);
-    output_within(&mut probe, CRASH_BOUND)
+    output_within(&mut probe, CRASH_BOUND).unwrap_or_else(|overrun| panic!("{overrun}"))
 }
 
 /// How long the crash probe has to panic and exit before its test gives up.
-pub const CRASH_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+const CRASH_BOUND: Duration = Duration::from_secs(30);
+
+/// How long a killed child, or `ps`, gets to finish before it is given up on.
+/// A process that cannot be killed must not hang the suite in the wait after
+/// the kill, which is the one place the bound would otherwise not reach.
+const GRACE: Duration = Duration::from_secs(5);
+
+/// How often a bounded wait asks whether the child is done.
+const POLL: Duration = Duration::from_millis(10);
+
+/// A child still running when its bound ran out: the test fails with this
+/// rather than hanging. Its binary is left where it is, for whoever is chasing
+/// why.
+#[derive(Debug)]
+pub struct Overrun {
+    pub program: std::ffi::OsString,
+    pub bound: Duration,
+    pub pid: u32,
+    /// What `ps` said the child was doing when the bound ran out, or why
+    /// there is no answer: on Windows there is no `ps`.
+    pub state: Result<String, String>,
+    /// Whether the kill took within [`GRACE`]. When it did not, the child is
+    /// still there, and its pid is the way to it.
+    pub reaped: bool,
+}
+
+impl std::fmt::Display for Overrun {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = match &self.state {
+            Ok(state) => state.as_str(),
+            Err(why) => why.as_str(),
+        };
+        let after = if self.reaped {
+            "killed"
+        } else {
+            "killed, but still not gone"
+        };
+        write!(
+            f,
+            "{:?} was still running after {:?}: pid {}, state {state}, {after}",
+            self.program, self.bound, self.pid
+        )
+    }
+}
 
 /// What `Command::output` does — stdin empty, stdout and stderr captured —
-/// except that a child still running after `bound` fails the test, with its
-/// pid and the state `ps` reports for it, rather than hanging it.
+/// except that a child still running after `bound` is an [`Overrun`], with its
+/// pid and the state `ps` reports for it, rather than a wait that never ends.
 ///
-/// The child is killed once its state has been read, so a failed run leaves
-/// nothing behind; its binary is left where it is, for whoever is chasing why.
+/// The bound is on the child, not on its streams: a grandchild that kept them
+/// open after the child exited would still hold the wait. The crash probe
+/// starts no processes, so nothing here does that.
 pub fn output_within(
     command: &mut std::process::Command,
-    bound: std::time::Duration,
-) -> std::process::Output {
-    use std::io::Read;
+    bound: Duration,
+) -> Result<std::process::Output, Overrun> {
     use std::process::Stdio;
-    use std::time::Instant;
 
     let mut child = command
         .stdin(Stdio::null())
@@ -152,56 +197,84 @@ pub fn output_within(
 
     // Both streams are drained while the child runs, as `output` drains them,
     // so a child that writes more than a pipe holds is not what stops it.
-    fn drain(mut stream: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
-        std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            stream
-                .read_to_end(&mut bytes)
-                .expect("a child's stream must be readable");
-            bytes
-        })
-    }
     let stdout = drain(child.stdout.take().expect("stdout was piped"));
     let stderr = drain(child.stderr.take().expect("stderr was piped"));
 
-    let deadline = Instant::now() + bound;
-    let status = loop {
-        if let Some(status) = child.try_wait().expect("the child must be waitable") {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            let pid = child.id();
-            let state = process_state(pid);
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!(
-                "the child was still running after {bound:?}: pid {pid}, state {state}, \
-                 killed; program {:?}",
-                command.get_program()
-            );
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+    let Some(status) = wait_within(&mut child, bound) else {
+        let pid = child.id();
+        let state = process_state(pid);
+        let _ = child.kill();
+        let reaped = wait_within(&mut child, GRACE).is_some();
+        // The readers are left behind: the kill closes their pipes when it
+        // takes, and when it does not there is nothing to wait for them on.
+        return Err(Overrun {
+            program: command.get_program().to_owned(),
+            bound,
+            pid,
+            state,
+            reaped,
+        });
     };
 
-    std::process::Output {
+    Ok(std::process::Output {
         status,
         stdout: stdout.join().expect("the stdout reader must not panic"),
         stderr: stderr.join().expect("the stderr reader must not panic"),
+    })
+}
+
+/// Read `stream` to its end on a thread of its own.
+fn drain(mut stream: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stream
+            .read_to_end(&mut bytes)
+            .expect("a child's stream must be readable");
+        bytes
+    })
+}
+
+/// Wait for `child` to exit, for no longer than `bound`.
+fn wait_within(child: &mut std::process::Child, bound: Duration) -> Option<ExitStatus> {
+    let deadline = Instant::now() + bound;
+    loop {
+        if let Some(status) = child.try_wait().expect("the child must be waitable") {
+            return Some(status);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(POLL);
     }
 }
 
-/// The state `ps` gives for `pid`, or why there is none: on Windows there is
-/// no `ps`, and a test that has already timed out has nothing to gain from a
-/// second failure.
-fn process_state(pid: u32) -> String {
-    match std::process::Command::new("ps")
+/// The state `ps` gives for `pid`, or why there is none. `ps` is held to
+/// [`GRACE`] like everything else on this path, so that a test that has
+/// already timed out cannot hang in finding out why.
+fn process_state(pid: u32) -> Result<String, String> {
+    use std::process::Stdio;
+
+    let mut ps = std::process::Command::new("ps")
         .args(["-o", "stat=", "-p", &pid.to_string()])
-        .output()
-    {
-        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_owned(),
-        Ok(out) => format!("unknown (ps exited {})", out.status),
-        Err(error) => format!("unknown (ps: {error})"),
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("unknown (ps: {error})"))?;
+    let Some(status) = wait_within(&mut ps, GRACE) else {
+        let _ = ps.kill();
+        return Err(format!("unknown (ps did not answer within {GRACE:?})"));
+    };
+    if !status.success() {
+        return Err(format!("unknown (ps exited {status})"));
     }
+    let mut out = String::new();
+    ps.stdout
+        .take()
+        .expect("ps's stdout was piped")
+        .read_to_string(&mut out)
+        .map_err(|error| format!("unknown (reading ps: {error})"))?;
+    Ok(out.trim().to_owned())
 }
 
 pub fn stdout(out: &std::process::Output) -> String {

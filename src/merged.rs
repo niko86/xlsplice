@@ -4,13 +4,14 @@
 //! A merged area's value is held in its top-left cell and the cells beside
 //! it hold nothing, so a caller stepping along a row needs the areas to know
 //! which cell a position's value is in. Nothing here reads a cell: the areas
-//! are reported as the part declares them, and what they cover is the
-//! caller's to work out.
+//! are reported as the part declares them, each beside its anchor, and what
+//! else they cover is the caller's to work out.
 
 use std::io::{Read, Seek};
 
 use crate::error::Result;
 use crate::package::Package;
+use crate::reference::Area;
 use crate::relationships::Relationships;
 use crate::target::resolve_sheet;
 use crate::workbook::Workbook;
@@ -22,9 +23,8 @@ use crate::worksheet;
 pub struct MergedReport {
     /// The sheet, in the package's own spelling.
     pub sheet: String,
-    /// Each area as an A1 range, upper case and without `$`, in the order
-    /// the part declares them.
-    pub areas: Vec<String>,
+    /// Each area, in the order the part declares them.
+    pub areas: Vec<Area>,
 }
 
 /// Read the merged areas of each sheet `sheets` names, in the order the
@@ -45,7 +45,7 @@ pub fn read<R: Read + Seek>(
         .map(|sheet| resolve_sheet(package, &rels, workbook, sheet))
         .collect::<Result<_>>()?;
 
-    let mut held: Vec<(String, Vec<String>)> = Vec::new();
+    let mut held: Vec<(String, Vec<Area>)> = Vec::new();
     for (sheet, part) in &resolved {
         if held.iter().any(|(read, _)| read == part) {
             continue;
@@ -53,7 +53,7 @@ pub fn read<R: Read + Seek>(
         let xml = package.read_part_text(part)?;
         let document = worksheet::parsed(xml).map_err(|err| err.within(part))?;
         let areas = worksheet::merged_areas(&document, sheet).map_err(|err| err.within(part))?;
-        held.push((part.clone(), areas.iter().map(|area| area.a1()).collect()));
+        held.push((part.clone(), areas));
     }
 
     Ok(resolved

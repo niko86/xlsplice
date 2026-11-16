@@ -68,9 +68,11 @@ Use `cells` to scan a sheet whose layout you do not know.
 them. A merged area's value is held in its top-left cell and the other cells
 it covers hold nothing, so read it before stepping along a row or down a
 column of values. Under `--json` each sheet is one block, `{"sheet",
-"areas"}`, and each area is an A1 range such as `B2:C3`, in upper case and
-without `$`, in the order the sheet declares them; a sheet with none has
-`"areas": []`. Without `--json` each area is one row, the sheet and the area.
+"areas"}`, and each area is `{"area", "anchor"}`, in the order the sheet
+declares them: `area` is an A1 range such as `B2:C3`, in upper case and
+without `$`, and `anchor` is its top-left cell as an address `get` accepts,
+such as `Inputs!B2`. A sheet with none has `"areas": []`. Without `--json`
+each area is one row: the sheet, the area and the anchor.
 
 `diff` compares two packages part by part and exits 0 whether or not they
 differ; `--exit-code` makes a difference exit 1, as diff(1) does.

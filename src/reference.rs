@@ -97,6 +97,17 @@ impl Area {
         })
     }
 
+    /// The area's top-left cell, the one holding what a merged area shows:
+    /// the least column and the least row of its corners, whichever way
+    /// round they were written.
+    pub fn anchor(self) -> Cell {
+        let to = self.to.unwrap_or(self.from);
+        Cell {
+            column: self.from.column.min(to.column),
+            row: self.from.row.min(to.row),
+        }
+    }
+
     /// The area in A1 form, without `$`: one cell, or two around a colon.
     pub fn a1(self) -> String {
         match self.to {
@@ -522,6 +533,23 @@ mod tests {
             assert_eq!(
                 Area::parse(text).map(Area::a1).as_deref(),
                 Some(a1),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_areas_anchor_is_its_top_left_cell_however_its_corners_were_written() {
+        for (text, anchor) in [
+            ("B2:C3", "B2"),
+            ("C3:B2", "B2"),
+            ("C2:B3", "B2"),
+            ("B3:C2", "B2"),
+            ("D4", "D4"),
+        ] {
+            assert_eq!(
+                Area::parse(text).map(|area| area.anchor().a1()).as_deref(),
+                Some(anchor),
                 "{text}"
             );
         }

@@ -86,7 +86,9 @@ The last result Excel stored in a formula cell.
 _Avoid_: result, computed value
 
 **Anchor**:
-The top-left cell of the first area a defined name refers to; the one cell a name resolves to.
+The top-left cell of an area, the one cell the area comes down to. For a
+defined name, that of the first area it refers to: the cell the name resolves
+to. For a _merged area_, the cell holding what the area shows.
 _Avoid_: first cell, origin
 
 **Scope**:
@@ -136,6 +138,13 @@ The smallest rectangle covering every _occupied cell_ of a sheet; a sheet
 with none has no extent. Not the `<dimension>` the _envelope_ declares, which
 is advisory, and not Excel's used range, which counts formatted cells too.
 _Avoid_: used range, dimension, bounds
+
+**Merged area**:
+A rectangle of cells Excel shows as one, declared in the worksheet
+_envelope_. What the area shows is held in its top-left cell, and the cells
+under the rest of it hold nothing a user sees. Not the "merged" said of
+_part edits_, which is the ordinary word for several becoming one.
+_Avoid_: merged cell, merged range, merge
 
 ### Writing
 

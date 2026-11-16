@@ -4,7 +4,8 @@
 //! merged, because the value of a merged area sits in its top-left cell and
 //! the cells beside it hold nothing. `merged` answers with each sheet's
 //! merged areas as the part declares them: one block per sheet named, every
-//! area in part order, and nothing about the cells inside.
+//! area in part order beside its anchor, the cell holding what the area shows,
+//! and nothing about the cells inside.
 //!
 //! These call the library in process, as `cells.rs` does. One spawns, for
 //! what clap does with a sheet missing.
@@ -95,8 +96,8 @@ fn every_area_comes_back_in_part_order_upper_cased_and_without_dollars() {
     assert_eq!(
         body["sheets"],
         json!([
-            {"sheet": "Inputs", "areas": ["D7:F8", "G7:I8", "B3:C3"]},
-            {"sheet": "Notes", "areas": ["A10:A12"]},
+            {"sheet": "Inputs", "areas": [{"area": "D7:F8", "anchor": "Inputs!D7"}, {"area": "G7:I8", "anchor": "Inputs!G7"}, {"area": "B3:C3", "anchor": "Inputs!B3"}]},
+            {"sheet": "Notes", "areas": [{"area": "A10:A12", "anchor": "Notes!A10"}]},
         ])
     );
 }
@@ -140,10 +141,13 @@ fn a_sheet_named_twice_is_answered_twice_in_the_packages_spelling() {
         .collect();
     assert_eq!(sheets, [json!("Notes"), json!("Inputs"), json!("Notes")]);
     assert_eq!(body["sheets"][0], body["sheets"][2]);
-    assert_eq!(body["sheets"][0]["areas"], json!(["A10:A12"]));
+    assert_eq!(
+        body["sheets"][0]["areas"],
+        json!([{"area": "A10:A12", "anchor": "Notes!A10"}])
+    );
 }
 
-/// The rows are one per area, the sheet and the area, so a sheet without
+/// The rows are one per area, the sheet, the area and its anchor, so a sheet without
 /// any contributes no row and a sheet named twice contributes its rows
 /// twice.
 #[test]
@@ -160,11 +164,11 @@ fn the_rows_are_one_per_area_with_the_sheet_beside_it() {
     assert_eq!(out.stderr, "");
     assert_eq!(
         out.stdout,
-        "Notes\tA10:A12\n\
-         Inputs\tD7:F8\n\
-         Inputs\tG7:I8\n\
-         Inputs\tB3:C3\n\
-         Notes\tA10:A12\n"
+        "Notes\tA10:A12\tNotes!A10\n\
+         Inputs\tD7:F8\tInputs!D7\n\
+         Inputs\tG7:I8\tInputs!G7\n\
+         Inputs\tB3:C3\tInputs!B3\n\
+         Notes\tA10:A12\tNotes!A10\n"
     );
 }
 
@@ -234,8 +238,8 @@ fn a_worksheet_reached_by_an_absolute_target_is_read_the_same() {
     assert_eq!(
         body["sheets"],
         json!([
-            {"sheet": "Inputs", "areas": ["D7:F8", "G7:I8", "B3:C3"]},
-            {"sheet": "Notes", "areas": ["A10:A12"]},
+            {"sheet": "Inputs", "areas": [{"area": "D7:F8", "anchor": "Inputs!D7"}, {"area": "G7:I8", "anchor": "Inputs!G7"}, {"area": "B3:C3", "anchor": "Inputs!B3"}]},
+            {"sheet": "Notes", "areas": [{"area": "A10:A12", "anchor": "Notes!A10"}]},
         ])
     );
 }
@@ -252,7 +256,31 @@ fn an_area_of_one_cell_is_answered_as_that_cell() {
 
     let body = merged(&package, &["Inputs"]);
 
-    assert_eq!(body["sheets"][0]["areas"], json!(["E5", "H2:H2"]));
+    assert_eq!(
+        body["sheets"][0]["areas"],
+        json!([{"area": "E5", "anchor": "Inputs!E5"}, {"area": "H2:H2", "anchor": "Inputs!H2"}])
+    );
+}
+
+/// An area's anchor is its top-left cell, worked out rather than read off
+/// the front of the ref, so a range written backwards, or from its other two
+/// corners, is reported as written and anchored where Excel shows its value.
+#[test]
+fn the_anchor_is_the_top_left_cell_however_the_corners_were_written() {
+    let package = one_sheet(
+        "reversed",
+        r#"<mergeCells count="2"><mergeCell ref="F8:D7"/><mergeCell ref="F7:D8"/></mergeCells>"#,
+    );
+
+    let body = merged(&package, &["Inputs"]);
+
+    assert_eq!(
+        body["sheets"][0]["areas"],
+        json!([
+            {"area": "F8:D7", "anchor": "Inputs!D7"},
+            {"area": "F7:D8", "anchor": "Inputs!D7"},
+        ])
+    );
 }
 
 /// A ref that is not a range of cells is the part disagreeing with itself,
@@ -315,7 +343,10 @@ fn a_cell_that_cannot_be_read_does_not_stop_the_areas_being_read() {
     assert_eq!(envelope(&cells)["error"]["code"], json!("unreadable"));
 
     let body = merged(&package, &["Inputs"]);
-    assert_eq!(body["sheets"][0]["areas"], json!(["A1:B1"]));
+    assert_eq!(
+        body["sheets"][0]["areas"],
+        json!([{"area": "A1:B1", "anchor": "Inputs!A1"}])
+    );
 }
 
 /// A part a re-serialising tool wrote carries a prefix on every element,
@@ -335,7 +366,10 @@ fn a_prefixed_worksheet_reads_the_same_as_an_unprefixed_one() {
 
     let body = merged(&package, &["Inputs"]);
 
-    assert_eq!(body["sheets"][0]["areas"], json!(["C2:D2"]));
+    assert_eq!(
+        body["sheets"][0]["areas"],
+        json!([{"area": "C2:D2", "anchor": "Inputs!C2"}])
+    );
 }
 
 #[test]

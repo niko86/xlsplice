@@ -25,6 +25,7 @@ use crate::error::{EXIT_DIFFERENT, EXIT_SUCCESS, Error, Result};
 use crate::help::Topic;
 use crate::merged::MergedReport;
 use crate::properties::{self, Property};
+use crate::reference::Address;
 use crate::workbook::{DefinedName, Resolved, Scope, Sheet, Workbook};
 use crate::worksheet::Formula;
 use crate::xml::number_text;
@@ -560,24 +561,37 @@ struct SheetsOfAreas {
 struct SheetAreasEntry {
     /// The sheet, in the package's own spelling.
     sheet: String,
-    /// Every merged area, as `B2:C3`, in the order the part declares them;
-    /// empty where it declares none.
-    areas: Vec<String>,
+    /// Every merged area, in the order the part declares them; empty where
+    /// it declares none.
+    areas: Vec<AreaEntry>,
 }
 
-/// One merged area as a row: the envelope carries it inside its sheet's
-/// block, and a row has to say which sheet it is on.
+/// One merged area. An object rather than the bare range, so that a field
+/// can be added to it without retyping the list (ADR-0009).
+#[derive(Serialize)]
 struct AreaEntry {
+    /// The sheet, which the envelope carries once on the block and a row
+    /// has to say for itself.
+    #[serde(skip)]
     sheet: String,
+    /// The area as the part spells it, such as `B2:C3`, in upper case and
+    /// without `$`; one cell alone where the part gives one.
     area: String,
+    /// The area's top-left cell, which holds what the area shows, quoted as
+    /// a reference: what `get` would accept back.
+    anchor: String,
 }
 
-impl Entry<2> for AreaEntry {
-    const HEADERS: [&'static str; 2] = ["SHEET", "AREA"];
+impl Entry<3> for AreaEntry {
+    const HEADERS: [&'static str; 3] = ["SHEET", "AREA", "ANCHOR"];
 
-    fn row(&self) -> [String; 2] {
-        let AreaEntry { sheet, area } = self;
-        [sheet.clone(), area.clone()]
+    fn row(&self) -> [String; 3] {
+        let AreaEntry {
+            sheet,
+            area,
+            anchor,
+        } = self;
+        [sheet.clone(), area.clone(), anchor.clone()]
     }
 }
 
@@ -588,19 +602,25 @@ pub fn merged_areas(reports: &[MergedReport]) -> Result<Answer> {
         .iter()
         .map(|report| SheetAreasEntry {
             sheet: report.sheet.clone(),
-            areas: report.areas.clone(),
+            areas: report
+                .areas
+                .iter()
+                .map(|area| AreaEntry {
+                    sheet: report.sheet.clone(),
+                    area: area.a1(),
+                    anchor: Address {
+                        sheet: report.sheet.clone(),
+                        cell: area.anchor(),
+                    }
+                    .to_string(),
+                })
+                .collect(),
         })
         .collect();
-    let entries: Vec<AreaEntry> = sheets
+    let rows = sheets
         .iter()
-        .flat_map(|block| {
-            block.areas.iter().map(|area| AreaEntry {
-                sheet: block.sheet.clone(),
-                area: area.clone(),
-            })
-        })
+        .flat_map(|block| rows_of(&block.areas))
         .collect();
-    let rows = rows_of(&entries);
     Answer::rows(SheetsOfAreas { sheets }, &AreaEntry::HEADERS, rows)
 }
 

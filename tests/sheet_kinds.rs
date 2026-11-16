@@ -158,6 +158,15 @@ fn cells_on_a_chartsheet_is_refused_rather_than_answered_with_no_cells() {
 }
 
 #[test]
+fn merged_on_a_chartsheet_is_refused_rather_than_answered_with_no_areas() {
+    let package = chartsheet("merged-chartsheet");
+
+    let out = under_json(verb::merged(&package, &targets(&["Extra"]), &Trace::Off));
+
+    assert_refused_as(&out, "chartsheet");
+}
+
+#[test]
 fn a_dialog_sheet_is_refused_the_same_way() {
     let package = with_extra_sheet(
         "dialogsheet",

@@ -23,7 +23,9 @@ use crate::cells::{CellReport, ReadCell, SheetReport, Value};
 use crate::diff::{Difference, PartStatus};
 use crate::error::{EXIT_DIFFERENT, EXIT_SUCCESS, Error, Result};
 use crate::help::Topic;
+use crate::merged::MergedReport;
 use crate::properties::{self, Property};
+use crate::reference::Address;
 use crate::workbook::{DefinedName, Resolved, Scope, Sheet, Workbook};
 use crate::worksheet::Formula;
 use crate::xml::number_text;
@@ -547,6 +549,79 @@ pub fn sheet_cells(reports: &[SheetReport]) -> Result<Answer> {
         .flat_map(|sheet| rows_of(&sheet.cells))
         .collect();
     Answer::rows(SheetsOfCells { sheets }, &ReadCellEntry::HEADERS, rows)
+}
+
+/// The payload of `merged --json`.
+#[derive(Serialize)]
+struct SheetsOfAreas {
+    sheets: Vec<SheetAreasEntry>,
+}
+
+#[derive(Serialize)]
+struct SheetAreasEntry {
+    /// The sheet, in the package's own spelling.
+    sheet: String,
+    /// Every merged area, in the order the part declares them; empty where
+    /// it declares none.
+    areas: Vec<AreaEntry>,
+}
+
+/// One merged area. An object rather than the bare range, so that a field
+/// can be added to it without retyping the list (ADR-0009).
+#[derive(Serialize)]
+struct AreaEntry {
+    /// The sheet, which the envelope carries once on the block and a row
+    /// has to say for itself.
+    #[serde(skip)]
+    sheet: String,
+    /// The area as the part spells it, such as `B2:C3`, in upper case and
+    /// without `$`; one cell alone where the part gives one.
+    area: String,
+    /// The area's top-left cell, which holds what the area shows, quoted as
+    /// a reference: what `get` would accept back.
+    anchor: String,
+}
+
+impl Entry<3> for AreaEntry {
+    const HEADERS: [&'static str; 3] = ["SHEET", "AREA", "ANCHOR"];
+
+    fn row(&self) -> [String; 3] {
+        let AreaEntry {
+            sheet,
+            area,
+            anchor,
+        } = self;
+        [sheet.clone(), area.clone(), anchor.clone()]
+    }
+}
+
+/// What `merged` answers: one block per sheet named, in the order they were
+/// named, and one row per area, so a sheet without any has no row.
+pub fn merged_areas(reports: &[MergedReport]) -> Result<Answer> {
+    let sheets: Vec<SheetAreasEntry> = reports
+        .iter()
+        .map(|report| SheetAreasEntry {
+            sheet: report.sheet.clone(),
+            areas: report
+                .areas
+                .iter()
+                .map(|area| AreaEntry {
+                    sheet: report.sheet.clone(),
+                    area: area.a1(),
+                    anchor: Address {
+                        sheet: report.sheet.clone(),
+                        cell: area.anchor(),
+                    }
+                    .to_string(),
+                })
+                .collect(),
+        })
+        .collect();
+    let rows = sheets
+        .iter()
+        .flat_map(|block| rows_of(&block.areas))
+        .collect();
+    Answer::rows(SheetsOfAreas { sheets }, &AreaEntry::HEADERS, rows)
 }
 
 /// The payload of a writing verb under `--json`.

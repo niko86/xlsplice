@@ -22,6 +22,7 @@ use crate::calculation;
 use crate::cells;
 use crate::diff::{self, Difference};
 use crate::error::Error;
+use crate::merged;
 use crate::package::{FromFile, Package};
 use crate::properties;
 use crate::workbook::Workbook;
@@ -92,6 +93,16 @@ pub fn cells(path: &Path, sheets: &[String], trace: &Trace) -> crate::Result<Ans
     let (mut package, workbook) = open(path, trace)?;
     trace.say(&format!("reading {} sheet(s)", sheets.len()));
     answer::sheet_cells(&cells::read_sheets(&mut package, &workbook, sheets)?)
+}
+
+/// `merged`: the merged areas of the sheets named.
+pub fn merged(path: &Path, sheets: &[String], trace: &Trace) -> crate::Result<Answer> {
+    let (mut package, workbook) = open(path, trace)?;
+    trace.say(&format!(
+        "reading the merged areas of {} sheet(s)",
+        sheets.len()
+    ));
+    answer::merged_areas(&merged::read(&mut package, &workbook, sheets)?)
 }
 
 /// `diff`: which parts differ between two packages.

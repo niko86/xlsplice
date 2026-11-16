@@ -20,7 +20,7 @@ use roxmltree::{Document, Node};
 
 use crate::error::{Error, Result};
 use crate::package::Package;
-use crate::reference::Cell;
+use crate::reference::{Area, Cell};
 use crate::relationships::Relationships;
 use crate::splice::{Element, Splice, appended, inserted_before};
 use crate::strings::string_item_text;
@@ -231,13 +231,7 @@ impl<'a, 'input> Worksheet<'a, 'input> {
     /// outside every row; it is not rejected here, because the read path has
     /// nothing to say about it that [`Found::NoRow`] does not say already.
     pub fn of(document: &'a Document<'input>) -> Result<Self> {
-        let root = document.root_element();
-        if root.tag_name().name() != "worksheet" {
-            return Err(Error::unreadable(format!(
-                "the worksheet part's root element is <{}>, not <worksheet>",
-                root.tag_name().name()
-            )));
-        }
+        let root = worksheet_root(document)?;
         Ok(Worksheet {
             data: children(root, "sheetData").next(),
             cols: children(root, "cols").next(),
@@ -401,6 +395,48 @@ impl<'a, 'input> Worksheet<'a, 'input> {
 pub fn parsed(xml: &str) -> Result<Document<'_>> {
     Document::parse(xml)
         .map_err(|err| Error::unreadable(format!("the worksheet part is not valid XML: {err}")))
+}
+
+/// The root element of a parsed worksheet part, which must be a worksheet.
+fn worksheet_root<'a, 'input>(document: &'a Document<'input>) -> Result<Node<'a, 'input>> {
+    let root = document.root_element();
+    match root.tag_name().name() {
+        "worksheet" => Ok(root),
+        other => Err(Error::unreadable(format!(
+            "the worksheet part's root element is <{other}>, not <worksheet>"
+        ))),
+    }
+}
+
+/// The areas a worksheet part declares merged, in the order it declares
+/// them, for the sheet called `sheet`, which is named in the package's own
+/// spelling and only so that a failure can say which sheet it was.
+///
+/// One walk over the root's children, which stops at `<mergeCells>`: the
+/// schema allows one, after the sheet data, and nothing after it is looked
+/// at. A part declaring no merged area, with no element or an empty one, has
+/// none. An area that is not a range of cells is the part disagreeing with
+/// itself, and fails the read rather than being left out, because a caller
+/// stepping along a row would then read a merged cell as two.
+pub fn merged_areas(document: &Document, sheet: &str) -> Result<Vec<Area>> {
+    let Some(merges) = children(worksheet_root(document)?, "mergeCells").next() else {
+        return Ok(Vec::new());
+    };
+    children(merges, "mergeCell")
+        .map(|merge| {
+            let reference = merge.attribute("ref").ok_or_else(|| {
+                Error::unreadable(format!(
+                    "sheet '{sheet}' declares a merged area with no ref"
+                ))
+            })?;
+            Area::parse(reference).ok_or_else(|| {
+                Error::unreadable(format!(
+                    "sheet '{sheet}' declares the merged area '{reference}', which is not an \
+                     A1 range"
+                ))
+            })
+        })
+        .collect()
 }
 
 /// A whole number an attribute spells, or nothing where it spells none or
@@ -1104,6 +1140,54 @@ mod tests {
     fn a_part_that_is_not_a_worksheet_is_unreadable() {
         let document = Document::parse("<workbook/>").expect("the test part must parse");
         let err = Worksheet::of(&document).expect_err("a workbook is not a worksheet");
+
+        assert_eq!(err.code(), ErrorCode::Unreadable);
+    }
+
+    fn merges(xml: &str) -> Result<Vec<String>> {
+        let document = Document::parse(xml).expect("the test part must parse");
+        Ok(merged_areas(&document, "Inputs")?
+            .into_iter()
+            .map(Area::a1)
+            .collect())
+    }
+
+    #[test]
+    fn merged_areas_come_back_in_the_order_the_part_declares_them() {
+        let xml = format!(
+            r#"<worksheet xmlns="{NS}"><sheetData/><mergeCells count="2"><mergeCell ref="F1:G1"/><mergeCell ref="$a$3:B4"/></mergeCells></worksheet>"#
+        );
+
+        assert_eq!(merges(&xml).expect("the areas read"), ["F1:G1", "A3:B4"]);
+    }
+
+    #[test]
+    fn a_part_declaring_no_merged_area_has_none() {
+        let without = merges(&sheet("")).expect("no element reads");
+        let empty = merges(&format!(
+            r#"<worksheet xmlns="{NS}"><sheetData/><mergeCells count="0"/></worksheet>"#
+        ))
+        .expect("an empty element reads");
+
+        assert!(without.is_empty());
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn a_merged_area_that_is_not_a_range_is_unreadable_and_names_the_sheet_and_the_ref() {
+        let xml = format!(
+            r#"<worksheet xmlns="{NS}"><mergeCells><mergeCell ref="B:C"/></mergeCells></worksheet>"#
+        );
+        let err = merges(&xml).expect_err("a whole-column ref is not a range of cells");
+
+        assert_eq!(err.code(), ErrorCode::Unreadable);
+        assert!(err.message().contains("'Inputs'"), "{err}");
+        assert!(err.message().contains("'B:C'"), "{err}");
+    }
+
+    #[test]
+    fn a_part_that_is_not_a_worksheet_has_no_merged_areas_to_read() {
+        let err = merges("<chartsheet/>").expect_err("a chartsheet is not a worksheet");
 
         assert_eq!(err.code(), ErrorCode::Unreadable);
     }

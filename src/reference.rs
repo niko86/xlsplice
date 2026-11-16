@@ -66,6 +66,46 @@ impl fmt::Display for Cell {
     }
 }
 
+/// A rectangle of cells as a worksheet part spells one in a reference
+/// attribute: two corners around a colon, or one cell alone for a rectangle
+/// of one cell, which is how the schema's reference type and an extent both
+/// spell it.
+///
+/// The corners are kept in the order they were written: what an area is
+/// asked to say back is what the part said, with only `$` and case taken
+/// out, as for every reference the tool reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Area {
+    from: Cell,
+    to: Option<Cell>,
+}
+
+impl Area {
+    /// Parse `B2:C3`, `$b$2:$c$3` or `B2`, and nothing else: a whole column
+    /// or row, a third corner, or anything around the reference means this
+    /// was never a range of cells.
+    pub fn parse(text: &str) -> Option<Self> {
+        Some(match text.split_once(':') {
+            Some((from, to)) => Area {
+                from: Cell::parse(from)?,
+                to: Some(Cell::parse(to)?),
+            },
+            None => Area {
+                from: Cell::parse(text)?,
+                to: None,
+            },
+        })
+    }
+
+    /// The area in A1 form, without `$`: one cell, or two around a colon.
+    pub fn a1(self) -> String {
+        match self.to {
+            Some(to) => format!("{}:{}", self.from.a1(), to.a1()),
+            None => self.from.a1(),
+        }
+    }
+}
+
 /// One cell of one sheet: the thing a defined name resolves to, and the thing
 /// a `Sheet!A1` token names.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -466,6 +506,45 @@ mod tests {
     fn a_cell_renders_back_to_the_a1_it_came_from() {
         for text in ["A1", "B2", "Z100", "AA1", "XFD1048576"] {
             assert_eq!(Cell::parse(text).expect(text).a1(), text);
+        }
+    }
+
+    #[test]
+    fn an_area_renders_back_without_dollars_in_upper_case_and_in_the_order_written() {
+        for (text, a1) in [
+            ("B2:C3", "B2:C3"),
+            ("$b$2:$C3", "B2:C3"),
+            ("C3:B2", "C3:B2"),
+            ("d4", "D4"),
+            ("A1:A1", "A1:A1"),
+            ("A1:XFD1048576", "A1:XFD1048576"),
+        ] {
+            assert_eq!(
+                Area::parse(text).map(Area::a1).as_deref(),
+                Some(a1),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_whole_column_or_row_a_third_corner_or_anything_around_it_is_not_an_area() {
+        for text in [
+            "",
+            ":",
+            "B2:",
+            ":B2",
+            "B:D",
+            "2:4",
+            "B2:C3:D4",
+            "B2-C3",
+            " B2:C3",
+            "B2:C3 ",
+            "A0:B2",
+            "XFE1:XFE2",
+            "Sheet1!B2:C3",
+        ] {
+            assert_eq!(Area::parse(text), None, "{text} must not parse");
         }
     }
 

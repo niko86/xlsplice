@@ -82,6 +82,7 @@ fn run(command: Command, verb: &str, out: &Out) -> ExitCode {
         Command::Names { file } => verb::names(&file, &trace),
         Command::Get { file, targets } => verb::get(&file, &targets, &trace),
         Command::Cells { file, sheets } => verb::cells(&file, &sheets, &trace),
+        Command::Merged { file, sheets } => verb::merged(&file, &sheets, &trace),
         Command::Diff {
             file,
             other,

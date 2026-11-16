@@ -13,8 +13,9 @@
 //! the two sit the reading layers: a [`package`] of parts joined by
 //! [`relationships`], the [`workbook`] model over one of them, the
 //! [`worksheet`] and [`strings`] parts a cell's content is spread across, and
-//! [`cells`], where an operand becomes an answer. Both paths point at a cell
-//! through [`target`], which is where an operand becomes a part and a cell.
+//! [`cells`] and [`merged`], where an operand becomes an answer. Both paths
+//! point at a cell through [`target`], which is where an operand becomes a
+//! part and a cell.
 //! The write path runs the other way: a [`batch`] of operations answers with
 //! the edits it wants made to each part, and the package is rebuilt around
 //! them.
@@ -34,6 +35,7 @@ pub mod diff;
 pub mod envelope;
 pub mod error;
 pub mod help;
+pub mod merged;
 pub mod package;
 pub mod properties;
 pub mod reference;

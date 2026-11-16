@@ -137,6 +137,27 @@ pub enum Command {
         sheets: Vec<String>,
     },
 
+    /// List the merged areas of one or more sheets, as each sheet declares
+    /// them.
+    ///
+    /// Use it before reading values laid along a row or down a column. A
+    /// merged area's value is held in its top-left cell and the other cells
+    /// it covers hold nothing, so stepping one cell at a time lands on blanks
+    /// inside an area. Each area comes back as an A1 range such as `B2:C3`,
+    /// in the order the sheet declares them; nothing about the cells inside
+    /// is read.
+    #[command(after_help = "Example:\n  xlsplice merged book.xlsx Inputs")]
+    Merged {
+        /// The package to read.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+
+        /// The sheets to read, by name. One block of areas comes back per
+        /// sheet, in the order given.
+        #[arg(value_name = "SHEET", required = true)]
+        sheets: Vec<String>,
+    },
+
     /// Write a value into one cell, named by an address or a defined name.
     ///
     /// The cell must already be there, and must not hold a formula. Every

@@ -23,6 +23,7 @@ use crate::cells::{CellReport, ReadCell, SheetReport, Value};
 use crate::diff::{Difference, PartStatus};
 use crate::error::{EXIT_DIFFERENT, EXIT_SUCCESS, Error, Result};
 use crate::help::Topic;
+use crate::merged::MergedReport;
 use crate::properties::{self, Property};
 use crate::workbook::{DefinedName, Resolved, Scope, Sheet, Workbook};
 use crate::worksheet::Formula;
@@ -547,6 +548,60 @@ pub fn sheet_cells(reports: &[SheetReport]) -> Result<Answer> {
         .flat_map(|sheet| rows_of(&sheet.cells))
         .collect();
     Answer::rows(SheetsOfCells { sheets }, &ReadCellEntry::HEADERS, rows)
+}
+
+/// The payload of `merged --json`.
+#[derive(Serialize)]
+struct SheetsOfAreas {
+    sheets: Vec<SheetAreasEntry>,
+}
+
+#[derive(Serialize)]
+struct SheetAreasEntry {
+    /// The sheet, in the package's own spelling.
+    sheet: String,
+    /// Every merged area, as `B2:C3`, in the order the part declares them;
+    /// empty where it declares none.
+    areas: Vec<String>,
+}
+
+/// One merged area as a row: the envelope carries it inside its sheet's
+/// block, and a row has to say which sheet it is on.
+struct AreaEntry {
+    sheet: String,
+    area: String,
+}
+
+impl Entry<2> for AreaEntry {
+    const HEADERS: [&'static str; 2] = ["SHEET", "AREA"];
+
+    fn row(&self) -> [String; 2] {
+        let AreaEntry { sheet, area } = self;
+        [sheet.clone(), area.clone()]
+    }
+}
+
+/// What `merged` answers: one block per sheet named, in the order they were
+/// named, and one row per area, so a sheet without any has no row.
+pub fn merged_areas(reports: &[MergedReport]) -> Result<Answer> {
+    let sheets: Vec<SheetAreasEntry> = reports
+        .iter()
+        .map(|report| SheetAreasEntry {
+            sheet: report.sheet.clone(),
+            areas: report.areas.clone(),
+        })
+        .collect();
+    let entries: Vec<AreaEntry> = sheets
+        .iter()
+        .flat_map(|block| {
+            block.areas.iter().map(|area| AreaEntry {
+                sheet: block.sheet.clone(),
+                area: area.clone(),
+            })
+        })
+        .collect();
+    let rows = rows_of(&entries);
+    Answer::rows(SheetsOfAreas { sheets }, &AreaEntry::HEADERS, rows)
 }
 
 /// The payload of a writing verb under `--json`.

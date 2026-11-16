@@ -46,6 +46,7 @@ xlsplice sheets -- book.xlsx
 xlsplice names -- book.xlsx
 xlsplice get -- book.xlsx Inputs!A1 MergedInput
 xlsplice cells -- book.xlsx Inputs
+xlsplice merged -- book.xlsx Inputs
 xlsplice props get -- book.xlsx
 xlsplice calc -- book.xlsx
 xlsplice diff -- book.xlsx other.xlsx
@@ -62,6 +63,14 @@ block, `{"sheet", "extent", "cells"}`, and each cell carries the fields `get`
 gives it apart from `target` and `name`. `extent` is the smallest range
 covering those cells, such as `A1:AF44`, or `null` for a sheet holding none.
 Use `cells` to scan a sheet whose layout you do not know.
+
+`merged` reads the merged areas of each sheet named, as the sheet declares
+them. A merged area's value is held in its top-left cell and the other cells
+it covers hold nothing, so read it before stepping along a row or down a
+column of values. Under `--json` each sheet is one block, `{"sheet",
+"areas"}`, and each area is an A1 range such as `B2:C3`, in upper case and
+without `$`, in the order the sheet declares them; a sheet with none has
+`"areas": []`. Without `--json` each area is one row, the sheet and the area.
 
 `diff` compares two packages part by part and exits 0 whether or not they
 differ; `--exit-code` makes a difference exit 1, as diff(1) does.
